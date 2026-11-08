@@ -1,6 +1,6 @@
 use std::fs;
-use std::io;
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
@@ -8,7 +8,13 @@ use clap_complete::{Shell, generate};
 
 use musicdb::analysis::{analyze_unknowns, compare_with_itunes_xml, diff_libraries};
 use musicdb::sections::HsmaChild;
-use musicdb::{Library, RawLibraryFile, discover_default_library_path, load_raw_musicdb};
+use musicdb::{
+    DEFAULT_DONATED_LIBRARY_ARCHIVE, DEFAULT_DONATED_PREVIOUS_LIBRARIES_ARCHIVE, Library,
+    RawLibraryFile, discover_default_library_path, discover_default_previous_libraries_path,
+    find_musiclibrary_bundle, find_previous_libraries_dir, find_previous_libraries_for_bundle,
+    list_previous_library_bundles, load_raw_musicdb, package_donated_library,
+    package_donated_previous_libraries,
+};
 
 #[derive(Parser)]
 #[command(
@@ -112,11 +118,44 @@ enum Commands {
         path: PathBuf,
     },
 
+    /// Package Apple Music Library metadata files (excluding media and artwork images) into a .tar archive for format research
+    DonateLibrary {
+        /// Optional path to Apple Music folder or .musiclibrary bundle (auto-discovers default library if omitted)
+        path: Option<PathBuf>,
+        /// Output archive path (defaults to donated-music-library.tar; use .tar.gz for gzip compression)
+        #[arg(short, long, default_value = DEFAULT_DONATED_LIBRARY_ARCHIVE)]
+        output: PathBuf,
+        /// Skip interactive confirmation prompts
+        #[arg(short, long)]
+        yes: bool,
+    },
+
+    /// Package all Previous Libraries metadata bundles (excluding media and artwork images) into a .tar archive for format research
+    DonatePreviousLibraries {
+        /// Optional path to Previous Libraries or Apple Music folder (auto-discovers default location if omitted)
+        path: Option<PathBuf>,
+        /// Output archive path (defaults to donated-previous-libraries.tar; use .tar.gz for gzip compression)
+        #[arg(short, long, default_value = DEFAULT_DONATED_PREVIOUS_LIBRARIES_ARCHIVE)]
+        output: PathBuf,
+        /// Skip interactive confirmation prompts
+        #[arg(short, long)]
+        yes: bool,
+    },
+
     /// Generate shell completions for bash, zsh, fish, elvish, or powershell
     Completions {
         /// Target shell
         shell: Shell,
     },
+}
+
+fn prompt_yes_no(question: &str) -> Result<bool> {
+    print!("{} [y/N]: ", question);
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let trimmed = input.trim().to_ascii_lowercase();
+    Ok(trimmed == "y" || trimmed == "yes")
 }
 
 fn resolve_path(path: Option<PathBuf>) -> Result<PathBuf> {
@@ -711,6 +750,122 @@ fn main() -> Result<()> {
         Commands::Plist { path } => {
             let val = plist::Value::from_file(&path)?;
             println!("{:#?}", val);
+        }
+
+        Commands::DonateLibrary { path, output, yes } => {
+            let bundle_dir = if let Some(user_path) = &path {
+                find_musiclibrary_bundle(user_path).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Could not find an Apple Music .musiclibrary bundle inside {}",
+                        user_path.display()
+                    )
+                })?
+            } else {
+                let discovered = discover_default_library_path().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Could not auto-discover a default Apple Music Library in your Music directory. Please specify a path."
+                    )
+                })?;
+                if !yes
+                    && !prompt_yes_no(&format!(
+                        "Found Apple Music Library at {:?}. Package metadata into {:?}?",
+                        discovered.display(),
+                        output.display()
+                    ))?
+                {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+                discovered
+            };
+
+            let report = package_donated_library(&bundle_dir, &output)?;
+            println!(
+                "Created {} ({} bytes, {} files):",
+                report.output_path.display(),
+                report.archive_size_bytes,
+                report.archived_paths.len()
+            );
+            for p in &report.archived_paths {
+                println!("  + {}", p);
+            }
+
+            if let Some(prev_dir) = find_previous_libraries_for_bundle(&bundle_dir) {
+                let prev_bundles = list_previous_library_bundles(&prev_dir);
+                if !prev_bundles.is_empty() {
+                    let prev_output = output
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(DEFAULT_DONATED_PREVIOUS_LIBRARIES_ARCHIVE);
+                    let should_donate_prev = if yes {
+                        true
+                    } else {
+                        prompt_yes_no(&format!(
+                            "\nFound {} previous library snapshot(s) in {:?}. Donate them into {:?} as well?",
+                            prev_bundles.len(),
+                            prev_dir.display(),
+                            prev_output.display()
+                        ))?
+                    };
+
+                    if should_donate_prev {
+                        let prev_report =
+                            package_donated_previous_libraries(&prev_dir, &prev_output)?;
+                        println!(
+                            "Created {} ({} bytes, {} bundles, {} files):",
+                            prev_report.output_path.display(),
+                            prev_report.archive_size_bytes,
+                            prev_report.bundle_count,
+                            prev_report.archived_paths.len()
+                        );
+                        for p in &prev_report.archived_paths {
+                            println!("  + {}", p);
+                        }
+                    }
+                }
+            }
+        }
+
+        Commands::DonatePreviousLibraries { path, output, yes } => {
+            let prev_dir = if let Some(user_path) = &path {
+                find_previous_libraries_dir(user_path).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Could not find a 'Previous Libraries' folder with .musiclibrary bundles inside {}",
+                        user_path.display()
+                    )
+                })?
+            } else {
+                let discovered = discover_default_previous_libraries_path().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Could not auto-discover a 'Previous Libraries' folder in your Music directory. Please specify a path."
+                    )
+                })?;
+                let count = list_previous_library_bundles(&discovered).len();
+                if !yes
+                    && !prompt_yes_no(&format!(
+                        "Found {} previous library snapshot(s) in {:?}. Package metadata into {:?}?",
+                        count,
+                        discovered.display(),
+                        output.display()
+                    ))?
+                {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+                discovered
+            };
+
+            let report = package_donated_previous_libraries(&prev_dir, &output)?;
+            println!(
+                "Created {} ({} bytes, {} bundles, {} files):",
+                report.output_path.display(),
+                report.archive_size_bytes,
+                report.bundle_count,
+                report.archived_paths.len()
+            );
+            for p in &report.archived_paths {
+                println!("  + {}", p);
+            }
         }
 
         Commands::Completions { shell } => {
