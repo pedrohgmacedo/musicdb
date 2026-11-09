@@ -1,6 +1,7 @@
 # `musicdb-rs`
 
 [![Crates.io](https://img.shields.io/crates/v/musicdb-rs.svg)](https://crates.io/crates/musicdb-rs)
+[![docs.rs](https://docs.rs/musicdb-rs/badge.svg)](https://docs.rs/musicdb-rs)
 
 Pure-Rust parser, domain model, SQLite/JSON exporter, and reverse-engineering CLI for Apple Music `.musiclibrary` bundles (`Library.musicdb`, `Library Preferences.musicdb`, and `preferences/*.plist`).
 
