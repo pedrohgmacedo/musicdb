@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/musicdb-rs.svg)](https://crates.io/crates/musicdb-rs)
 [![docs.rs](https://docs.rs/musicdb-rs/badge.svg)](https://docs.rs/musicdb-rs)
 
-A Pure-Rust parser, domain model, SQLite/JSON exporter, and reverse-engineering library and CLI for Apple Music `.musiclibrary` bundles (`Library.musicdb`, `Library Preferences.musicdb`, and `preferences/*.plist`).
+A Pure-Rust parser, domain model, SQLite/JSON exporter, and reverse-engineering library and cli tool for Apple Music `.musiclibrary` bundles (`Library.musicdb`, `Library Preferences.musicdb`, and `preferences/*.plist`).
 
 Verified with **100% byte-identical lossless round-tripping** across Apple Music versions **1.4 (`format 20.2`, 2024)**, **1.5 (`format 20.20` & `20.40`, 2025)**, **1.6 (`format 21.40`, 2026)**, and **1.7 (`format 23.1`, 2026)**.
 
