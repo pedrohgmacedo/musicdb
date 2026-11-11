@@ -7,8 +7,6 @@ A Pure-Rust parser, domain model, SQLite/JSON exporter, and reverse-engineering 
 
 Verified with **100% byte-identical lossless round-tripping** across Apple Music versions **1.4 (`format 20.2`, 2024)**, **1.5 (`format 20.20` & `20.40`, 2025)**, **1.6 (`format 21.40`, 2026)**, and **1.7 (`format 23.1`, 2026)**.
 
----
-
 ## Architecture
 
 `musicdb-rs` is structured into three cleanly isolated layers so downstream consumers can query Apple Music data through meaningful domain primitives without coupling to binary layout details:
@@ -29,8 +27,6 @@ Verified with **100% byte-identical lossless round-tripping** across Apple Music
 3. **Layer 3 — Normalized SQLite & Rich JSON Exporters (`musicdb::sqlite`, `Library::to_json_pretty`)**:
    - **SQLite Exporter (`Library::export_sqlite`)**: Creates a self-contained, indexed SQLite database (using bundled `rusqlite`) with 8 normalized tables and 2 convenience SQL views.
    - **JSON Exporter (`Library::to_json_pretty`)**: Serializes the complete `Library` hierarchy (including nested `SmartRuleGroup` trees).
-
----
 
 ## Rust Crate Usage
 
@@ -68,8 +64,6 @@ fn main() -> musicdb::Result<()> {
     Ok(())
 }
 ```
-
----
 
 ## CLI Usage
 
@@ -122,8 +116,6 @@ musicdb-rs decrypt path/to/Library.musicdb /tmp/raw_library.bin
 # Inspect a binary or XML .plist file (e.g. Preferences.plist or preferences/Songs.plist)
 musicdb-rs plist "path/to/Apple Music Library.musiclibrary/preferences/Songs.plist"
 ```
-
----
 
 ## SQLite Database Schema
 
