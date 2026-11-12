@@ -7,7 +7,11 @@ license = "Apache-2.0"
 description = "Apple Music .musicdb parser, inspector, and format analysis toolkit"
 readme = "README.md"
 keywords = ["apple-music", "itunes", "musicdb", "musiclibrary", "parser"]
-categories = ["multimedia::audio", "parser-implementations", "command-line-utilities"]
+categories = [
+  "multimedia::audio",
+  "parser-implementations",
+  "command-line-utilities",
+]
 repository = "https://github.com/pedrohgmacedo/musicdb-rs"
 
 [[bin]]
