@@ -7,8 +7,6 @@ on:
       - main
     paths:
       - "Cargo.toml"
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -34,7 +32,7 @@ jobs:
         run: |
           NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
           LOCAL_VER=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          PUBLISHED_VERS=$(curl -sSf -H "User-Agent: musicdb-rs-ci" "https://crates.io/api/v1/crates/${NAME}" | jq -r '.versions[].num' || true)
+          PUBLISHED_VERS=$(curl -sSf -H "User-Agent: musicdb-ci" "https://crates.io/api/v1/crates/${NAME}" | jq -r '.versions[].num' || true)
           if echo "${PUBLISHED_VERS}" | grep -qx "${LOCAL_VER}"; then
             echo "Version ${LOCAL_VER} of ${NAME} is already published on crates.io; skipping."
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
@@ -47,8 +45,13 @@ jobs:
         if: steps.check.outputs.should_publish == 'true'
         run: cargo test
 
+      - name: Authenticate with crates.io
+        if: steps.check.outputs.should_publish == 'true'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       - name: Publish to crates.io
         if: steps.check.outputs.should_publish == 'true'
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish
