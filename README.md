@@ -1,7 +1,7 @@
-# `musicdb-rs`
+# `musicdb`
 
-[![Crates.io](https://img.shields.io/crates/v/musicdb-rs.svg)](https://crates.io/crates/musicdb-rs)
-[![docs.rs](https://docs.rs/musicdb-rs/badge.svg)](https://docs.rs/musicdb-rs)
+[![Crates.io](https://img.shields.io/crates/v/musicdb.svg)](https://crates.io/crates/musicdb)
+[![docs.rs](https://docs.rs/musicdb/badge.svg)](https://docs.rs/musicdb)
 
 A parser, domain model, SQLite/JSON exporter, and reverse-engineering library and cli tool for Apple Music `.musiclibrary` bundles (`Library.musicdb`, `Library Preferences.musicdb`, and `preferences/*.plist`).
 
@@ -11,7 +11,7 @@ Verified with **100% byte-identical lossless round-tripping** across Apple Music
 
 ## Architecture
 
-`musicdb-rs` is structured into three cleanly isolated layers so downstream consumers can query Apple Music data through meaningful domain primitives without coupling to binary layout details:
+`musicdb` is structured into three cleanly isolated layers so downstream consumers can query Apple Music data through meaningful domain primitives without coupling to binary layout details:
 
 1. **Layer 1 — Binary Envelope & Lossless Section AST (`musicdb::crypto`, `musicdb::sections`)**:
    - Decrypts the AES-128-ECB payload (`DEFAULT_MUSICDB_KEY = b"BHUILuilfghuila3"`) after the uncompressed 160-byte outer `hfma` header and inflates the zlib stream.
