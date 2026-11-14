@@ -431,7 +431,7 @@ impl From<u32> for PlaylistShareMode {
     }
 }
 
-/// Built-in Apple Music system playlist kind (`lpma` offset 79..81).
+/// Built-in Apple Music system playlist kind (`lpma` offset 78..80).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DistinguishedPlaylistKind {
     None,
@@ -450,6 +450,7 @@ pub enum DistinguishedPlaylistKind {
     MusicVideos,
     ClassicalMusic,
     FavoriteSongs,
+    HiddenCloudPlaylistOnlyTracks,
     TvAndMovies,
     Downloaded,
     Other(u16),
@@ -473,7 +474,8 @@ impl From<u16> for DistinguishedPlaylistKind {
             44 => Self::RecentlyAdded,
             47 => Self::MusicVideos,
             48 => Self::ClassicalMusic,
-            49 => Self::FavoriteSongs,
+            49 | 61 => Self::FavoriteSongs,
+            63 => Self::HiddenCloudPlaylistOnlyTracks,
             64 => Self::TvAndMovies,
             65 | 66 => Self::Downloaded,
             other => Self::Other(other),
@@ -1713,7 +1715,12 @@ impl Track {
                         track.date_added = apple_timestamp_to_utc(num.date_added);
                         track.date_modified = apple_timestamp_to_utc(num.date_modified);
                         track.date_purchased = apple_timestamp_to_utc(num.date_purchased);
-                        if num.date_purchased != 0 {
+                        if num.date_purchased != 0
+                            || (num.subrecord_kind == 1
+                                && (num.store_track_adam_id != 0 || num.storefront_id != 0)
+                                && num.is_itunes_matched == [0, 0]
+                                && num.is_apple_music_catalog == 0)
+                        {
                             track.purchased = true;
                         }
                         track.date_released = apple_timestamp_to_utc(num.date_released);
@@ -1738,7 +1745,7 @@ impl Track {
                             track.storefront_id = Some(num.storefront_id);
                         }
                         track.artwork_count = Some(num.artwork_count);
-                        track.has_embedded_artwork = Some(num.has_embedded_artwork != 0);
+                        track.has_embedded_artwork = Some(num.has_embedded_artwork == -1);
                         track.artwork_total_size_bytes = Some(num.artwork_total_size_bytes);
                         track.file_folder_count = Some(num.file_folder_count);
                         track.library_folder_count = Some(num.library_folder_count);
@@ -1751,6 +1758,23 @@ impl Track {
                         }
                         if track.date_released.is_none() {
                             track.date_released = apple_timestamp_to_utc(num.date_released);
+                        }
+                        if track.date_purchased.is_none() && num.date_purchased != 0 {
+                            track.date_purchased = apple_timestamp_to_utc(num.date_purchased);
+                            track.purchased = true;
+                        }
+                        if track.artwork_count.unwrap_or(0) == 0 && num.artwork_count != 0 {
+                            track.artwork_count = Some(num.artwork_count);
+                        }
+                        if track.has_embedded_artwork != Some(true)
+                            && num.has_embedded_artwork == -1
+                        {
+                            track.has_embedded_artwork = Some(true);
+                        }
+                        if track.artwork_total_size_bytes.unwrap_or(0) == 0
+                            && num.artwork_total_size_bytes != 0
+                        {
+                            track.artwork_total_size_bytes = Some(num.artwork_total_size_bytes);
                         }
                         if track.store_track_adam_id.is_none() && num.store_track_adam_id != 0 {
                             track.store_track_adam_id = Some(num.store_track_adam_id);
@@ -1906,8 +1930,10 @@ impl Track {
                                             .cloud_artwork_token
                                             .get_or_insert_with(|| v.to_string());
                                     }
-                                    if let Some(v) =
-                                        dict.get("cloud-lyrics-token").and_then(|v| v.as_string())
+                                    if let Some(v) = dict
+                                        .get("cloud-lyrics")
+                                        .or_else(|| dict.get("cloud-lyrics-token"))
+                                        .and_then(|v| v.as_string())
                                     {
                                         track
                                             .cloud_lyrics_token

@@ -139,5 +139,5 @@ musicdb-rs plist "path/to/Apple Music Library.musiclibrary/preferences/Songs.pli
 | `playlist_items` | Ordered junction table (`playlist_persistent_id`, `position`, `track_persistent_id`). |
 | `smart_playlist_rules` | Flattened representation of every rule in `SLst` (`playlist_persistent_id`, `rule_index`, `parent_group_index`, `conjunction`, `field_id`, `field`, `operator`, `comparison_raw`, `value_type`, `value_json`, `description`). |
 | `social_profiles` | Apple Music social profiles (`persistent_id`, `profile_id`, `name`, `handle`, `avatar_id`, `avatar_url`). |
-| `v_playlist_tracks` | Convenience SQL view joining `playlists`, `playlist_items`, and `tracks` in playlist order. |
+| `v_playlist_tracks` | Convenience SQL view joining `playlists`, `playlist_items`, and `tracks` in playlist order (filtering out the internal Master playlist `####!####`, Folder union playlists, and `Hidden Cloud PlaylistOnly Tracks`). |
 | `v_tracks_enriched` | Convenience SQL view joining `tracks` with `albums` and `artists` metadata. |

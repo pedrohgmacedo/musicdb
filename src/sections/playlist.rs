@@ -334,13 +334,16 @@ impl BinRead for SmartPlaylistRule {
             }
         } else if SmartOperatorFlags::from_bits_retain(comparison_method)
             .contains(SmartOperatorFlags::STRING_MODE)
-            && child_bytes.len() % 2 == 0
+            && child_bytes.len().is_multiple_of(2)
         {
             // String comparisons in SLst have `SmartOperatorFlags::STRING_MODE` (0x01000000) set
             let text: String = char::decode_utf16(
                 child_bytes
-                    .chunks_exact(2)
-                    .map(|c| u16::from_be_bytes([c[0], c[1]])),
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .copied()
+                    .map(u16::from_be_bytes),
             )
             .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
             .collect();

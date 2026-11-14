@@ -259,7 +259,7 @@ pub struct TrackNumerics {
     pub artwork_count: u16,
     /// Offset 78..80: Container format kind (`12` / `0x000C` = MP3 audio, `51` / `0x0033` = MPEG-4 audio M4A/M4P, `3` / `0x0003` = MPEG-4 video M4V).
     pub container_format_kind: u16,
-    /// Offset 80..82: Embedded artwork presence flag (-1 / 0xFFFF when `artwork_count > 0`, 0 when no artwork).
+    /// Offset 80..82: Signed 16-bit artwork source/status indicator (`-1` / `0xFFFF` = embedded artwork scanned in local file, `1` = cloud/catalog artwork on `subrecord_kind == 3`, `0` = none/unscanned).
     pub has_embedded_artwork: i16,
     /// Offset 82..84: Local file artwork state (`2` on local downloaded file subrecords, `0` on cloud/catalog subrecords).
     pub local_artwork_state: u16,

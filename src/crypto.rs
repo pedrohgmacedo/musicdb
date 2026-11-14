@@ -58,8 +58,7 @@ pub fn decrypt_and_decompress_bytes(file_bytes: &[u8], key: &[u8; 16]) -> Result
     let cipher = Aes128::new(key.into());
     let mut payload = file_bytes[header_size..].to_vec();
 
-    for chunk in payload[..encrypted_size].chunks_exact_mut(16) {
-        let block: &mut [u8; 16] = chunk.try_into().unwrap();
+    for block in payload[..encrypted_size].as_chunks_mut::<16>().0 {
         cipher.decrypt_block(block.into());
     }
 
@@ -134,8 +133,7 @@ pub fn compress_and_encrypt_bytes(raw_bytes: &[u8], key: &[u8; 16]) -> Result<Ve
     };
 
     let cipher = Aes128::new(key.into());
-    for chunk in compressed[..encrypted_size].chunks_exact_mut(16) {
-        let block: &mut [u8; 16] = chunk.try_into().unwrap();
+    for block in compressed[..encrypted_size].as_chunks_mut::<16>().0 {
         cipher.encrypt_block(block.into());
     }
 

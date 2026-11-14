@@ -135,7 +135,7 @@ impl FieldTracker {
         let distinct_nonzero_count = self.counts.len();
         let mut pairs: Vec<(String, usize)> = self.counts.into_iter().collect();
         pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        pairs.truncate(8);
+        pairs.truncate(15);
         Some(UnknownFieldSummary {
             section: self.section.to_string(),
             field_name: self.field_name.to_string(),
@@ -480,6 +480,20 @@ pub fn analyze_unknowns(raw: &RawLibraryFile) -> UnknownsReport {
                                     "24..27",
                                     record_bytes,
                                     &n.unk_24_27
+                                );
+                                track!(
+                                    "TrackNumerics",
+                                    "match_cat_tuple(sub,cloud,32,33,34,35)",
+                                    "32..36",
+                                    record_bytes,
+                                    &[
+                                        n.subrecord_kind as u8,
+                                        h.cloud_status,
+                                        n.is_itunes_matched[0],
+                                        n.is_itunes_matched[1],
+                                        n.is_apple_music_catalog,
+                                        n.unk_35_60[0],
+                                    ]
                                 );
                                 track!(
                                     "TrackNumerics",
@@ -1021,10 +1035,22 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
         for boma_b in &pb.bomas {
             let matching_a = pa.bomas.iter().find(|b| b.subtype == boma_b.subtype);
             if matching_a.map(|a| &a.payload) != Some(&boma_b.payload) {
+                let hex_a = matching_a
+                    .map(|a| {
+                        let mut cur = std::io::Cursor::new(Vec::new());
+                        let _ = binrw::BinWrite::write_le(a, &mut cur);
+                        hex::encode(&cur.into_inner()[20..])
+                    })
+                    .unwrap_or_else(|| "<none>".to_string());
+                let mut cur_b = std::io::Cursor::new(Vec::new());
+                let _ = binrw::BinWrite::write_le(boma_b, &mut cur_b);
+                let hex_b = hex::encode(&cur_b.into_inner()[20..]);
                 plma_boma_changes.push(format!(
-                    "plma boma 0x{:04X} ({}) changed",
+                    "plma boma 0x{:04X} ({}) changed:\n      A: {}\n      B: {}",
                     boma_b.subtype,
-                    boma_b.subtype_name()
+                    boma_b.subtype_name(),
+                    hex_a,
+                    hex_b
                 ));
             }
         }
@@ -1114,10 +1140,20 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
                 }
             }
             if ma.track_persistent_ids != mb.track_persistent_ids {
+                let set_a: std::collections::HashSet<&str> =
+                    ma.track_persistent_ids.iter().map(String::as_str).collect();
+                let set_b: std::collections::HashSet<&str> =
+                    mb.track_persistent_ids.iter().map(String::as_str).collect();
+                let added_in_pl: Vec<&str> = set_b.difference(&set_a).copied().take(20).collect();
+                let removed_in_pl: Vec<&str> = set_a.difference(&set_b).copied().take(20).collect();
                 boma_diffs.push(format!(
-                    "track_pids changed ({} -> {})",
+                    "track_pids changed ({} -> {}, +{}={:?}, -{}={:?})",
                     ma.track_persistent_ids.len(),
-                    mb.track_persistent_ids.len()
+                    mb.track_persistent_ids.len(),
+                    set_b.difference(&set_a).count(),
+                    added_in_pl,
+                    set_a.difference(&set_b).count(),
+                    removed_in_pl
                 ));
             }
             if !off_diffs.is_empty()
@@ -1229,6 +1265,18 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
             ));
         }
     }
+    let mut pa_keys: Vec<u64> = playlists_a.keys().copied().collect();
+    pa_keys.sort();
+    for ppid in pa_keys {
+        if !playlists_b.contains_key(&ppid) {
+            let pa = playlists_a[&ppid];
+            let ma = crate::model::Playlist::from_raw(pa);
+            playlist_diffs.push(format!(
+                "- REMOVED PLAYLIST {:016X} ({:?}): parent={:?} kind={:?} tracks={}",
+                ppid, ma.name, ma.parent_persistent_id, ma.kind, ma.declared_track_count
+            ));
+        }
+    }
 
     let mut added_tracks = Vec::new();
     let mut removed_tracks = Vec::new();
@@ -1291,21 +1339,29 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
             }
         }
 
-        // Compare TrackNumerics (boma 0x0001)
+        // Compare all TrackNumerics (boma 0x0001) subrecords on the track
         let mut numerics_changed_4byte_offsets = Vec::new();
-        let num_a = itma_a.bomas.iter().find_map(|b| match &b.payload {
-            BomaPayload::TrackNumerics(n) => Some(n),
-            _ => None,
-        });
-        let num_b = itma_b.bomas.iter().find_map(|b| match &b.payload {
-            BomaPayload::TrackNumerics(n) => Some(n),
-            _ => None,
-        });
-        if let (Some(na), Some(nb)) = (num_a, num_b) {
+        let nums_a: Vec<_> = itma_a
+            .bomas
+            .iter()
+            .filter_map(|b| match &b.payload {
+                BomaPayload::TrackNumerics(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        let nums_b: Vec<_> = itma_b
+            .bomas
+            .iter()
+            .filter_map(|b| match &b.payload {
+                BomaPayload::TrackNumerics(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        for (idx, (na, nb)) in nums_a.iter().zip(nums_b.iter()).enumerate() {
             let mut ncur_a = std::io::Cursor::new(Vec::new());
             let mut ncur_b = std::io::Cursor::new(Vec::new());
-            let _ = binrw::BinWrite::write_le(na.as_ref(), &mut ncur_a);
-            let _ = binrw::BinWrite::write_le(nb.as_ref(), &mut ncur_b);
+            let _ = binrw::BinWrite::write_le(*na, &mut ncur_a);
+            let _ = binrw::BinWrite::write_le(*nb, &mut ncur_b);
             let nbytes_a = ncur_a.into_inner();
             let nbytes_b = ncur_b.into_inner();
             let nmin = nbytes_a.len().min(nbytes_b.len());
@@ -1318,7 +1374,7 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
                             .entry(off)
                             .or_insert(0) += 1;
                         if off != 0 {
-                            numerics_changed_4byte_offsets.push((off, va, vb));
+                            numerics_changed_4byte_offsets.push((idx * 1000 + off, va, vb));
                         }
                     }
                 }
@@ -1710,6 +1766,52 @@ pub fn compare_with_itunes_xml(
                 Some(v),
                 mdb_track.is_apple_music_catalog
             );
+        }
+        if let Some(v) = tdict.get("Purchased").and_then(|v| v.as_boolean()) {
+            check_eq!("Purchased", v, mdb_track.purchased);
+        }
+        if let Some(v) = tdict.get("Kind").and_then(|v| v.as_string()) {
+            check_eq!("Kind", Some(v), mdb_track.kind.as_deref());
+        }
+        if let Some(v) = tdict.get("Sort Name").and_then(|v| v.as_string()) {
+            check_eq!("Sort Name", Some(v), mdb_track.sort_title.as_deref());
+        }
+        if let Some(v) = tdict.get("Sort Album").and_then(|v| v.as_string()) {
+            check_eq!("Sort Album", Some(v), mdb_track.sort_album.as_deref());
+        }
+        if let Some(v) = tdict.get("Sort Artist").and_then(|v| v.as_string()) {
+            check_eq!("Sort Artist", Some(v), mdb_track.sort_artist.as_deref());
+        }
+        if let Some(v) = tdict.get("Sort Album Artist").and_then(|v| v.as_string()) {
+            check_eq!(
+                "Sort Album Artist",
+                Some(v),
+                mdb_track.sort_album_artist.as_deref()
+            );
+        }
+        if let Some(v) = tdict.get("Sort Composer").and_then(|v| v.as_string()) {
+            check_eq!("Sort Composer", Some(v), mdb_track.sort_composer.as_deref());
+        }
+        if let Some(v) = tdict.get("Comments").and_then(|v| v.as_string()) {
+            check_eq!("Comments", Some(v), mdb_track.comments.as_deref());
+        }
+        if let Some(v) = tdict.get("Grouping").and_then(|v| v.as_string()) {
+            check_eq!("Grouping", Some(v), mdb_track.grouping.as_deref());
+        }
+        if let Some(v) = tdict.get("Disabled").and_then(|v| v.as_boolean()) {
+            check_eq!("Disabled", v, mdb_track.disabled);
+        }
+        if let Some(v) = tdict
+            .get("Skip When Shuffling")
+            .and_then(|v| v.as_boolean())
+        {
+            check_eq!("Skip When Shuffling", v, mdb_track.skip_when_shuffling);
+        }
+        if let Some(v) = tdict
+            .get("Volume Adjustment")
+            .and_then(|v| v.as_signed_integer())
+        {
+            check_eq!("Volume Adjustment", v as i32, mdb_track.volume_adjustment);
         }
         if let Some(v) = tdict.get("Work").and_then(|v| v.as_string()) {
             check_eq!("Work", Some(v), mdb_track.work_name.as_deref());

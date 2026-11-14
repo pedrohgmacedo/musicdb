@@ -513,6 +513,8 @@ mod tests {
         assert_eq!(t.file_type_fourcc.as_deref(), Some("M4A "));
         assert_eq!(t.codec_fourcc.as_deref(), Some("mp4a"));
         assert_eq!(t.suggestion_flag, SuggestionFlag::Favorite);
+        assert_eq!(t.has_embedded_artwork, Some(true));
+        assert!(t.purchased);
         assert_eq!(
             t.equalizer_preset.as_ref().map(|e| e.name.as_str()),
             Some("Rock")
@@ -543,6 +545,20 @@ mod tests {
             .playlist_by_name("TEST_SMART_FIELDS_2")
             .expect("TEST_SMART_FIELDS_2");
         assert!(f2.is_smart);
+        let fav_songs = lib
+            .playlist_by_name("Favourite Songs")
+            .expect("Favourite Songs");
+        assert_eq!(
+            fav_songs.system_kind,
+            DistinguishedPlaylistKind::FavoriteSongs
+        );
+        let hidden_cloud = lib
+            .playlist_by_name("Hidden Cloud PlaylistOnly Tracks")
+            .expect("Hidden Cloud PlaylistOnly Tracks");
+        assert_eq!(
+            hidden_cloud.system_kind,
+            DistinguishedPlaylistKind::HiddenCloudPlaylistOnlyTracks
+        );
         let opts = lib
             .playlist_by_name("TEST_SMART_OPTIONS")
             .expect("TEST_SMART_OPTIONS");

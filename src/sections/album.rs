@@ -44,7 +44,7 @@ pub struct IamaHeader {
     pub unk_24: u8,
     /// Offset 25: Compilation flag (1 = album is a compilation of songs by various artists, 0 = single artist).
     pub is_compilation: u8,
-    /// Offset 26..28: Unknown 2 bytes (typically `[0, 1]` or `[1, 1]`).
+    /// Offset 26..28: Byte 26 is the album playlist-only flag (`0` = album is in main library with `first_track_persistent_id != 0`, `1` = album is referenced only by playlist-only tracks with `first_track_persistent_id == 0`); byte 27 is typically `1`.
     pub unk_26_28: [u8; 2],
     /// Offset 28..32: Unknown (typically 1).
     pub unk_28: u32,

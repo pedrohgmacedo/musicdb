@@ -623,15 +623,21 @@ impl Library {
                 p.persistent_id AS playlist_persistent_id,
                 p.name AS playlist_name,
                 p.kind AS playlist_kind,
+                p.system_kind AS playlist_system_kind,
                 pi.position AS position,
                 t.persistent_id AS track_persistent_id,
                 t.title AS track_title,
                 t.artist AS track_artist,
                 t.album AS track_album,
-                t.duration_ms AS duration_ms
+                t.duration_ms AS duration_ms,
+                t.playlist_only AS track_playlist_only,
+                t.store_track_adam_id AS store_track_adam_id
             FROM playlist_items pi
             JOIN playlists p ON p.persistent_id = pi.playlist_persistent_id
             LEFT JOIN tracks t ON t.persistent_id = pi.track_persistent_id
+            WHERE p.is_master = 0
+              AND p.is_folder = 0
+              AND p.distinguished_kind != 63
             ORDER BY pi.playlist_persistent_id, pi.position;
 
             CREATE VIEW v_tracks_enriched AS

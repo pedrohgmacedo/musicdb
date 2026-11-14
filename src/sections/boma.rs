@@ -354,7 +354,7 @@ fn parse_boma_payload(subtype: u32, payload_bytes: Vec<u8>) -> BinResult<BomaPay
                 raw_bytes: payload_bytes,
             });
         }
-        0x01FD | 0x0200 if payload_bytes.len() % 2 == 0 => {
+        0x01FD | 0x0200 if payload_bytes.len().is_multiple_of(2) => {
             let text = decode_utf16le(&payload_bytes);
             return Ok(BomaPayload::RawStringUtf16Le {
                 text,
@@ -373,8 +373,11 @@ fn parse_boma_payload(subtype: u32, payload_bytes: Vec<u8>) -> BinResult<BomaPay
 fn decode_utf16le(bytes: &[u8]) -> String {
     char::decode_utf16(
         bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]])),
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .copied()
+            .map(u16::from_le_bytes),
     )
     .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
     .collect()

@@ -90,12 +90,12 @@ enum Commands {
         output: PathBuf,
     },
 
-    /// Query a specific playlist by name or Persistent ID (including decoded Smart Playlist rules, view preferences, and tracks)
+    /// Query a specific playlist by name or Persistent ID, or list all playlists when query is omitted
     QueryPlaylist {
         /// Path to Library.musicdb or .musiclibrary directory
         input: PathBuf,
-        /// Playlist name or 16-char hex Persistent ID
-        query: String,
+        /// Playlist name or 16-char hex Persistent ID (omit to list all playlists)
+        query: Option<String>,
         /// Emit as JSON
         #[arg(long)]
         json: bool,
@@ -637,6 +637,29 @@ fn main() -> Result<()> {
 
         Commands::QueryPlaylist { input, query, json } => {
             let lib = Library::open(&input)?;
+            let Some(query) = query else {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&lib.playlists)?);
+                } else {
+                    println!("=== Playlists ({}) ===", lib.playlists.len());
+                    for pl in &lib.playlists {
+                        println!(
+                            "  [{}] kind={:<13?} sys={:<18?} dist_raw={:<3} folder={:<5} smart={:<5} master={:<5} parent={:<16} tracks={:<5} name={:?}",
+                            pl.persistent_id,
+                            pl.kind,
+                            pl.system_kind,
+                            pl.distinguished_kind,
+                            pl.is_folder,
+                            pl.is_smart,
+                            pl.is_master,
+                            pl.parent_persistent_id.as_deref().unwrap_or("-"),
+                            pl.declared_track_count,
+                            pl.name.as_deref().unwrap_or("<unnamed>")
+                        );
+                    }
+                }
+                return Ok(());
+            };
             let pl = lib
                 .playlist_by_id(&query)
                 .or_else(|| lib.playlist_by_name(&query))
