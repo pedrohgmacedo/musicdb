@@ -59,11 +59,11 @@ Much of the existing code predates these rules.
 - **Don't ignore errors silently** (`.ok()`, `let _ =`, `.flatten()` on `read_dir`, `unwrap_or_default()` on I/O). Either propagate the error, or, for best-effort data such as sidecar plists, record a warning the caller can see. Write a comment wherever you ignore something on purpose.
 
 ### Public API design (Rust API Guidelines)
-- **Every new public struct and enum is `#[non_exhaustive]`.** Prefer private fields with accessor methods for domain types. Ask before adding a new `pub` field to an existing domain struct.
+- **Every public struct and enum is `#[non_exhaustive]`.** Read-only domain records (`Track`, `Album`, `Artist`, `Playlist`, `LibraryMetadata`) may expose `pub` data fields for ergonomic access and pattern matching (`#[non_exhaustive]` prevents external struct-literal construction), while container internals (such as `Library` indexes) stay private behind methods. Derived or computed values (`stars()`, `flags()`, `raw()`) are methods, not fields.
 - **Be careful with what you make `pub`.** Helpers, serde `with` modules and research utilities are `pub(crate)`. Everything `pub` falls under semver.
-- **Don't put dependency types in public signatures** (e.g. `binrw::Error`, `rusqlite::Error`, `plist::Value`) without asking. Each one makes that dependency's major updates breaking changes for us. Wrap them as opaque `#[source]` errors instead.
+- **Don't put dependency types in public domain signatures** (e.g. `plist::Value`) without asking. In `MusicDbError`, existing `#[from]`/`#[source]` wrappers for `binrw::Error`, `plist::Error` and `#[cfg(feature = "sqlite")] rusqlite::Error` are acceptable while on `0.x`; ask before exposing any new dependency error type publicly.
 - **Use newtypes for identifiers:** persistent IDs are a `PersistentId(u64)` with `Display`/`FromStr` as 16-digit uppercase hex, not a `String` and a `u64` side by side.
-- **Name types after what they mean.** Put the 4-character file magic in the doc comment (`/// Album record (`iama`).`). **Never** add type names that differ from another type only by letter case. They collide on case-insensitive file systems (macOS/Windows), and rustdoc output breaks.
+- **Name types after what they mean.** Put the 4-character file magic in the doc comment (`/// Album record (`iAma`).`). **Never** add type names that differ from another type only by letter case. They collide on case-insensitive file systems (macOS/Windows), and rustdoc output breaks.
 - **Use standard conversion traits:** `From`/`TryFrom`/`FromStr`/`Display` instead of ad-hoc `parse`/`from_raw`/`to_string` methods. Don't name safe constructors `from_raw`; in Rust that name means raw pointers.
 - **Implement the common traits** on public types where they make sense: `Debug`, `Clone`, `PartialEq`, `Eq`, `Hash`, `Default`. Enums shown to users implement `Display`. **Never use `{:?}` output as data** (in SQLite, JSON keys, or anything stored).
 - **Return iterators, not `Vec`s:** `impl Iterator<Item = &Track> + '_` instead of `Vec<&Track>`.
@@ -79,14 +79,16 @@ Much of the existing code predates these rules.
 - `README.md` is included as crate docs and runs as a doctest. **Every Rust code block in it must compile.** If you change an API that the README uses, update the README in the same change.
 - New user-facing features need an example, either a doctest or a file in `examples/`.
 
-### Dependencies and features
+### Dependencies, features and licensing
+- Keep the library and CLI in a **single crate (`musicdb`)** so `cargo add musicdb` and `cargo install musicdb` share one package name. Do not split into a multi-crate workspace unless asked.
 - Don't add a dependency without a reason you can name. Prefer the standard library.
-- **Dependencies that only the CLI or the research tools need** (`clap`, `anyhow`, `tar`, …) must never become required for library users. Gate optional functionality behind a Cargo feature with a plain name (`serde`, `sqlite`, `cli`), not `use-serde` or `with-sqlite`.
+- **Dependencies that only the CLI or the research tools need** (`clap`, `clap_complete`, `anyhow`, `tar`, `directories`, `serde_json`, …) must never become required for library users. Gate optional functionality behind a Cargo feature with a plain name (`serde`, `sqlite`, `cli`), not `use-serde` or `with-sqlite`.
+- Keep the crate license as standalone **`Apache-2.0`** with the [`NOTICE`](NOTICE) file so Section 4(d) attribution notices stay mandatory. Don't change it to `MIT OR Apache-2.0`.
 - Any new dependency must pass `cargo deny check`.
 - Don't use Rust features newer than the MSRV (`rust-version` in `Cargo.toml`).
 
 ### Code shape
-- Aim for functions under ~80 lines. Split large `match` arms and long mapping code into named helpers.
+- Aim for procedural functions under ~80 lines. Split large control-flow `match` arms and long mapping code into named helpers. Flat 1-to-1 lookup tables (such as format-ID-to-enum `match` tables) and full-row SQL column bindings may use a local `#[expect(clippy::too_many_lines, reason = "...")]` when splitting them would hurt readability.
 - Use `#[derive(Default)]` and `..Default::default()` instead of initializing dozens of fields by hand.
 - SQL `INSERT` statements always list their column names.
 - When writing output files, write to a temporary file in the same directory and `rename` on success. Finish encoders explicitly (`GzEncoder::finish()`); never rely on `Drop` to flush.
