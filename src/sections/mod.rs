@@ -14,6 +14,7 @@ pub mod playlist;
 pub mod social;
 /// `ltma`, `itma`, and `TrackNumerics` track binary structures.
 pub mod track;
+pub mod unknown;
 
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -40,6 +41,8 @@ pub use track::{
     TrackItem, TrackItemHeader, TrackListHeader, TrackListSection, TrackNumerics, TrackPlaysSkips,
     VideoInfo,
 };
+pub use unknown::{Unknown, UnknownSpan, UnknownValue, UnknownVisitor, VisitUnknowns};
+use unknown::{read_unknown_tail, visit_unknowns};
 
 /// Returns the number of bytes remaining from the current cursor position to the end of `reader`.
 pub(crate) fn remaining_stream_bytes<R: Seek>(reader: &mut R) -> BinResult<u64> {
@@ -145,43 +148,6 @@ where
     Ok(items)
 }
 
-/// Serde helper for fixed-size byte arrays larger than 32 bytes, encoded as lowercase hex strings.
-#[cfg(feature = "serde")]
-pub(crate) mod hex_array {
-    use serde::de::Error;
-    use serde::{Deserializer, Serializer};
-
-    /// Serializes a fixed-size byte array as a hex string.
-    ///
-    /// # Errors
-    /// Returns a serializer error if writing the string fails.
-    pub(crate) fn serialize<S, const N: usize>(
-        bytes: &[u8; N],
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&hex::encode(bytes))
-    }
-
-    /// Deserializes a fixed-size byte array from a hex string.
-    ///
-    /// # Errors
-    /// Returns a deserializer error if the input is not valid hex or does not decode to `N` bytes.
-    pub(crate) fn deserialize<'de, D, const N: usize>(
-        deserializer: D,
-    ) -> std::result::Result<[u8; N], D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: String = serde::Deserialize::deserialize(deserializer)?;
-        let vec = hex::decode(&s).map_err(D::Error::custom)?;
-        vec.try_into()
-            .map_err(|v: Vec<u8>| D::Error::custom(format!("expected {N} bytes, got {}", v.len())))
-    }
-}
-
 /// Padding / footer section (`LPma`, subtype 17 of `hsma`).
 #[binrw]
 #[brw(little, magic = b"LPma")]
@@ -192,8 +158,14 @@ pub struct PaddingSection {
     /// Offset 4: Section size in bytes (typically 96, minimum 8).
     pub section_size: u32,
     /// Offset 8..`section_size`: Remaining bytes (offset 12 is typically 6).
-    #[br(parse_with = read_header_tail, args(section_size, 8, "LPma"))]
-    pub raw_bytes: Vec<u8>,
+    #[br(parse_with = read_unknown_tail, args(section_size, 8, "LPma"))]
+    pub raw_bytes: Unknown<Vec<u8>>,
+}
+
+impl VisitUnknowns for PaddingSection {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        visit_unknowns!(visitor, "LPma", [(tail: self.raw_bytes, 8)]);
+    }
 }
 
 /// A major `hsma` section boundary and its parsed child section tree.
@@ -421,6 +393,23 @@ impl BinWrite for HsmaSection {
     }
 }
 
+impl VisitUnknowns for HsmaSection {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        self.header.visit_unknowns("hsma", visitor);
+        match &self.child {
+            HsmaChild::InnerHfma(inner) => inner.visit_unknowns("hfma(inner)", visitor),
+            HsmaChild::LibraryMaster(plma) => plma.visit_unknowns("plma", visitor),
+            HsmaChild::AlbumList(lama) => lama.visit_unknowns("lama", visitor),
+            HsmaChild::ArtistList(artists) => artists.visit_unknowns("lAma", visitor),
+            HsmaChild::TrackList(ltma) => ltma.visit_unknowns("ltma", visitor),
+            HsmaChild::PlaylistList(playlists) => playlists.visit_unknowns("lPma", visitor),
+            HsmaChild::SocialProfileList(lsma) => lsma.visit_unknowns("Lsma", visitor),
+            HsmaChild::Padding(pad) => pad.visit_unknowns("LPma", visitor),
+            HsmaChild::Unknown { .. } | HsmaChild::Skipped { .. } => {}
+        }
+    }
+}
+
 /// Complete Layer-1 Raw AST of a `.musicdb` file.
 /// Preserves 100% of bytes for lossless round-tripping and unknown-byte analysis.
 #[non_exhaustive]
@@ -549,5 +538,14 @@ impl RawLibraryFile {
     pub fn to_encrypted_bytes(&self) -> Result<Vec<u8>> {
         let raw = self.to_raw_bytes()?;
         compress_and_encrypt_bytes(&raw, DEFAULT_MUSICDB_KEY)
+    }
+}
+
+impl VisitUnknowns for RawLibraryFile {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        self.outer_header.visit_unknowns("hfma(outer)", visitor);
+        for section in &self.sections {
+            section.visit_unknowns("hsma", visitor);
+        }
     }
 }

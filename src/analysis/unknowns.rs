@@ -3,10 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use musicdb::sections::{
-    AlbumListSection, ArtistListSection, BomaPayload, BomaSection, HfmaHeader, HsmaChild,
-    LibraryMasterSection, PlaylistItem, PlaylistListSection, RawLibraryFile,
-    SocialProfileListSection, TrackItemHeader, TrackListSection, TrackNumerics, TrackPlaysSkips,
-    VideoInfo,
+    BomaPayload, BomaSection, HsmaChild, PlaylistItem, RawLibraryFile, TrackItemHeader,
+    TrackNumerics, Unknown, UnknownSpan, UnknownValue, UnknownVisitor, VisitUnknowns,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,16 +47,16 @@ pub(crate) struct GlobalCounterAnalysis {
 }
 
 struct FieldTracker {
-    section: &'static str,
-    field_name: &'static str,
-    offset_info: &'static str,
+    section: String,
+    field_name: String,
+    offset_info: String,
     total: usize,
     nonzero: usize,
     counts: HashMap<String, usize>,
 }
 
 impl FieldTracker {
-    fn new(section: &'static str, field_name: &'static str, offset_info: &'static str) -> Self {
+    fn new(section: String, field_name: String, offset_info: String) -> Self {
         Self {
             section,
             field_name,
@@ -69,35 +67,11 @@ impl FieldTracker {
         }
     }
 
-    fn record_u8(&mut self, v: u8) {
+    fn record_value<T: UnknownValue>(&mut self, val: &Unknown<T>) {
         self.total += 1;
-        if v != 0 {
+        if !val.is_zero() {
             self.nonzero += 1;
-            *self.counts.entry(format!("{v} (0x{v:02X})")).or_insert(0) += 1;
-        }
-    }
-
-    fn record_u16(&mut self, v: u16) {
-        self.total += 1;
-        if v != 0 {
-            self.nonzero += 1;
-            *self.counts.entry(format!("{v} (0x{v:04X})")).or_insert(0) += 1;
-        }
-    }
-
-    fn record_u32(&mut self, v: u32) {
-        self.total += 1;
-        if v != 0 {
-            self.nonzero += 1;
-            *self.counts.entry(format!("{v} (0x{v:08X})")).or_insert(0) += 1;
-        }
-    }
-
-    fn record_u64(&mut self, v: u64) {
-        self.total += 1;
-        if v != 0 {
-            self.nonzero += 1;
-            *self.counts.entry(format!("0x{v:016X}")).or_insert(0) += 1;
+            *self.counts.entry(val.format_unknown()).or_insert(0) += 1;
         }
     }
 
@@ -118,9 +92,9 @@ impl FieldTracker {
         pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         pairs.truncate(15);
         Some(UnknownFieldSummary {
-            section: self.section.to_string(),
-            field_name: self.field_name.to_string(),
-            offset_info: self.offset_info.to_string(),
+            section: self.section,
+            field_name: self.field_name,
+            offset_info: self.offset_info,
             total_instances: self.total,
             nonzero_instances: self.nonzero,
             distinct_nonzero_count,
@@ -132,20 +106,25 @@ impl FieldTracker {
 #[derive(Default)]
 struct TrackerSet {
     trackers: Vec<FieldTracker>,
-    map: HashMap<(&'static str, &'static str), usize>,
+    map: HashMap<(String, String), usize>,
 }
 
 impl TrackerSet {
     fn with_tracker(
         &mut self,
-        sec: &'static str,
-        name: &'static str,
-        off: &'static str,
+        sec: &str,
+        name: &str,
+        off: &str,
         apply: impl FnOnce(&mut FieldTracker),
     ) {
-        let idx = *self.map.entry((sec, name)).or_insert_with(|| {
+        let key = (sec.to_string(), name.to_string());
+        let idx = *self.map.entry(key).or_insert_with(|| {
             let i = self.trackers.len();
-            self.trackers.push(FieldTracker::new(sec, name, off));
+            self.trackers.push(FieldTracker::new(
+                sec.to_string(),
+                name.to_string(),
+                off.to_string(),
+            ));
             i
         });
         if let Some(tracker) = self.trackers.get_mut(idx) {
@@ -153,23 +132,7 @@ impl TrackerSet {
         }
     }
 
-    fn u8(&mut self, sec: &'static str, name: &'static str, off: &'static str, val: u8) {
-        self.with_tracker(sec, name, off, |t| t.record_u8(val));
-    }
-
-    fn u16(&mut self, sec: &'static str, name: &'static str, off: &'static str, val: u16) {
-        self.with_tracker(sec, name, off, |t| t.record_u16(val));
-    }
-
-    fn u32(&mut self, sec: &'static str, name: &'static str, off: &'static str, val: u32) {
-        self.with_tracker(sec, name, off, |t| t.record_u32(val));
-    }
-
-    fn u64(&mut self, sec: &'static str, name: &'static str, off: &'static str, val: u64) {
-        self.with_tracker(sec, name, off, |t| t.record_u64(val));
-    }
-
-    fn bytes(&mut self, sec: &'static str, name: &'static str, off: &'static str, val: &[u8]) {
+    fn bytes(&mut self, sec: &str, name: &str, off: &str, val: &[u8]) {
         self.with_tracker(sec, name, off, |t| t.record_bytes(val));
     }
 
@@ -178,6 +141,19 @@ impl TrackerSet {
             .into_iter()
             .filter_map(FieldTracker::into_summary)
             .collect()
+    }
+}
+
+impl UnknownVisitor for TrackerSet {
+    fn visit_unknown<T: UnknownValue>(
+        &mut self,
+        section: &str,
+        field_name: &str,
+        span: UnknownSpan,
+        value: &Unknown<T>,
+    ) {
+        let off = span.to_string();
+        self.with_tracker(section, field_name, &off, |t| t.record_value(value));
     }
 }
 
@@ -216,17 +192,6 @@ impl UnknownsCollector {
         }
     }
 
-    fn collect_hfma(&mut self, label: &'static str, hdr: &HfmaHeader) {
-        self.trackers.u32(label, "unk_60", "60..64", hdr.unk_60);
-        self.trackers
-            .bytes(label, "unk_64_flags", "64..68", &hdr.unk_64_flags);
-        self.trackers.u32(label, "unk_104", "104..108", hdr.unk_104);
-        self.trackers
-            .bytes(label, "unk_116", "116..120", &hdr.unk_116);
-        self.trackers
-            .bytes(label, "unk_132_160", "132..160", &hdr.unk_132_160);
-    }
-
     fn record_boma(&mut self, parent: &str, boma: &BomaSection) {
         record_boma_stats(
             parent,
@@ -236,187 +201,7 @@ impl UnknownsCollector {
         );
     }
 
-    fn collect_plma(&mut self, plma: &LibraryMasterSection) {
-        let ph = &plma.header;
-        self.trackers
-            .bytes("plma", "unk_12_24", "12..24", &ph.unk_12_24);
-        self.trackers
-            .bytes("plma", "unk_25_52", "25..52", &ph.unk_25_52);
-        self.trackers.u32("plma", "unk_52", "52..56", ph.unk_52);
-        self.trackers
-            .bytes("plma", "unk_56_58", "56..58", &ph.unk_56_58);
-        self.trackers
-            .bytes("plma", "unk_66_68", "66..68", &ph.unk_66_68);
-        self.trackers.u32("plma", "unk_68", "68..72", ph.unk_68);
-        self.trackers
-            .bytes("plma", "unk_72_92", "72..92", &ph.unk_72_92);
-        self.trackers.u32("plma", "unk_100", "100..104", ph.unk_100);
-        self.trackers.u32(
-            "plma",
-            "unk_104_shared_val",
-            "104..108",
-            ph.unk_104_shared_val,
-        );
-        self.trackers
-            .bytes("plma", "unk_108_128", "108..128", &ph.unk_108_128);
-        self.trackers.u32("plma", "unk_128", "128..132", ph.unk_128);
-        self.trackers.u32("plma", "unk_132", "132..136", ph.unk_132);
-        self.trackers.u32("plma", "unk_136", "136..140", ph.unk_136);
-        self.trackers.u32("plma", "unk_140", "140..144", ph.unk_140);
-        self.trackers.u32("plma", "unk_144", "144..148", ph.unk_144);
-        self.trackers
-            .bytes("plma", "unk_149_160", "149..160", &ph.unk_149_160);
-        self.trackers
-            .bytes("plma", "unk_160_end", "160..end", &ph.unk_160_end);
-
-        for boma in &plma.bomas {
-            self.record_boma("plma", boma);
-        }
-    }
-
-    fn collect_albums(&mut self, album_list: &AlbumListSection) {
-        self.album_count = album_list.albums.len();
-        self.trackers.bytes(
-            "lama",
-            "unk_12_end",
-            "12..48",
-            &album_list.header.unk_12_end,
-        );
-        for item in &album_list.albums {
-            let hdr = &item.header;
-            self.trackers.u8("iama", "unk_24", "24..25", hdr.unk_24);
-            self.trackers
-                .bytes("iama", "unk_26_28", "26..28", &hdr.unk_26_28);
-            self.trackers.u32("iama", "unk_28", "28..32", hdr.unk_28);
-            self.trackers
-                .bytes("iama", "unk_44_64", "44..64", &hdr.unk_44_64);
-            self.trackers
-                .bytes("iama", "unk_72_96", "72..96", &hdr.unk_72_96);
-            self.trackers
-                .bytes("iama", "unk_tail", "128..end", &hdr.unk_tail);
-            for boma in &item.bomas {
-                self.record_boma("iama", boma);
-            }
-        }
-    }
-
-    fn collect_artists(&mut self, artist_list: &ArtistListSection) {
-        self.artist_count = artist_list.artists.len();
-        self.trackers.bytes(
-            "lAma",
-            "unk_12_end",
-            "12..100",
-            &artist_list.header.unk_12_end,
-        );
-        for item in &artist_list.artists {
-            let hdr = &item.header;
-            self.trackers.u32("iAma", "unk_24", "24..28", hdr.unk_24);
-            self.trackers.u32("iAma", "unk_28", "28..32", hdr.unk_28);
-            self.trackers
-                .bytes("iAma", "unk_32_52", "32..52", &hdr.unk_32_52);
-            self.trackers
-                .bytes("iAma", "unk_88_96", "88..96", &hdr.unk_88_96);
-            self.trackers.u8("iAma", "unk_100", "100..101", hdr.unk_100);
-            self.trackers.u8("iAma", "unk_103", "103..104", hdr.unk_103);
-            self.trackers
-                .bytes("iAma", "unk_tail", "124..132", &hdr.unk_tail);
-            for boma in &item.bomas {
-                self.record_boma("iAma", boma);
-            }
-        }
-    }
-
-    fn collect_tracks(&mut self, ltma: &TrackListSection) {
-        self.trackers
-            .bytes("ltma", "unk_12_end", "12..92", &ltma.header.unk_12_end);
-        for itma in &ltma.tracks {
-            self.collect_itma_header(&itma.header);
-            for boma in &itma.bomas {
-                self.record_boma("itma", boma);
-                match &boma.payload {
-                    BomaPayload::TrackNumerics(num) => {
-                        self.collect_track_numerics(&itma.header, num);
-                    }
-                    BomaPayload::TrackPlaysSkips(ps) => self.collect_track_plays_skips(ps),
-                    BomaPayload::VideoInfo(vid) => self.collect_video_info(vid),
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn collect_itma_header(&mut self, hdr: &TrackItemHeader) {
-        self.trackers
-            .bytes("itma", "unk_28_30", "28..30", &hdr.unk_28_30);
-        self.trackers.u8(
-            "itma",
-            "unk_31_played_flag",
-            "31..32",
-            hdr.unk_31_played_flag,
-        );
-        self.trackers
-            .bytes("itma", "unk_32_38", "32..38", &hdr.unk_32_38);
-        self.trackers
-            .bytes("itma", "unk_40_42", "40..42", &hdr.unk_40_42);
-        self.trackers.u8("itma", "unk_43", "43..44", hdr.unk_43);
-        self.trackers.u8("itma", "unk_45", "45..46", hdr.unk_45);
-        self.trackers
-            .bytes("itma", "unk_47_49", "47..49", &hdr.unk_47_49);
-        self.trackers.u8("itma", "unk_54", "54..55", hdr.unk_54);
-        self.trackers.u8("itma", "unk_56", "56..57", hdr.unk_56);
-        self.trackers
-            .bytes("itma", "unk_60_62", "60..62", &hdr.unk_60_62);
-        self.trackers
-            .u8("itma", "unk_64_store_flag", "64..65", hdr.unk_64_store_flag);
-        self.trackers
-            .bytes("itma", "unk_72_82", "72..82", &hdr.unk_72_82);
-        self.trackers.u32(
-            "itma",
-            "unk_96_purchased_album_group",
-            "96..100",
-            hdr.unk_96_purchased_album_group,
-        );
-        self.trackers
-            .bytes("itma", "unk_100_108", "100..108", &hdr.unk_100_108);
-        self.trackers
-            .u32("itma", "unk_112", "112..116", hdr.unk_112);
-        self.trackers
-            .bytes("itma", "unk_118_148", "118..148", &hdr.unk_118_148);
-        self.trackers
-            .u32("itma", "unk_156", "156..160", hdr.unk_156);
-        self.trackers
-            .bytes("itma", "unk_162_168", "162..168", &hdr.unk_162_168);
-        self.trackers
-            .bytes("itma", "unk_192_220", "192..220", &hdr.unk_192_220);
-        self.trackers.u32(
-            "itma",
-            "unk_244_shared_val",
-            "244..248",
-            hdr.unk_244_shared_val,
-        );
-        self.trackers
-            .u32("itma", "unk_248", "248..252", hdr.unk_248);
-        self.trackers
-            .u16("itma", "unk_252_254", "252..254", hdr.unk_252_254);
-        self.trackers
-            .u64("itma", "unk_312_320", "312..320", hdr.unk_312_320);
-        self.trackers
-            .u32("itma", "unk_328", "328..332", hdr.unk_328);
-        self.trackers
-            .u32("itma", "unk_332", "332..336", hdr.unk_332);
-        self.trackers
-            .u32("itma", "unk_340", "340..344", hdr.unk_340);
-        self.trackers
-            .bytes("itma", "unk_356_376", "356..376", &hdr.unk_356_376);
-    }
-
-    fn collect_track_numerics(&mut self, hdr: &TrackItemHeader, num: &TrackNumerics) {
-        self.trackers
-            .u32("TrackNumerics", "unk_16", "16..20", num.unk_16);
-        self.trackers
-            .bytes("TrackNumerics", "unk_20_flags", "20..24", &num.unk_20_flags);
-        self.trackers
-            .bytes("TrackNumerics", "unk_24_27", "24..27", &num.unk_24_27);
+    fn record_match_cat_tuple(&mut self, hdr: &TrackItemHeader, num: &TrackNumerics) {
         self.trackers.bytes(
             "TrackNumerics",
             "match_cat_tuple(sub,cloud,32,33,34,35)",
@@ -427,152 +212,12 @@ impl UnknownsCollector {
                 num.is_itunes_matched[0],
                 num.is_itunes_matched[1],
                 num.is_apple_music_catalog,
-                num.unk_35_60[0],
+                num.unk_35_60.first().copied().unwrap_or_default(),
             ],
         );
-        self.trackers
-            .bytes("TrackNumerics", "unk_35_60", "35..60", &num.unk_35_60);
-        self.trackers.u32(
-            "TrackNumerics",
-            "unk_68_file_type",
-            "68..72",
-            num.unk_68_file_type,
-        );
-        self.trackers
-            .bytes("TrackNumerics", "unk_96_108", "96..108", &num.unk_96_108);
-        self.trackers
-            .u32("TrackNumerics", "unk_152", "152..156", num.unk_152);
-        self.trackers
-            .bytes("TrackNumerics", "unk_176_200", "176..200", &num.unk_176_200);
-        self.trackers.u32(
-            "TrackNumerics",
-            "unk_200_shared_val",
-            "200..204",
-            num.unk_200_shared_val,
-        );
-        self.trackers
-            .u32("TrackNumerics", "unk_204", "204..208", num.unk_204);
-        self.trackers
-            .bytes("TrackNumerics", "unk_216_256", "216..256", &num.unk_216_256);
-        self.trackers
-            .u32("TrackNumerics", "unk_268_272", "268..272", num.unk_268_272);
-        self.trackers.u32(
-            "TrackNumerics",
-            "unk_280_shared_val",
-            "280..284",
-            num.unk_280_shared_val,
-        );
-        self.trackers
-            .u32("TrackNumerics", "unk_284_288", "284..288", num.unk_284_288);
-        self.trackers
-            .u32("TrackNumerics", "unk_300", "300..304", num.unk_300);
-        self.trackers
-            .u32("TrackNumerics", "unk_316_320", "316..320", num.unk_316_320);
-        self.trackers
-            .u32("TrackNumerics", "unk_336_340", "336..340", num.unk_336_340);
-        self.trackers
-            .u32("TrackNumerics", "unk_360", "360..364", num.unk_360);
     }
 
-    fn collect_track_plays_skips(&mut self, ps: &TrackPlaysSkips) {
-        self.trackers
-            .u32("TrackPlaysSkips", "unk_24", "24..28", ps.unk_24);
-        self.trackers
-            .u32("TrackPlaysSkips", "unk_40", "40..44", ps.unk_40);
-        self.trackers
-            .bytes("TrackPlaysSkips", "unk_44_52", "44..52", &ps.unk_44_52);
-    }
-
-    fn collect_video_info(&mut self, vid: &VideoInfo) {
-        self.trackers.u32("VideoInfo", "unk_8", "8..12", vid.unk_8);
-        self.trackers
-            .u32("VideoInfo", "unk_16", "16..20", vid.unk_16);
-        self.trackers
-            .u32("VideoInfo", "unk_20", "20..24", vid.unk_20);
-        self.trackers
-            .u32("VideoInfo", "unk_24", "24..28", vid.unk_24);
-        self.trackers
-            .u32("VideoInfo", "unk_28", "28..32", vid.unk_28);
-        self.trackers
-            .u32("VideoInfo", "unk_32", "32..36", vid.unk_32);
-        self.trackers
-            .u32("VideoInfo", "unk_36", "36..40", vid.unk_36);
-        self.trackers
-            .u32("VideoInfo", "unk_44", "44..48", vid.unk_44);
-        self.trackers
-            .u32("VideoInfo", "unk_48", "48..52", vid.unk_48);
-        self.trackers
-            .bytes("VideoInfo", "unk_56_84", "56..84", &vid.unk_56_84);
-    }
-
-    fn collect_playlists(&mut self, playlist_list: &PlaylistListSection) {
-        self.trackers.bytes(
-            "lPma",
-            "unk_12_end",
-            "12..92",
-            &playlist_list.header.unk_12_end,
-        );
-        for lpma in &playlist_list.playlists {
-            self.collect_lpma_header(lpma);
-            self.collect_playlist_bomas(lpma);
-        }
-    }
-
-    fn collect_lpma_header(&mut self, lpma: &PlaylistItem) {
-        let hdr = &lpma.header;
-        if self.first_lpma_gc.is_none() {
-            self.first_lpma_gc = Some(hdr.global_counter);
-        }
-        self.trackers
-            .bytes("lpma", "unk_20_22", "20..22", &hdr.unk_20_22);
-        self.trackers
-            .bytes("lpma", "unk_38_44", "38..44", &hdr.unk_38_44);
-        self.trackers.u8("lpma", "unk_45", "45..46", hdr.unk_45);
-        self.trackers
-            .u16("lpma", "unk_46_smart_flag", "46..48", hdr.unk_46_smart_flag);
-        self.trackers.bytes(
-            "lpma",
-            "unk_48_folder_flag",
-            "48..50",
-            &hdr.unk_48_folder_flag,
-        );
-        self.trackers
-            .bytes("lpma", "unk_58_70", "58..70", &hdr.unk_58_70);
-        self.trackers
-            .bytes("lpma", "unk_82_138", "82..138", &hdr.unk_82_138);
-        self.trackers
-            .bytes("lpma", "unk_142_174", "142..174", &hdr.unk_142_174);
-        self.trackers
-            .bytes("lpma", "unk_186_flags", "186..190", &hdr.unk_186_flags);
-        self.trackers
-            .u32("lpma", "unk_192", "192..196", hdr.unk_192);
-        self.trackers
-            .bytes("lpma", "unk_204_214", "204..214", &hdr.unk_204_214);
-        self.trackers.u8("lpma", "unk_222", "222..223", hdr.unk_222);
-        self.trackers
-            .bytes("lpma", "unk_225_256", "225..256", &hdr.unk_225_256);
-        self.trackers
-            .bytes("lpma", "unk_260_262", "260..262", &hdr.unk_260_262);
-        self.trackers.u8("lpma", "unk_279", "279..280", hdr.unk_279);
-        self.trackers
-            .bytes("lpma", "unk_288_296", "288..296", &hdr.unk_288_296);
-        self.trackers
-            .u32("lpma", "unk_312", "312..316", hdr.unk_312);
-        if let Some(bytes) = &hdr.unk_328_340 {
-            self.trackers
-                .bytes("lpma", "unk_328_340", "328..340", bytes);
-        }
-        if let Some(val) = hdr.unk_348_356 {
-            self.trackers.u64("lpma", "unk_348_356", "348..356", val);
-        }
-        if let Some(val) = hdr.unk_360_368 {
-            self.trackers.u64("lpma", "unk_360_368", "360..368", val);
-        }
-        self.trackers
-            .bytes("lpma", "unk_tail", "368..end", &hdr.unk_tail);
-    }
-
-    fn collect_playlist_bomas(&mut self, lpma: &PlaylistItem) {
+    fn check_playlist_bomas(&mut self, lpma: &PlaylistItem) {
         for boma in &lpma.bomas {
             self.record_boma("lpma", boma);
             if let BomaPayload::PlaylistItem(ipfa) = &boma.payload {
@@ -583,7 +228,7 @@ impl UnknownsCollector {
                     .get(&ipfa.track_persistent_id)
                 {
                     self.matched_track_persistent_id += 1;
-                    if ipfa.unk_40_counter == itma_gc {
+                    if *ipfa.unk_40_counter == itma_gc {
                         self.matched_itma_global_counter += 1;
                     } else if self.mismatched_examples.len() < 10 {
                         self.mismatched_examples.push(format!(
@@ -592,10 +237,6 @@ impl UnknownsCollector {
                         ));
                     }
                 }
-                self.trackers
-                    .bytes("ipfa", "unk_28_40", "28..40", &ipfa.unk_28_40);
-                self.trackers
-                    .bytes("ipfa", "unk_52_end", "52..68", &ipfa.unk_52_end);
             } else if let BomaPayload::PlaylistItemCompact(ipfa) = &boma.payload {
                 self.total_ipfa_items += 1;
                 if self
@@ -604,24 +245,6 @@ impl UnknownsCollector {
                 {
                     self.matched_track_persistent_id += 1;
                 }
-                self.trackers
-                    .bytes("IPfa", "unk_24_end", "24..32", &ipfa.unk_24_end);
-            }
-        }
-    }
-
-    fn collect_social_profiles(&mut self, lsma: &SocialProfileListSection) {
-        self.trackers
-            .bytes("Lsma", "unk_12_end", "12..92", &lsma.header.unk_12_end);
-        for isma in &lsma.profiles {
-            let hdr = &isma.header;
-            self.trackers
-                .u64("isma", "unk_24_32", "24..32", hdr.unk_24_32);
-            self.trackers.u32("isma", "unk_52", "52..56", hdr.unk_52);
-            self.trackers
-                .bytes("isma", "unk_64_end", "64..136", &hdr.unk_64_end);
-            for boma in &isma.bomas {
-                self.record_boma("isma", boma);
             }
         }
     }
@@ -654,26 +277,56 @@ impl UnknownsCollector {
 /// and verifies structural invariants (such as `ipfa` offset 40 == `itma` `global_counter`).
 pub(crate) fn analyze_unknowns(raw: &RawLibraryFile) -> UnknownsReport {
     let mut collector = UnknownsCollector::default();
-    collector.collect_hfma("hfma(outer)", &raw.outer_header);
+    raw.visit_unknowns("", &mut collector.trackers);
     collector.index_tracks(raw);
 
     for hsma in &raw.sections {
-        collector
-            .trackers
-            .bytes("hsma", "unk_24_end", "24..56", &hsma.header.unk_24_end);
-
         match &hsma.child {
-            HsmaChild::InnerHfma(inner) => collector.collect_hfma("hfma(inner)", inner),
-            HsmaChild::LibraryMaster(plma) => collector.collect_plma(plma),
-            HsmaChild::AlbumList(lama) => collector.collect_albums(lama),
-            HsmaChild::ArtistList(artist_list) => collector.collect_artists(artist_list),
-            HsmaChild::TrackList(ltma) => collector.collect_tracks(ltma),
-            HsmaChild::PlaylistList(playlist_list) => collector.collect_playlists(playlist_list),
-            HsmaChild::SocialProfileList(lsma) => collector.collect_social_profiles(lsma),
-            HsmaChild::Padding(lpma_pad) => {
-                collector
-                    .trackers
-                    .bytes("LPma", "raw_bytes", "8..end", &lpma_pad.raw_bytes);
+            HsmaChild::LibraryMaster(plma) => {
+                for boma in &plma.bomas {
+                    collector.record_boma("plma", boma);
+                }
+            }
+            HsmaChild::AlbumList(lama) => {
+                collector.album_count = lama.albums.len();
+                for album in &lama.albums {
+                    for boma in &album.bomas {
+                        collector.record_boma("iama", boma);
+                    }
+                }
+            }
+            HsmaChild::ArtistList(artist_list) => {
+                collector.artist_count = artist_list.artists.len();
+                for artist in &artist_list.artists {
+                    for boma in &artist.bomas {
+                        collector.record_boma("iAma", boma);
+                    }
+                }
+            }
+            HsmaChild::TrackList(ltma) => {
+                for itma in &ltma.tracks {
+                    for boma in &itma.bomas {
+                        collector.record_boma("itma", boma);
+                        if let BomaPayload::TrackNumerics(num) = &boma.payload {
+                            collector.record_match_cat_tuple(&itma.header, num);
+                        }
+                    }
+                }
+            }
+            HsmaChild::PlaylistList(playlist_list) => {
+                for lpma in &playlist_list.playlists {
+                    if collector.first_lpma_gc.is_none() {
+                        collector.first_lpma_gc = Some(lpma.header.global_counter);
+                    }
+                    collector.check_playlist_bomas(lpma);
+                }
+            }
+            HsmaChild::SocialProfileList(lsma) => {
+                for isma in &lsma.profiles {
+                    for boma in &isma.bomas {
+                        collector.record_boma("isma", boma);
+                    }
+                }
             }
             HsmaChild::Unknown {
                 subtype,
@@ -686,7 +339,7 @@ pub(crate) fn analyze_unknowns(raw: &RawLibraryFile) -> UnknownsReport {
                     raw_bytes.len(),
                 ));
             }
-            HsmaChild::Skipped { .. } | _ => {}
+            HsmaChild::InnerHfma(_) | HsmaChild::Padding(_) | HsmaChild::Skipped { .. } | _ => {}
         }
     }
 
@@ -703,5 +356,148 @@ fn record_boma_stats(
     *subtype_counts.entry(key.clone()).or_insert(0) += 1;
     if matches!(boma.payload, BomaPayload::Unknown { .. }) {
         *unknown_subtypes.entry(key).or_insert(0) += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use musicdb::sections::RawLibraryFile;
+
+    fn make_boma(subtype: u32, unk_16: &[u8], payload: &[u8]) -> Vec<u8> {
+        let header_size = u32::try_from(16 + unk_16.len()).expect("header_size");
+        let total_size = u32::try_from(16 + unk_16.len() + payload.len()).expect("total_size");
+        let mut out = Vec::with_capacity(total_size as usize);
+        out.extend_from_slice(b"boma");
+        out.extend_from_slice(&header_size.to_le_bytes());
+        out.extend_from_slice(&total_size.to_le_bytes());
+        out.extend_from_slice(&subtype.to_le_bytes());
+        out.extend_from_slice(unk_16);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn wrap_hsma(subtype: u32, child: &[u8]) -> Vec<u8> {
+        let total = u32::try_from(56 + child.len()).expect("hsma total");
+        let mut out = vec![0u8; 56];
+        out[0..4].copy_from_slice(b"hsma");
+        out[4..8].copy_from_slice(&56u32.to_le_bytes());
+        out[8..12].copy_from_slice(&total.to_le_bytes());
+        out[12..16].copy_from_slice(&subtype.to_le_bytes());
+        out.extend_from_slice(child);
+        out
+    }
+
+    fn make_slst_be(unk_4: u32, rules_bytes: &[u8], rule_count: u32) -> Vec<u8> {
+        let mut out = vec![0u8; 136];
+        out[0..4].copy_from_slice(b"SLst");
+        out[4..8].copy_from_slice(&unk_4.to_be_bytes());
+        out[8..12].copy_from_slice(&rule_count.to_be_bytes());
+        out.extend_from_slice(rules_bytes);
+        out
+    }
+
+    fn make_smart_rule_be(field_id: u32, unk_8: u32, child: &[u8]) -> Vec<u8> {
+        let mut out = vec![0u8; 56];
+        out[0..4].copy_from_slice(&field_id.to_be_bytes());
+        out[8..12].copy_from_slice(&unk_8.to_be_bytes());
+        let child_size = u32::try_from(child.len()).expect("child_size");
+        out[52..56].copy_from_slice(&child_size.to_be_bytes());
+        out.extend_from_slice(child);
+        out
+    }
+
+    #[test]
+    fn analyze_unknowns_reports_previously_missed_sections() {
+        let mut boma_str_payload = vec![0u8; 18];
+        boma_str_payload[0..4].copy_from_slice(&2u32.to_le_bytes());
+        boma_str_payload[4..8].copy_from_slice(&2u32.to_le_bytes());
+        boma_str_payload[12..16].copy_from_slice(&1u32.to_le_bytes());
+        boma_str_payload[16..18].copy_from_slice(b"hi");
+        let boma_str = make_boma(0x0002, &[0xBB, 0, 0, 0], &boma_str_payload);
+
+        let mut first_sub_buf = vec![0u8; 20];
+        first_sub_buf[0..4].copy_from_slice(&1u32.to_le_bytes());
+        let first_sub_boma = make_boma(0x01F6, &[0; 4], &first_sub_buf);
+
+        let mut second_sub_buf = vec![0u8; 44];
+        second_sub_buf[0..4].copy_from_slice(&1u32.to_le_bytes());
+        second_sub_buf[24] = 2;
+        let second_sub_boma = make_boma(0x01FF, &[0; 4], &second_sub_buf);
+
+        let mut plma = vec![0u8; 160];
+        plma[0..4].copy_from_slice(b"plma");
+        plma[4..8].copy_from_slice(&160u32.to_le_bytes());
+        plma[8..12].copy_from_slice(&3u32.to_le_bytes());
+        plma.extend_from_slice(&boma_str);
+        plma.extend_from_slice(&first_sub_boma);
+        plma.extend_from_slice(&second_sub_boma);
+        let hsma_plma = wrap_hsma(6, &plma);
+
+        let mut smart_opts = vec![0u8; 112];
+        smart_opts[15] = 1;
+        let boma_opts = make_boma(0x00CA, &[0; 4], &smart_opts);
+
+        let mut args = vec![0u8; 68];
+        args[64..68].copy_from_slice(&1u32.to_be_bytes());
+        let inner_rule = make_smart_rule_be(2, 0, &args);
+        let inner_slst = make_slst_be(2, &inner_rule, 1);
+        let outer_rule = make_smart_rule_be(0, 1, &inner_slst);
+        let outer_slst = make_slst_be(1, &outer_rule, 1);
+        let boma_slst = make_boma(0x00C9, &[0; 4], &outer_slst);
+
+        let mut playlist_item_buf = vec![0u8; 324];
+        playlist_item_buf[0..4].copy_from_slice(b"lpma");
+        playlist_item_buf[4..8].copy_from_slice(&324u32.to_le_bytes());
+        let lpma_total =
+            u32::try_from(324 + boma_opts.len() + boma_slst.len()).expect("lpma total");
+        playlist_item_buf[8..12].copy_from_slice(&lpma_total.to_le_bytes());
+        playlist_item_buf[12..16].copy_from_slice(&2u32.to_le_bytes());
+        playlist_item_buf.extend_from_slice(&boma_opts);
+        playlist_item_buf.extend_from_slice(&boma_slst);
+
+        let mut playlist_list_buf = vec![0u8; 92];
+        playlist_list_buf[0..4].copy_from_slice(b"lPma");
+        playlist_list_buf[4..8].copy_from_slice(&92u32.to_le_bytes());
+        playlist_list_buf[8..12].copy_from_slice(&1u32.to_le_bytes());
+        playlist_list_buf.extend_from_slice(&playlist_item_buf);
+        let hsma_lpma = wrap_hsma(2, &playlist_list_buf);
+
+        let mut file_bytes = vec![0u8; 164];
+        file_bytes[0..4].copy_from_slice(b"hfma");
+        file_bytes[4..8].copy_from_slice(&164u32.to_le_bytes());
+        let file_total =
+            u32::try_from(164 + hsma_plma.len() + hsma_lpma.len()).expect("file total");
+        file_bytes[8..12].copy_from_slice(&file_total.to_le_bytes());
+        file_bytes[16..20].copy_from_slice(&2u32.to_le_bytes());
+        file_bytes[160] = 0xAA;
+        file_bytes.extend_from_slice(&hsma_plma);
+        file_bytes.extend_from_slice(&hsma_lpma);
+
+        let raw = RawLibraryFile::from_raw_bytes(&file_bytes).expect("parse synthetic file");
+        let report = analyze_unknowns(&raw);
+        let keys: Vec<(&str, &str)> = report
+            .nonzero_unknown_fields
+            .iter()
+            .map(|f| (f.section.as_str(), f.field_name.as_str()))
+            .collect();
+
+        for expected in [
+            ("hfma(outer)", "extra_bytes"),
+            ("plma::boma", "unk_16_end"),
+            ("boma::str", "unk_12"),
+            ("plma::0x01F6", "unk_0"),
+            ("plma::0x01FF", "unk_0"),
+            ("plma::0x01FF", "unk_24_44"),
+            ("SmartPlaylistOptions", "unk_15"),
+            ("SLst", "unk_4"),
+            ("SmartPlaylistRule", "unk_8"),
+            ("SmartPlaylistRuleArguments", "unk_64"),
+        ] {
+            assert!(
+                keys.contains(&expected),
+                "expected {expected:?} in nonzero_unknown_fields, got {keys:?}"
+            );
+        }
     }
 }

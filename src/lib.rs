@@ -54,12 +54,12 @@ mod tests {
             header_size: 20,
             total_size,
             subtype,
-            unk_16_end: vec![0; 4],
+            unk_16_end: Unknown(vec![0; 4]),
             payload: BomaPayload::StringSection(BomaStringSection {
                 encoding: 1,
                 string_byte_len,
                 parent_subtype_counter: 1,
-                unk_12: 0,
+                unk_12: Unknown(0),
                 text: text.to_string(),
                 raw_string_bytes,
             }),
@@ -74,7 +74,7 @@ mod tests {
                 total_size: 0,
                 subtype,
                 total_size_64: 0,
-                unk_24_end: vec![0; 32],
+                unk_24_end: Unknown(vec![0; 32]),
             },
             child,
         };
@@ -86,7 +86,7 @@ mod tests {
                 total_size: 0,
                 subtype,
                 total_size_64: total_bytes,
-                unk_24_end: vec![0; 32],
+                unk_24_end: Unknown(vec![0; 32]),
             },
             child: dummy.child,
         }
@@ -170,8 +170,8 @@ mod tests {
             version_bytes,
             library_persistent_id: 0xABCD_0123_4567_89EF,
             musicdb_file_type: 9,
-            unk_60: 20,
-            unk_64_flags: [2, 1, 1, 0],
+            unk_60: Unknown(20),
+            unk_64_flags: Unknown([2, 1, 1, 0]),
             track_count: 1,
             playlist_count: 1,
             album_count: 1,
@@ -180,13 +180,13 @@ mod tests {
             timezone_offset_seconds: -10_800,
             apple_store_account_id: 0,
             date_modified: 3_800_000_000,
-            unk_104: 1,
+            unk_104: Unknown(1),
             itunes_library_persistent_id: 0xABCD_0123_4567_89EF,
-            unk_116: [0x64, 0, 0, 0],
+            unk_116: Unknown([0x64, 0, 0, 0]),
             revision_hash: 0x1122_3344_5566_7788,
             file_size_mirror: 0,
-            unk_132_160: [0; 28],
-            extra_bytes: Vec::new(),
+            unk_132_160: Unknown([0; 28]),
+            extra_bytes: Unknown(Vec::new()),
         };
 
         let mut inner_hfma = outer_header.clone();
@@ -203,24 +203,25 @@ mod tests {
                 total_size: 140 + album_boma.total_size,
                 boma_count: 1,
                 album_persistent_id: 0xAA00_0000_0000_0001,
-                unk_24: 2,
+                unk_24: Unknown(2),
                 is_compilation: 0,
-                unk_26_28: [0, 1],
-                unk_28: 1,
+                playlist_only: 0,
+                unk_27: Unknown(1),
+                unk_28: Unknown(1),
                 first_track_persistent_id: 0xDD00_0000_0000_0004,
                 star_rating: 80,
                 star_rating_inheritance: 1,
                 suggestion_flag: 2,
-                unk_44_64: [0; 20],
+                unk_44_64: Unknown([0; 20]),
                 album_persistent_id_2: 0xAA00_0000_0000_0001,
-                unk_72_96: [0; 24],
+                unk_72_96: Unknown([0; 24]),
                 date_suggestion_flag_modified: 3_800_000_000,
                 date_last_played: 3_800_000_000,
                 apple_music_store_album_id: Some(1_440_000_001),
                 apple_music_store_album_id_2: Some(1_440_000_001),
                 date_cloud_synced: Some(3_800_000_000),
                 date_released: Some(3_700_000_000),
-                unk_tail: vec![0; 12],
+                unk_tail: Unknown(vec![0; 12]),
             },
             bomas: vec![album_boma],
         };
@@ -228,7 +229,7 @@ mod tests {
             header: AlbumListHeader {
                 header_size: 48,
                 album_count: 1,
-                unk_12_end: vec![0; 36],
+                unk_12_end: Unknown(vec![0; 36]),
             },
             albums: vec![album_item],
         };
@@ -240,23 +241,23 @@ mod tests {
                 total_size: 132 + artist_boma.total_size,
                 boma_count: 1,
                 artist_persistent_id: 0xBB00_0000_0000_0002,
-                unk_24: 2,
-                unk_28: 1,
-                unk_32_52: [0; 20],
+                unk_24: Unknown(2),
+                unk_28: Unknown(1),
+                unk_32_52: Unknown([0; 20]),
                 apple_music_store_artist_id: 900_001,
                 date_suggestion_flag_modified: 0,
                 artwork_uuid: [0x11; 16],
                 artist_persistent_id_2: 0xBB00_0000_0000_0002,
-                unk_88_96: [0; 8],
+                unk_88_96: Unknown([0; 8]),
                 artwork_source_kind: 45,
-                unk_100: 5,
+                unk_100: Unknown(5),
                 suggestion_flag: 2,
-                unk_103: 1,
+                unk_103: Unknown(1),
                 artwork_size_kind: 1,
                 artwork_image_format: 1,
                 apple_music_store_artist_id_2: 900_001,
                 date_cloud_synced: Some(3_800_000_000),
-                unk_tail: vec![0; 8],
+                unk_tail: Unknown(vec![0; 8]),
             },
             bomas: vec![artist_boma],
         };
@@ -264,7 +265,7 @@ mod tests {
             header: ArtistListHeader {
                 header_size: 100,
                 artist_count: 1,
-                unk_12_end: vec![0; 88],
+                unk_12_end: Unknown(vec![0; 88]),
             },
             artists: vec![artist_item],
         };
@@ -273,17 +274,17 @@ mod tests {
             global_counter: 10,
             subrecord_kind: 1,
             track_data_id: 0x9000_0001,
-            unk_16: 1,
-            unk_20_flags: [0, 1, 1, 0],
-            unk_24_27: [0; 3],
+            unk_16: Unknown::new(1),
+            unk_20_flags: Unknown::new([0, 1, 1, 0]),
+            unk_24_27: Unknown::new([0; 3]),
             is_vbr: 0,
             is_local_subrecord: 1,
             is_itunes_matched: [0, 0],
             is_apple_music_catalog: 0,
-            unk_35_60: [0; 25],
+            unk_35_60: Unknown::new([0; 25]),
             sample_rate: 44100.0,
             file_type_fourcc: 0x4D34_4120, // "M4A "
-            unk_68_file_type: 0,
+            unk_68_file_type: Unknown::new(0),
             file_folder_count: 5,
             library_folder_count: 1,
             artwork_count: 1,
@@ -293,7 +294,7 @@ mod tests {
             artwork_total_size_bytes: 120_000,
             bit_rate: 256,
             date_added: 3_800_000_000,
-            unk_96_108: [0; 12],
+            unk_96_108: Unknown::new([0; 12]),
             gapless_encoder_delay: 2112,
             gapless_encoder_padding: 576,
             gapless_heuristic_info: 0,
@@ -305,34 +306,34 @@ mod tests {
             date_released: 3_700_000_000,
             cloud_codec_kind: 0,
             codec_fourcc: 0,
-            unk_152: 0,
+            unk_152: Unknown::new(0),
             duration_ms: 245_000,
             apple_music_store_album_id: 0,
             apple_music_store_artist_id: 0,
-            unk_176_200: [0; 24],
-            unk_200_shared_val: 0,
-            unk_204: 0,
+            unk_176_200: Unknown::new([0; 24]),
+            unk_200_shared_val: Unknown::new(0),
+            unk_204: Unknown::new(0),
             apple_music_store_album_artist_id: 0,
-            unk_216_256: [0; 40],
+            unk_216_256: Unknown::new([0; 40]),
             gapless_total_samples: 10_804_500,
             store_genre_id: 21,
-            unk_268_272: 0,
+            unk_268_272: Unknown::new(0),
             gapless_last_eight_frames_offset: 0,
-            unk_280_shared_val: 0,
-            unk_284_288: 0,
+            unk_280_shared_val: Unknown::new(0),
+            unk_284_288: Unknown::new(0),
             cloud_saga_id_1: 0,
             file_size: 8_123_456,
-            unk_300: 0,
+            unk_300: Unknown::new(0),
             store_track_adam_id: 0,
             storefront_id: 143_441,
-            unk_316_320: 0,
+            unk_316_320: Unknown::new(0),
             store_track_adam_id_2: 0,
             cloud_saga_id_2: 0,
-            unk_336_340: 0,
+            unk_336_340: Unknown::new(0),
             store_track_adam_id_3: 0,
             store_track_adam_id_4: 0,
             date_cloud_synced: 2,
-            unk_360: 0,
+            unk_360: Unknown::new(0),
         };
         let mut num_cloud = num_local.clone();
         num_cloud.global_counter = 11;
@@ -350,33 +351,33 @@ mod tests {
                 header_size: 20,
                 total_size: 20 + 364,
                 subtype: 0x0001,
-                unk_16_end: vec![0; 4],
+                unk_16_end: Unknown::new(vec![0; 4]),
                 payload: BomaPayload::TrackNumerics(Box::new(num_local)),
             },
             BomaSection {
                 header_size: 20,
                 total_size: 20 + 364,
                 subtype: 0x0001,
-                unk_16_end: vec![0; 4],
+                unk_16_end: Unknown::new(vec![0; 4]),
                 payload: BomaPayload::TrackNumerics(Box::new(num_cloud)),
             },
             BomaSection {
                 header_size: 20,
                 total_size: 20 + 52,
                 subtype: 0x0017,
-                unk_16_end: vec![0; 4],
+                unk_16_end: Unknown::new(vec![0; 4]),
                 payload: BomaPayload::TrackPlaysSkips(TrackPlaysSkips {
                     track_persistent_id: 0xDD00_0000_0000_0004,
                     date_last_played: 3_800_000_000,
                     play_count: 12,
                     true_play_count: 15,
                     date_first_played_utc: 3_790_000_000,
-                    unk_24: 0,
+                    unk_24: Unknown::new(0),
                     date_last_skipped: 0,
                     skip_count: 1,
                     true_skip_count: 1,
-                    unk_40: 0,
-                    unk_44_52: [0; 8],
+                    unk_40: Unknown::new(0),
+                    unk_44_52: Unknown::new([0; 8]),
                 }),
             },
             make_utf16le_boma(0x0002, "Synthetic Song"),
@@ -393,64 +394,64 @@ mod tests {
                 boma_count: u32::try_from(track_bomas.len()).unwrap(),
                 track_persistent_id: 0xDD00_0000_0000_0004,
                 global_counter: 9,
-                unk_28_30: [0; 2],
+                unk_28_30: Unknown::new([0; 2]),
                 checkbox_skip_when_shuffling: 0,
-                unk_31_played_flag: 1,
-                unk_32_38: [0; 6],
+                unk_31_played_flag: Unknown::new(1),
+                unk_32_38: Unknown::new([0; 6]),
                 checkbox_album_is_compilation: 0,
                 playlist_only: 0,
-                unk_40_42: [0; 2],
+                unk_40_42: Unknown::new([0; 2]),
                 checkbox_disabled: 0,
-                unk_43: 0,
+                unk_43: Unknown::new(0),
                 has_local_custom_lyrics: 0,
-                unk_45: 0,
+                unk_45: Unknown::new(0),
                 has_unsynced_local_changes: 0,
-                unk_47_49: [0; 2],
+                unk_47_49: Unknown::new([0; 2]),
                 checkbox_part_of_gapless_album: 1,
                 checkbox_remember_playback_position: 0,
                 checkbox_show_composer_in_all_views: 0,
                 checkbox_use_work_and_movement: 0,
                 has_work_and_movement_active: 0,
-                unk_54: 0,
+                unk_54: Unknown::new(0),
                 has_playback_or_bounds_activity: 1,
-                unk_56: 0,
+                unk_56: Unknown::new(0),
                 downloaded_status: 1,
                 cloud_status: 8,
                 content_rating: 0,
-                unk_60_62: [0; 2],
+                unk_60_62: Unknown::new([0; 2]),
                 suggestion_flag: 0x0102,
-                unk_64_store_flag: 1,
+                unk_64_store_flag: Unknown::new(1),
                 star_rating: 100,
                 auto_sort_flags: [0x81, 0x80, 0x03, 0, 0, 0],
-                unk_72_82: [0; 10],
+                unk_72_82: Unknown::new([0; 10]),
                 bpm: 120,
                 disc_number: 1,
                 movement_total: 0,
                 movement_number: 0,
                 disc_total: 1,
                 volume_adjustment: 0,
-                unk_96_purchased_album_group: 0,
-                unk_100_108: [0; 8],
+                unk_96_purchased_album_group: Unknown::new(0),
+                unk_100_108: Unknown::new([0; 8]),
                 media_kind: 1,
-                unk_112: 1,
+                unk_112: Unknown::new(1),
                 track_total: 8,
-                unk_118_148: [0; 30],
+                unk_118_148: Unknown::new([0; 30]),
                 playback_start_ms: 0,
                 playback_stop_ms: 245_000,
-                unk_156: 0,
+                unk_156: Unknown::new(0),
                 track_number: 1,
-                unk_162_168: [0; 6],
+                unk_162_168: Unknown::new([0; 6]),
                 year: 2026,
                 album_persistent_id: 0xAA00_0000_0000_0001,
                 artist_persistent_id: 0xBB00_0000_0000_0002,
                 apple_music_store_artist_id: 900_001,
-                unk_192_220: [0; 28],
+                unk_192_220: Unknown::new([0; 28]),
                 cloud_saga_id_1: 0,
                 itunes_store_matched_id: 0,
                 cloud_saga_id: 0,
-                unk_244_shared_val: 0,
-                unk_248: 0,
-                unk_252_254: 0,
+                unk_244_shared_val: Unknown::new(0),
+                unk_248: Unknown::new(0),
+                unk_252_254: Unknown::new(0),
                 cloud_sync_state: 2,
                 has_custom_lyrics: 0,
                 artwork_uuid: [0x22; 16],
@@ -463,17 +464,17 @@ mod tests {
                 album_artist_sort_order: 1000,
                 album_artist_or_artist_sort_order: 1000,
                 artwork_source_kind: 12,
-                unk_312_320: 0,
+                unk_312_320: Unknown::new(0),
                 cloud_saga_id_2: 0,
-                unk_328: 3,
-                unk_332: 0,
+                unk_328: Unknown::new(3),
+                unk_332: Unknown::new(0),
                 date_suggestion_flag_modified: 3_800_000_000,
-                unk_340: 0,
+                unk_340: Unknown::new(0),
                 artwork_size_kind: 1,
                 artwork_image_format: 1,
                 date_added_most_recent_track: 0,
-                unk_356_376: [0; 20],
-                extra_bytes: Vec::new(),
+                unk_356_376: Unknown::new([0; 20]),
+                extra_bytes: Unknown::new(Vec::new()),
             },
             bomas: track_bomas,
         };
@@ -481,7 +482,7 @@ mod tests {
             header: TrackListHeader {
                 header_size: 92,
                 track_count: 1,
-                unk_12_end: vec![0; 80],
+                unk_12_end: Unknown::new(vec![0; 80]),
             },
             tracks: vec![track_item],
         };
@@ -723,5 +724,167 @@ mod tests {
         huge_track_count[220..224].copy_from_slice(&92u32.to_le_bytes());
         huge_track_count[224..228].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(RawLibraryFile::from_raw_bytes(&huge_track_count).is_err());
+    }
+
+    struct SpanInvariantChecker {
+        visited: usize,
+    }
+
+    impl crate::sections::unknown::UnknownVisitor for SpanInvariantChecker {
+        fn visit_unknown<T: crate::sections::unknown::UnknownValue>(
+            &mut self,
+            section: &str,
+            field_name: &str,
+            span: crate::sections::unknown::UnknownSpan,
+            _value: &Unknown<T>,
+        ) {
+            self.visited += 1;
+            match span {
+                crate::sections::unknown::UnknownSpan::Fixed { start, end } => {
+                    let expected_len = T::WIRE_LEN
+                        .expect("Fixed span must only be used with fixed-width UnknownValue");
+                    assert_eq!(
+                        end - start,
+                        expected_len,
+                        "span length mismatch for {section}.{field_name}"
+                    );
+                }
+                crate::sections::unknown::UnknownSpan::Tail { start, .. } => {
+                    assert!(
+                        start > 0,
+                        "tail span start should be > 0 for {section}.{field_name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_unknown_span_invariants() {
+        use crate::sections::playlist::{
+            PlaylistItem, PlaylistItemHeader, PlaylistListHeader, PlaylistListSection,
+            PlaylistTrackItem, SmartPlaylistOptions,
+        };
+        use crate::sections::unknown::VisitUnknowns;
+
+        let raw = RawLibraryFile {
+            outer_header: HfmaHeader {
+                header_size: 164,
+                extra_bytes: Unknown::new(vec![0x11, 0x22, 0x33, 0x44]),
+                ..Default::default()
+            },
+            sections: vec![HsmaSection {
+                header: HsmaHeader {
+                    header_size: 56,
+                    ..Default::default()
+                },
+                child: HsmaChild::PlaylistList(PlaylistListSection {
+                    header: PlaylistListHeader {
+                        header_size: 92,
+                        ..Default::default()
+                    },
+                    playlists: vec![PlaylistItem {
+                        header: PlaylistItemHeader {
+                            header_size: 100,
+                            ..Default::default()
+                        },
+                        bomas: vec![
+                            BomaSection {
+                                header_size: 20,
+                                total_size: 20 + 112,
+                                subtype: 0x0064,
+                                unk_16_end: Unknown::new(vec![0xAA, 0xBB, 0xCC, 0xDD]),
+                                payload: BomaPayload::SmartPlaylistOptions(Box::new(
+                                    SmartPlaylistOptions {
+                                        unk_15: Unknown::new(0x42),
+                                        ..Default::default()
+                                    },
+                                )),
+                            },
+                            BomaSection {
+                                header_size: 20,
+                                total_size: 20 + 68,
+                                subtype: 0x00CE,
+                                unk_16_end: Unknown::new(Vec::new()),
+                                payload: BomaPayload::PlaylistItem(PlaylistTrackItem::default()),
+                            },
+                        ],
+                    }],
+                }),
+            }],
+            trailing_bytes: Vec::new(),
+        };
+
+        let mut checker = SpanInvariantChecker { visited: 0 };
+        raw.visit_unknowns("", &mut checker);
+        assert!(checker.visited > 10);
+    }
+
+    #[test]
+    fn test_smart_rule_be_unknown_roundtrip() {
+        use std::io::Cursor;
+
+        use binrw::{BinRead, BinWrite};
+
+        use crate::sections::playlist::{
+            SlstSection, SmartPlaylistRule, SmartPlaylistRuleArguments, SmartRuleChild,
+        };
+        use crate::sections::unknown::{
+            Unknown, UnknownSpan, UnknownValue, UnknownVisitor, VisitUnknowns,
+        };
+
+        struct CountVisitor(usize);
+        impl UnknownVisitor for CountVisitor {
+            fn visit_unknown<T: UnknownValue>(
+                &mut self,
+                _section: &str,
+                _field_name: &str,
+                span: UnknownSpan,
+                _value: &Unknown<T>,
+            ) {
+                self.0 += 1;
+                if let UnknownSpan::Fixed { start, end } = span {
+                    assert_eq!(end - start, T::WIRE_LEN.unwrap());
+                }
+            }
+        }
+
+        let rule = SmartPlaylistRule {
+            field_id: 2,
+            comparison_method: 1,
+            unk_8: Unknown::new(0x1122_3344),
+            unk_12_44: Unknown::new([0x55; 32]),
+            unk_44: Unknown::new(0x6677_8899),
+            unk_48: Unknown::new(0xAABB_CCDD),
+            child_size: 68,
+            child: SmartRuleChild::Arguments(SmartPlaylistRuleArguments {
+                arg_0: 1,
+                arg_1: 10,
+                arg_2: 20,
+                arg_3: 30,
+                arg_4: 40,
+                arg_5: 50,
+                arg_6: 60,
+                arg_7: 70,
+                unk_64: Unknown::new(0xDEAD_BEEF),
+            }),
+        };
+
+        let slst = SlstSection {
+            unk_4: Unknown::new(0x0102_0304),
+            rule_count: 1,
+            conjunction: 0,
+            unk_16_136: Unknown::new([0x07; 120]),
+            rules: vec![rule],
+        };
+
+        let mut buf = Vec::new();
+        slst.write_be(&mut Cursor::new(&mut buf))
+            .expect("write_be SlstSection");
+        let parsed = SlstSection::read_be(&mut Cursor::new(&buf)).expect("read_be SlstSection");
+        assert_eq!(parsed, slst);
+        let mut visitor = CountVisitor(0);
+        parsed.visit_unknowns("slst", &mut visitor);
+        assert_eq!(visitor.0, 7);
     }
 }

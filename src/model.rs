@@ -2855,7 +2855,7 @@ impl From<&TrackItem> for Track {
             album_is_compilation: h.checkbox_album_is_compilation != 0,
             part_of_gapless_album: h.checkbox_part_of_gapless_album != 0,
             playlist_only: h.playlist_only != 0,
-            purchased: h.cloud_sync_state == 3 || h.unk_96_purchased_album_group != 0,
+            purchased: h.cloud_sync_state == 3 || *h.unk_96_purchased_album_group != 0,
             has_custom_lyrics: h.has_custom_lyrics != 0 || h.has_local_custom_lyrics != 0,
             has_local_custom_lyrics: h.has_local_custom_lyrics != 0,
             has_unsynced_local_changes: h.has_unsynced_local_changes != 0,
@@ -3117,7 +3117,7 @@ impl From<&PlaylistItem> for Playlist {
         let mut track_persistent_ids = Vec::new();
 
         let is_master = h.is_master_playlist != 0;
-        let is_folder = h.unk_48_folder_flag[1] != 0;
+        let is_folder = h.is_folder != 0;
         let distinguished_kind =
             u16::from_le_bytes([h.distinguished_kind_bytes[1], h.distinguished_kind_bytes[2]]);
         let system_kind = DistinguishedPlaylistKind::from(distinguished_kind);

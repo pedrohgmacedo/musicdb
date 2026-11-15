@@ -1,7 +1,8 @@
 use binrw::binrw;
 
 use super::boma::BomaSection;
-use super::{read_bounded_vec, read_header_tail};
+use super::read_bounded_vec;
+use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
 
 /// Album list master header (`lama`, typically 48 bytes).
 #[binrw]
@@ -15,8 +16,14 @@ pub struct AlbumListHeader {
     /// Offset 8: Number of `iama` album subsections that follow.
     pub album_count: u32,
     /// Offset 12..48: Unknown / zero padding.
-    #[br(parse_with = read_header_tail, args(header_size, 12, "lama"))]
-    pub unk_12_end: Vec<u8>,
+    #[br(parse_with = read_unknown_tail, args(header_size, 12, "lama"))]
+    pub unk_12_end: Unknown<Vec<u8>>,
+}
+
+impl VisitUnknowns for AlbumListHeader {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        visit_unknowns!(visitor, "lama", [(tail: self.unk_12_end, 12)]);
+    }
 }
 
 /// Complete album list section (`lama`) with all album items (`iama`).
@@ -31,6 +38,15 @@ pub struct AlbumListSection {
     /// All `iama` album records in the library.
     #[br(parse_with = read_bounded_vec, args(header.album_count, 104, "lama.albums"))]
     pub albums: Vec<AlbumItem>,
+}
+
+impl VisitUnknowns for AlbumListSection {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        self.header.visit_unknowns("lama", visitor);
+        for album in &self.albums {
+            album.visit_unknowns("iama", visitor);
+        }
+    }
 }
 
 /// Album item header (`iama`, 140 bytes in modern Apple Music, 104 in Catalina).
@@ -49,13 +65,15 @@ pub struct AlbumItemHeader {
     /// Offset 16..24: Album Persistent ID.
     pub album_persistent_id: u64,
     /// Offset 24: Unknown byte (typically 2).
-    pub unk_24: u8,
+    pub unk_24: Unknown<u8>,
     /// Offset 25: Compilation flag (1 = album is a compilation of songs by various artists, 0 = single artist).
     pub is_compilation: u8,
-    /// Offset 26..28: Byte 26 is the album playlist-only flag (`0` = album is in main library with `first_track_persistent_id != 0`, `1` = album is referenced only by playlist-only tracks with `first_track_persistent_id == 0`); byte 27 is typically `1`.
-    pub unk_26_28: [u8; 2],
+    /// Offset 26: Album playlist-only flag (`0` = album is in main library with `first_track_persistent_id != 0`, `1` = album is referenced only by playlist-only tracks with `first_track_persistent_id == 0`).
+    pub playlist_only: u8,
+    /// Offset 27: Unknown byte (typically `1`).
+    pub unk_27: Unknown<u8>,
     /// Offset 28..32: Unknown (typically 1).
-    pub unk_28: u32,
+    pub unk_28: Unknown<u32>,
     /// Offset 32..40: Persistent ID of the first track in the album (or 0).
     pub first_track_persistent_id: u64,
     /// Offset 40: Star rating (0..=100 in steps of 20).
@@ -65,11 +83,11 @@ pub struct AlbumItemHeader {
     /// Offset 42..44: Suggestion/like flag (0 = none, 1 = removed, 2 = favorite, 3 = suggest less).
     pub suggestion_flag: u16,
     /// Offset 44..64: Unknown 20 bytes (all zeros).
-    pub unk_44_64: [u8; 20],
+    pub unk_44_64: Unknown<[u8; 20]>,
     /// Offset 64..72: Secondary Album Persistent ID (often matches `album_persistent_id` if imported from iTunes, or 0).
     pub album_persistent_id_2: u64,
     /// Offset 72..96: Unknown 24 bytes (all zeros).
-    pub unk_72_96: [u8; 24],
+    pub unk_72_96: Unknown<[u8; 24]>,
     /// Offset 96..100: Suggestion flag modified date (Apple timestamp).
     pub date_suggestion_flag_modified: u32,
     /// Offset 100..104: Most recent last-played date of any track in the album (Apple timestamp).
@@ -87,8 +105,44 @@ pub struct AlbumItemHeader {
     #[br(if(header_size >= 128))]
     pub date_released: Option<u32>,
     /// Remaining bytes up to `header_size` (`128..140` or `128..156`, all zeros).
-    #[br(parse_with = read_header_tail, args(header_size, if header_size >= 128 { 128 } else if header_size >= 124 { 124 } else if header_size >= 120 { 120 } else if header_size >= 112 { 112 } else { 104 }, "iama"))]
-    pub unk_tail: Vec<u8>,
+    #[br(parse_with = read_unknown_tail, args(header_size, AlbumItemHeader::tail_start_offset(header_size), "iama"))]
+    pub unk_tail: Unknown<Vec<u8>>,
+}
+
+impl AlbumItemHeader {
+    /// Returns the minimum byte offset at which `unk_tail` begins for a given `header_size`.
+    #[must_use]
+    pub const fn tail_start_offset(header_size: u32) -> u32 {
+        if header_size >= 128 {
+            128
+        } else if header_size >= 124 {
+            124
+        } else if header_size >= 120 {
+            120
+        } else if header_size >= 112 {
+            112
+        } else {
+            104
+        }
+    }
+}
+
+impl VisitUnknowns for AlbumItemHeader {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        let tail_start = usize::try_from(Self::tail_start_offset(self.header_size)).unwrap_or(104);
+        visit_unknowns!(
+            visitor,
+            "iama",
+            [
+                (self.unk_24, 24),
+                (self.unk_27, 27),
+                (self.unk_28, 28),
+                (self.unk_44_64, 44),
+                (self.unk_72_96, 72),
+                (tail: self.unk_tail, tail_start),
+            ]
+        );
+    }
 }
 
 /// Complete album item section (`iama` header + `boma` children).
@@ -103,4 +157,13 @@ pub struct AlbumItem {
     /// Metadata `boma` children attached to this album.
     #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "iama.bomas"))]
     pub bomas: Vec<BomaSection>,
+}
+
+impl VisitUnknowns for AlbumItem {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        self.header.visit_unknowns("iama", visitor);
+        for boma in &self.bomas {
+            boma.visit_unknowns("iama", visitor);
+        }
+    }
 }

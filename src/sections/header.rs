@@ -2,7 +2,7 @@
 
 use binrw::binrw;
 
-use super::read_header_tail;
+use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
 
 /// Outer and Inner `hfma` (File Header) section (typically 160 bytes).
 #[binrw]
@@ -26,9 +26,9 @@ pub struct HfmaHeader {
     /// Offset 56..60: musicdb file type (e.g. 6 or 7 = Library.musicdb, 2 = Library Preferences.musicdb).
     pub musicdb_file_type: u32,
     /// Offset 60..64: Unknown (typically 20).
-    pub unk_60: u32,
+    pub unk_60: Unknown<u32>,
     /// Offset 64..68: Unknown flags (differs between outer and inner `hfma`).
-    pub unk_64_flags: [u8; 4],
+    pub unk_64_flags: Unknown<[u8; 4]>,
     /// Offset 68..72: Total track count (0 in inner `hfma`).
     pub track_count: u32,
     /// Offset 72..76: Total playlist count (0 in inner `hfma`).
@@ -46,20 +46,20 @@ pub struct HfmaHeader {
     /// Offset 100..104: Library modification date (seconds since 1904-01-01 00:00:00 UTC).
     pub date_modified: u32,
     /// Offset 104..108: Unknown (typically 1 in outer, 0 in inner).
-    pub unk_104: u32,
+    pub unk_104: Unknown<u32>,
     /// Offset 108..116: Original iTunes Library Persistent ID (if imported from iTunes).
     pub itunes_library_persistent_id: u64,
     /// Offset 116..120: Unknown (e.g. 0x00000123 in outer, 0 in inner).
-    pub unk_116: [u8; 4],
+    pub unk_116: Unknown<[u8; 4]>,
     /// Offset 120..128: Library revision hash (updated on every save; shared identically with `Library Preferences.musicdb`).
     pub revision_hash: u64,
     /// Offset 128..132: Secondary copy of `file_size` in format >= 23.1 (0 in older formats and inner `hfma`).
     pub file_size_mirror: u32,
     /// Offset 132..160: Remaining bytes up to 160.
-    pub unk_132_160: [u8; 28],
+    pub unk_132_160: Unknown<[u8; 28]>,
     /// Any extra bytes if `header_size > 160`.
-    #[br(parse_with = read_header_tail, args(header_size, 160, "hfma"))]
-    pub extra_bytes: Vec<u8>,
+    #[br(parse_with = read_unknown_tail, args(header_size, 160, "hfma"))]
+    pub extra_bytes: Unknown<Vec<u8>>,
 }
 
 impl HfmaHeader {
@@ -73,6 +73,24 @@ impl HfmaHeader {
             .unwrap_or(self.version_bytes.len());
         let slice = self.version_bytes.get(..len).unwrap_or(&self.version_bytes);
         String::from_utf8_lossy(slice).into_owned()
+    }
+}
+
+impl VisitUnknowns for HfmaHeader {
+    fn visit_unknowns<V: UnknownVisitor>(&self, section: &str, visitor: &mut V) {
+        let label = if section.is_empty() { "hfma" } else { section };
+        visit_unknowns!(
+            visitor,
+            label,
+            [
+                (self.unk_60, 60),
+                (self.unk_64_flags, 64),
+                (self.unk_104, 104),
+                (self.unk_116, 116),
+                (self.unk_132_160, 132),
+                (tail: self.extra_bytes, 160),
+            ]
+        );
     }
 }
 
@@ -101,8 +119,14 @@ pub struct HsmaHeader {
     /// Offset 16..24: 64-bit total size used in format >= 23 (Apple Music 1.7+) when `total_size == 0` (0 in older formats).
     pub total_size_64: u64,
     /// Offset 24..56: Reserved / unknown bytes (typically all 0).
-    #[br(parse_with = read_header_tail, args(header_size, 24, "hsma"))]
-    pub unk_24_end: Vec<u8>,
+    #[br(parse_with = read_unknown_tail, args(header_size, 24, "hsma"))]
+    pub unk_24_end: Unknown<Vec<u8>>,
+}
+
+impl VisitUnknowns for HsmaHeader {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        visit_unknowns!(visitor, "hsma", [(tail: self.unk_24_end, 24)]);
+    }
 }
 
 impl HsmaHeader {

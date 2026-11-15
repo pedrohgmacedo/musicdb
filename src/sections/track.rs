@@ -1,7 +1,8 @@
 use binrw::binrw;
 
 use super::boma::BomaSection;
-use super::{read_bounded_vec, read_header_tail};
+use super::read_bounded_vec;
+use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
 
 /// Track list master header (`ltma`, typically 92 bytes).
 #[binrw]
@@ -15,8 +16,14 @@ pub struct TrackListHeader {
     /// Offset 8: Number of `itma` track subsections that follow.
     pub track_count: u32,
     /// Offset 12..92: Unknown / zero padding.
-    #[br(parse_with = read_header_tail, args(header_size, 12, "ltma"))]
-    pub unk_12_end: Vec<u8>,
+    #[br(parse_with = read_unknown_tail, args(header_size, 12, "ltma"))]
+    pub unk_12_end: Unknown<Vec<u8>>,
+}
+
+impl VisitUnknowns for TrackListHeader {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        visit_unknowns!(visitor, "ltma", [(tail: self.unk_12_end, 12)]);
+    }
 }
 
 /// Complete track list section (`ltma`) with all track items (`itma`).
@@ -31,6 +38,15 @@ pub struct TrackListSection {
     /// All `itma` track records in the library.
     #[br(parse_with = read_bounded_vec, args(header.track_count, 376, "ltma.tracks"))]
     pub tracks: Vec<TrackItem>,
+}
+
+impl VisitUnknowns for TrackListSection {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        self.header.visit_unknowns("ltma", visitor);
+        for track in &self.tracks {
+            track.visit_unknowns("itma", visitor);
+        }
+    }
 }
 
 /// Track item header (`itma`, typically 376 bytes).
@@ -51,31 +67,31 @@ pub struct TrackItemHeader {
     /// Offset 24..28: Global counter (increments across `itma` and `TrackNumerics` in file order).
     pub global_counter: u32,
     /// Offset 28..30: Unknown 2 bytes.
-    pub unk_28_30: [u8; 2],
+    pub unk_28_30: Unknown<[u8; 2]>,
     /// Offset 30: Checkbox "Skip when shuffling" (0 or 1).
     pub checkbox_skip_when_shuffling: u8,
     /// Offset 31: Unknown boolean flag (changes 0 -> 1 on first play).
-    pub unk_31_played_flag: u8,
+    pub unk_31_played_flag: Unknown<u8>,
     /// Offset 32..38: Unknown 6 bytes (offsets 33, 35 are boolean-like flags).
-    pub unk_32_38: [u8; 6],
+    pub unk_32_38: Unknown<[u8; 6]>,
     /// Offset 38: Checkbox "Album is a compilation of songs by various artists" (0 or 1).
     pub checkbox_album_is_compilation: u8,
     /// Offset 39: Playlist-only / not-in-iCloud-library flag (`<key>Playlist Only</key><true/>` in iTunes XML; 0 = synced to user's iCloud Music Library, 1 = playlist-only or unsynced error).
     pub playlist_only: u8,
     /// Offset 40..42: Unknown 2 bytes.
-    pub unk_40_42: [u8; 2],
+    pub unk_40_42: Unknown<[u8; 2]>,
     /// Offset 42: Checkbox disabled (0 = checked/enabled, 1 = unchecked/disabled).
     pub checkbox_disabled: u8,
     /// Offset 43: Unknown byte (typically 0).
-    pub unk_43: u8,
+    pub unk_43: Unknown<u8>,
     /// Offset 44: Local custom lyrics flag (1 = custom lyrics set locally in Get Info -> Lyrics, 0 = none).
     pub has_local_custom_lyrics: u8,
     /// Offset 45: Unknown byte.
-    pub unk_45: u8,
+    pub unk_45: Unknown<u8>,
     /// Offset 46: Unsynced local metadata changes flag (1 = track metadata/options edited locally and pending iCloud sync, 0 = clean/synced).
     pub has_unsynced_local_changes: u8,
     /// Offset 47..49: Unknown 2 bytes.
-    pub unk_47_49: [u8; 2],
+    pub unk_47_49: Unknown<[u8; 2]>,
     /// Offset 49: Checkbox "Part of a gapless album" (`<key>Part Of Gapless Album</key><true/>` in iTunes XML; 0 or 1).
     pub checkbox_part_of_gapless_album: u8,
     /// Offset 50: Checkbox "Remember playback position" (0 or 1).
@@ -87,11 +103,11 @@ pub struct TrackItemHeader {
     /// Offset 53: Work and movement active flag (1 when work/movement fields are active, 0 otherwise).
     pub has_work_and_movement_active: u8,
     /// Offset 54: Unknown byte.
-    pub unk_54: u8,
+    pub unk_54: Unknown<u8>,
     /// Offset 55: Playback or custom start/stop bounds activity flag (changes 0 -> 1 on first play or when playback start/stop bounds are set).
     pub has_playback_or_bounds_activity: u8,
     /// Offset 56: Unknown byte.
-    pub unk_56: u8,
+    pub unk_56: Unknown<u8>,
     /// Offset 57: Downloaded status (1 = downloaded locally on disk, 3 = in cloud / not downloaded).
     pub downloaded_status: u8,
     /// Offset 58: iCloud Status (`cloud_status`, Smart Playlist field `0x86`: 2 = Matched, 3 = Uploaded, 5 = Error/Ineligible, 8 = Apple Music, 9 = No Longer Available).
@@ -99,17 +115,17 @@ pub struct TrackItemHeader {
     /// Offset 59: Content rating (0 = default, 1 = explicit, 2 = clean, 4 = parental guidance).
     pub content_rating: u8,
     /// Offset 60..62: Unknown 2 bytes.
-    pub unk_60_62: [u8; 2],
+    pub unk_60_62: Unknown<[u8; 2]>,
     /// Offset 62..64: Suggestion/like flag (0 = none, 1 = removed, 2 = favorite/loved, 3 = suggest less/disliked).
     pub suggestion_flag: u16,
     /// Offset 64: Store/catalog ID presence flag (0 = uploaded local track with no catalog ID, 1 = matched/catalog audio track, 5/6 = music video).
-    pub unk_64_store_flag: u8,
+    pub unk_64_store_flag: Unknown<u8>,
     /// Offset 65: Star rating (0..=100 in steps of 20).
     pub star_rating: u8,
     /// Offset 66..72: Sort string mode flags for `[Title, Album, Artist, Album Artist, Composer, _]` (`0x80` = auto-generated sort string, `0x01` = user-overridden custom sort string).
     pub auto_sort_flags: [u8; 6],
     /// Offset 72..82: Unknown 10 bytes (all zeros).
-    pub unk_72_82: [u8; 10],
+    pub unk_72_82: Unknown<[u8; 10]>,
     /// Offset 82..84: Beats per minute (BPM).
     pub bpm: u16,
     /// Offset 84..86: Disc number.
@@ -123,27 +139,27 @@ pub struct TrackItemHeader {
     /// Offset 92..96: Volume adjustment (-255..=255 corresponding to -100%..=100%).
     pub volume_adjustment: i32,
     /// Offset 96..100: Unknown (non-zero for purchased tracks, shared within same album).
-    pub unk_96_purchased_album_group: u32,
+    pub unk_96_purchased_album_group: Unknown<u32>,
     /// Offset 100..108: Unknown 8 bytes.
-    pub unk_100_108: [u8; 8],
+    pub unk_100_108: Unknown<[u8; 8]>,
     /// Offset 108..112: Media kind bitflags (1 = music, 0x10 = PDF/booklet, 0x20 = music video, 0x100000 = voice memo).
     pub media_kind: u32,
     /// Offset 112..116: Unknown (typically 1).
-    pub unk_112: u32,
+    pub unk_112: Unknown<u32>,
     /// Offset 116..118: Total tracks on disc/album.
     pub track_total: u16,
     /// Offset 118..148: Unknown 30 bytes.
-    pub unk_118_148: [u8; 30],
+    pub unk_118_148: Unknown<[u8; 30]>,
     /// Offset 148..152: Playback start position in milliseconds (0 = start of track).
     pub playback_start_ms: u32,
     /// Offset 152..156: Playback stop position in milliseconds (0 = end of track).
     pub playback_stop_ms: u32,
     /// Offset 156..160: Unknown 4 bytes.
-    pub unk_156: u32,
+    pub unk_156: Unknown<u32>,
     /// Offset 160..162: Track number.
     pub track_number: u16,
     /// Offset 162..168: Unknown 6 bytes.
-    pub unk_162_168: [u8; 6],
+    pub unk_162_168: Unknown<[u8; 6]>,
     /// Offset 168..172: Release year.
     pub year: u32,
     /// Offset 172..180: Album Persistent ID (`iama` reference).
@@ -153,7 +169,7 @@ pub struct TrackItemHeader {
     /// Offset 188..192: Apple Music Store Artist ID.
     pub apple_music_store_artist_id: u32,
     /// Offset 192..220: Unknown 28 bytes.
-    pub unk_192_220: [u8; 28],
+    pub unk_192_220: Unknown<[u8; 28]>,
     /// Offset 220..228: iCloud Music Library `sagaId` (or `0xFFFFFFFFFFFFFFFD` = -3 for Apple Music subscription tracks).
     pub cloud_saga_id_1: u64,
     /// Offset 228..236: 64-bit iTunes Store / Match ID (or `0x7FFFFFFF_FFFFFFEF` sentinel on some matched tracks).
@@ -161,11 +177,11 @@ pub struct TrackItemHeader {
     /// Offset 236..244: Primary iCloud Music Library `sagaId` (matches `sagaId=` in `boma 0x0038` redownload-params).
     pub cloud_saga_id: u64,
     /// Offset 244..248: Shared 4-byte value (matches `plma` offset 104).
-    pub unk_244_shared_val: u32,
+    pub unk_244_shared_val: Unknown<u32>,
     /// Offset 248..252: Unknown 4 bytes.
-    pub unk_248: u32,
+    pub unk_248: Unknown<u32>,
     /// Offset 252..254: Unknown 2 bytes (typically 0).
-    pub unk_252_254: u16,
+    pub unk_252_254: Unknown<u16>,
     /// Offset 254: Cloud sync state (2 = synced to iCloud Music Library, 3 = purchased, 0 = unsynced local error).
     pub cloud_sync_state: u8,
     /// Offset 255: Custom lyrics flag (1 = track has custom lyrics / `cloud-lyrics-token` in `boma 0x0036`, 0 = none).
@@ -191,17 +207,17 @@ pub struct TrackItemHeader {
     /// Offset 308..312: Artwork source kind in `artwork.sqlite` (`item_to_artwork.source_kind`; 6 = Local Embedded Artwork, 12 = Apple Music Catalog Artwork, 13 = Cloud Uploaded/Matched Artwork).
     pub artwork_source_kind: u32,
     /// Offset 312..320: Unknown 8 bytes.
-    pub unk_312_320: u64,
+    pub unk_312_320: Unknown<u64>,
     /// Offset 320..328: iCloud Music Library `sagaId` repeated (matches offset 220).
     pub cloud_saga_id_2: u64,
     /// Offset 328..332: Unknown flag (typically 3, 5, 0, 7, 8).
-    pub unk_328: u32,
+    pub unk_328: Unknown<u32>,
     /// Offset 332..336: Unknown 4 bytes.
-    pub unk_332: u32,
+    pub unk_332: Unknown<u32>,
     /// Offset 336..340: Suggestion flag modified date (Apple timestamp).
     pub date_suggestion_flag_modified: u32,
     /// Offset 340..344: Unknown 4 bytes.
-    pub unk_340: u32,
+    pub unk_340: Unknown<u32>,
     /// Offset 344..348: Artwork cache size kind in `artwork.sqlite` (`cache_items.size_kind`; 1 = `_sk1`, 0 = none).
     pub artwork_size_kind: u32,
     /// Offset 348..352: Artwork cached image format in `artwork.sqlite` (`cache_items.extension`; 1 = `jpeg`, 2 = `png`, 0 = none).
@@ -209,10 +225,49 @@ pub struct TrackItemHeader {
     /// Offset 352..356: Date added of the most recently added track (only set on that track, else 0).
     pub date_added_most_recent_track: u32,
     /// Offset 356..376: Unknown 20 bytes.
-    pub unk_356_376: [u8; 20],
+    pub unk_356_376: Unknown<[u8; 20]>,
     /// Any extra bytes if `header_size > 376`.
-    #[br(parse_with = read_header_tail, args(header_size, 376, "itma"))]
-    pub extra_bytes: Vec<u8>,
+    #[br(parse_with = read_unknown_tail, args(header_size, 376, "itma"))]
+    pub extra_bytes: Unknown<Vec<u8>>,
+}
+
+impl VisitUnknowns for TrackItemHeader {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        visit_unknowns!(
+            visitor,
+            "itma",
+            [
+                (self.unk_28_30, 28),
+                (self.unk_31_played_flag, 31),
+                (self.unk_32_38, 32),
+                (self.unk_40_42, 40),
+                (self.unk_43, 43),
+                (self.unk_45, 45),
+                (self.unk_47_49, 47),
+                (self.unk_54, 54),
+                (self.unk_56, 56),
+                (self.unk_60_62, 60),
+                (self.unk_64_store_flag, 64),
+                (self.unk_72_82, 72),
+                (self.unk_96_purchased_album_group, 96),
+                (self.unk_100_108, 100),
+                (self.unk_112, 112),
+                (self.unk_118_148, 118),
+                (self.unk_156, 156),
+                (self.unk_162_168, 162),
+                (self.unk_192_220, 192),
+                (self.unk_244_shared_val, 244),
+                (self.unk_248, 248),
+                (self.unk_252_254, 252),
+                (self.unk_312_320, 312),
+                (self.unk_328, 328),
+                (self.unk_332, 332),
+                (self.unk_340, 340),
+                (self.unk_356_376, 356),
+                (tail: self.extra_bytes, 376),
+            ]
+        );
+    }
 }
 
 /// Complete track item section (`itma` header + `boma` children).
@@ -229,12 +284,21 @@ pub struct TrackItem {
     pub bomas: Vec<BomaSection>,
 }
 
+impl VisitUnknowns for TrackItem {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        self.header.visit_unknowns("itma", visitor);
+        for boma in &self.bomas {
+            boma.visit_unknowns("itma", visitor);
+        }
+    }
+}
+
 /// Payload of `boma` subtype `0x0001` (Track Numerics, 364 bytes).
 /// Note: Offsets here are relative to the start of the `boma` payload (subtract 20 from raw `boma` offsets).
 #[binrw]
 #[brw(little)]
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TrackNumerics {
     /// Offset 0..4: Global counter.
@@ -244,11 +308,11 @@ pub struct TrackNumerics {
     /// Offset 8..16: Unique 64-bit Track Data ID (`tdID`) for this asset subrecord.
     pub track_data_id: u64,
     /// Offset 16..20: Unknown (typically 1).
-    pub unk_16: u32,
+    pub unk_16: Unknown<u32>,
     /// Offset 20..24: Unknown flags (`00 01 01 00` or 0).
-    pub unk_20_flags: [u8; 4],
+    pub unk_20_flags: Unknown<[u8; 4]>,
     /// Offset 24..27: Unknown 3 bytes (typically 0).
-    pub unk_24_27: [u8; 3],
+    pub unk_24_27: Unknown<[u8; 3]>,
     /// Offset 27: Variable Bit Rate (VBR) flag (`1` = VBR audio track, `0` = CBR).
     pub is_vbr: u8,
     /// Offset 28..32: Local file subrecord flag (`1` on local downloaded file subrecords, `0` on cloud/catalog subrecords).
@@ -258,13 +322,13 @@ pub struct TrackNumerics {
     /// Offset 34: Apple Music catalog subscription flag (`1` = `<key>Apple Music</key><true/>` in iTunes XML).
     pub is_apple_music_catalog: u8,
     /// Offset 35..60: Unknown 25 bytes.
-    pub unk_35_60: [u8; 25],
+    pub unk_35_60: Unknown<[u8; 25]>,
     /// Offset 60..64: Sample rate in Hz (IEEE 754 f32, e.g. 44100.0).
     pub sample_rate: f32,
     /// Offset 64..68: File type `FourCC` in little-endian (e.g. `0x4D503320` = `"MP3 "`, `0x4D344120` = `"M4A "`).
     pub file_type_fourcc: u32,
     /// Offset 68..72: Secondary file type / unknown.
-    pub unk_68_file_type: u32,
+    pub unk_68_file_type: Unknown<u32>,
     /// Offset 72..74: File Folder Count (matches iTunes XML `File Folder Count`, e.g. 5).
     pub file_folder_count: u16,
     /// Offset 74..76: Library Folder Count (matches iTunes XML `Library Folder Count`, e.g. 1).
@@ -284,7 +348,7 @@ pub struct TrackNumerics {
     /// Offset 92..96: Date Added (Apple local timestamp; non-zero iff track is in Master Playlist `####!####`).
     pub date_added: u32,
     /// Offset 96..108: Unknown 12 bytes.
-    pub unk_96_108: [u8; 12],
+    pub unk_96_108: Unknown<[u8; 12]>,
     /// Offset 108..112: Gapless playback encoder delay in samples (word 1 of `iTunSMPB`, e.g. 2112 for AAC or 576 for LAME MP3).
     pub gapless_encoder_delay: u32,
     /// Offset 112..116: Gapless playback encoder padding in samples (word 2 of `iTunSMPB`).
@@ -308,7 +372,7 @@ pub struct TrackNumerics {
     /// Offset 148..152: Codec/Subtype `FourCC` in little-endian (e.g. `0x6D703461` = `"mp4a"`, `0x6D706567` = `"mpeg"`).
     pub codec_fourcc: u32,
     /// Offset 152..156: Unknown (0 or e.g. `0x00000123`).
-    pub unk_152: u32,
+    pub unk_152: Unknown<u32>,
     /// Offset 156..160: Track duration in milliseconds (`Total Time` in iTunes XML).
     pub duration_ms: u32,
     /// Offset 160..168: 64-bit Apple Music Store Album ID (`plID` in MP4 atoms; exceeds `u32::MAX` for modern releases).
@@ -316,46 +380,45 @@ pub struct TrackNumerics {
     /// Offset 168..176: 64-bit Apple Music Store Artist ID (`atID` in MP4 atoms; exceeds `u32::MAX` for modern artists).
     pub apple_music_store_artist_id: u64,
     /// Offset 176..200: Unknown 24 bytes.
-    pub unk_176_200: [u8; 24],
+    pub unk_176_200: Unknown<[u8; 24]>,
     /// Offset 200..204: Shared 4-byte value (matches `plma` offset 104).
-    pub unk_200_shared_val: u32,
+    pub unk_200_shared_val: Unknown<u32>,
     /// Offset 204..208: Unknown 4 bytes.
-    pub unk_204: u32,
+    pub unk_204: Unknown<u32>,
     /// Offset 208..216: 64-bit Apple Music Store Album Artist ID (exceeds `u32::MAX` for modern artists).
     pub apple_music_store_album_artist_id: u64,
     /// Offset 216..256: Unknown 40 bytes.
-    #[cfg_attr(feature = "serde", serde(with = "crate::sections::hex_array"))]
-    pub unk_216_256: [u8; 40],
+    pub unk_216_256: Unknown<[u8; 40]>,
     /// Offset 256..264: Gapless playback total sample count (words 3..4 of `iTunSMPB`).
     pub gapless_total_samples: u64,
     /// Offset 264..268: Apple Store Genre ID (`geID` MP4 atom, e.g. 21 = Rock, 14 = Pop, 7 = Electronic, 18 = Hip-Hop/Rap).
     pub store_genre_id: u32,
     /// Offset 268..272: Unknown 4 bytes (typically 0).
-    pub unk_268_272: u32,
+    pub unk_268_272: Unknown<u32>,
     /// Offset 272..280: Gapless playback byte offset to the 8th-from-last MPEG frame (word 5 of `iTunSMPB` for MP3s; 0 for M4A).
     pub gapless_last_eight_frames_offset: u64,
     /// Offset 280..284: Shared 4-byte value (matches `plma` offset 104).
-    pub unk_280_shared_val: u32,
+    pub unk_280_shared_val: Unknown<u32>,
     /// Offset 284..288: Unknown 4 bytes.
-    pub unk_284_288: u32,
+    pub unk_284_288: Unknown<u32>,
     /// Offset 288..296: iCloud Music Library `sagaId` (or `0xFFFFFFFFFFFFFFFD` = -3 for Apple Music catalog tracks).
     pub cloud_saga_id_1: u64,
     /// Offset 296..300: File size in bytes (`Size` in iTunes XML).
     pub file_size: u32,
     /// Offset 300..304: Unknown 4 bytes.
-    pub unk_300: u32,
+    pub unk_300: Unknown<u32>,
     /// Offset 304..312: 64-bit Apple Music / iTunes Store Track `adamId` (matches `adamId=` in `boma 0x0038`).
     pub store_track_adam_id: u64,
     /// Offset 312..316: Apple iTunes Storefront / Country ID (`sfID`, e.g. 143441 = US, 143503 = Brazil, 143469 = Russia).
     pub storefront_id: u32,
     /// Offset 316..320: Unknown 4 bytes (typically 0).
-    pub unk_316_320: u32,
+    pub unk_316_320: Unknown<u32>,
     /// Offset 320..328: 64-bit Apple Music / iTunes Store Track `adamId` repeated.
     pub store_track_adam_id_2: u64,
     /// Offset 328..336: iCloud Music Library `sagaId` (matches `sagaId=` in `boma 0x0038`, or `0xFFFFFFFFFFFFFFFD` for catalog tracks).
     pub cloud_saga_id_2: u64,
     /// Offset 336..340: Unknown 4 bytes (typically 0).
-    pub unk_336_340: u32,
+    pub unk_336_340: Unknown<u32>,
     /// Offset 340..348: 64-bit Apple Music / iTunes Store Track `adamId` repeated.
     pub store_track_adam_id_3: u64,
     /// Offset 348..356: 64-bit Apple Music / iTunes Store Track `adamId` repeated.
@@ -363,7 +426,36 @@ pub struct TrackNumerics {
     /// Offset 356..360: Cloud sync timestamp (Apple UTC timestamp, or 2 on local asset).
     pub date_cloud_synced: u32,
     /// Offset 360..364: Unknown 4 bytes.
-    pub unk_360: u32,
+    pub unk_360: Unknown<u32>,
+}
+
+impl VisitUnknowns for TrackNumerics {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        visit_unknowns!(
+            visitor,
+            "TrackNumerics",
+            [
+                (self.unk_16, 16),
+                (self.unk_20_flags, 20),
+                (self.unk_24_27, 24),
+                (self.unk_35_60, 35),
+                (self.unk_68_file_type, 68),
+                (self.unk_96_108, 96),
+                (self.unk_152, 152),
+                (self.unk_176_200, 176),
+                (self.unk_200_shared_val, 200),
+                (self.unk_204, 204),
+                (self.unk_216_256, 216),
+                (self.unk_268_272, 268),
+                (self.unk_280_shared_val, 280),
+                (self.unk_284_288, 284),
+                (self.unk_300, 300),
+                (self.unk_316_320, 316),
+                (self.unk_336_340, 336),
+                (self.unk_360, 360),
+            ]
+        );
+    }
 }
 
 impl TrackNumerics {
@@ -414,7 +506,7 @@ pub struct TrackPlaysSkips {
     /// Offset 20..24: First ever played date in UTC (Apple timestamp).
     pub date_first_played_utc: u32,
     /// Offset 24..28: Unknown 4 bytes.
-    pub unk_24: u32,
+    pub unk_24: Unknown<u32>,
     /// Offset 28..32: Last skipped date (Apple timestamp).
     pub date_last_skipped: u32,
     /// Offset 32..36: Skip count.
@@ -422,9 +514,19 @@ pub struct TrackPlaysSkips {
     /// Offset 36..40: True skip count.
     pub true_skip_count: u32,
     /// Offset 40..44: Unknown 4 bytes.
-    pub unk_40: u32,
+    pub unk_40: Unknown<u32>,
     /// Offset 44..52: Unknown 8 bytes.
-    pub unk_44_52: [u8; 8],
+    pub unk_44_52: Unknown<[u8; 8]>,
+}
+
+impl VisitUnknowns for TrackPlaysSkips {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        visit_unknowns!(
+            visitor,
+            "TrackPlaysSkips",
+            [(self.unk_24, 24), (self.unk_40, 40), (self.unk_44_52, 44)]
+        );
+    }
 }
 
 /// Payload of `boma` subtype `0x0024` (Video Track Metadata, 84 bytes).
@@ -439,29 +541,51 @@ pub struct VideoInfo {
     /// Offset 4..8: Horizontal resolution (width in pixels).
     pub width: u32,
     /// Offset 8..12: Unknown (typically 1).
-    pub unk_8: u32,
+    pub unk_8: Unknown<u32>,
     /// Offset 12..16: Video codec `FourCC` in little-endian (e.g. `0x61766331` = `"avc1"`).
     pub codec_fourcc: u32,
     /// Offset 16..20: Unknown 4 bytes.
-    pub unk_16: u32,
+    pub unk_16: Unknown<u32>,
     /// Offset 20..24: Unknown (e.g. `0x0000169F`).
-    pub unk_20: u32,
+    pub unk_20: Unknown<u32>,
     /// Offset 24..28: Unknown (often same as `unk_20`).
-    pub unk_24: u32,
+    pub unk_24: Unknown<u32>,
     /// Offset 28..32: Unknown 4 bytes.
-    pub unk_28: u32,
+    pub unk_28: Unknown<u32>,
     /// Offset 32..36: Unknown (e.g. 100).
-    pub unk_32: u32,
+    pub unk_32: Unknown<u32>,
     /// Offset 36..40: Unknown (e.g. 41).
-    pub unk_36: u32,
+    pub unk_36: Unknown<u32>,
     /// Offset 40..44: Unknown signed int (e.g. -1).
-    pub unk_40: i32,
+    pub unk_40: Unknown<i32>,
     /// Offset 44..48: Unknown (e.g. 30416).
-    pub unk_44: u32,
+    pub unk_44: Unknown<u32>,
     /// Offset 48..52: Unknown (often 24).
-    pub unk_48: u32,
+    pub unk_48: Unknown<u32>,
     /// Offset 52..56: Unknown (often 30000 - framerate * 1000?).
     pub frame_rate_milli: u32,
     /// Offset 56..84: Unknown 28 bytes.
-    pub unk_56_84: [u8; 28],
+    pub unk_56_84: Unknown<[u8; 28]>,
+}
+
+impl VisitUnknowns for VideoInfo {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        visit_unknowns!(
+            visitor,
+            "VideoInfo",
+            [
+                (self.unk_8, 8),
+                (self.unk_16, 16),
+                (self.unk_20, 20),
+                (self.unk_24, 24),
+                (self.unk_28, 28),
+                (self.unk_32, 32),
+                (self.unk_36, 36),
+                (self.unk_40, 40),
+                (self.unk_44, 44),
+                (self.unk_48, 48),
+                (self.unk_56_84, 56),
+            ]
+        );
+    }
 }

@@ -10,6 +10,7 @@ use super::playlist::{
 };
 use super::remaining_stream_bytes;
 use super::track::{TrackNumerics, TrackPlaysSkips, VideoInfo};
+use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, visit_unknowns};
 use crate::error::MusicDbError;
 
 /// `boma` (Binary Object / Metadata Container) section.
@@ -24,9 +25,38 @@ pub struct BomaSection {
     /// Offset 12: Subtype identifier (`0x0001`, `0x0002`, `0x00CE`, etc.).
     pub subtype: u32,
     /// Offset 16..`header_size`: Remaining header bytes (4 bytes `16..20` when `header_size == 20`).
-    pub unk_16_end: Vec<u8>,
+    pub unk_16_end: Unknown<Vec<u8>>,
     /// Parsed payload of length `total_size - header_size`.
     pub payload: BomaPayload,
+}
+
+impl VisitUnknowns for BomaSection {
+    fn visit_unknowns<V: UnknownVisitor>(&self, section: &str, visitor: &mut V) {
+        let label = if section.is_empty() {
+            "boma".to_string()
+        } else {
+            format!("{section}::boma")
+        };
+        visit_unknowns!(visitor, &label, [(tail: self.unk_16_end, 16)]);
+        match &self.payload {
+            BomaPayload::TrackNumerics(n) => n.visit_unknowns("TrackNumerics", visitor),
+            BomaPayload::TrackPlaysSkips(p) => p.visit_unknowns("TrackPlaysSkips", visitor),
+            BomaPayload::VideoInfo(v) => v.visit_unknowns("VideoInfo", visitor),
+            BomaPayload::PlaylistItem(ipfa) => ipfa.visit_unknowns("ipfa", visitor),
+            BomaPayload::PlaylistItemCompact(ipfa) => ipfa.visit_unknowns("IPfa", visitor),
+            BomaPayload::SmartPlaylistOptions(opts) => {
+                opts.visit_unknowns("SmartPlaylistOptions", visitor);
+            }
+            BomaPayload::SmartPlaylistRules(slst) => slst.visit_unknowns("SLst", visitor),
+            BomaPayload::Plma1F6(s) => s.visit_unknowns("plma::0x01F6", visitor),
+            BomaPayload::Plma1FF(s) => s.visit_unknowns("plma::0x01FF", visitor),
+            BomaPayload::StringSection(s) => s.visit_unknowns("boma::str", visitor),
+            BomaPayload::RawStringUtf8 { .. }
+            | BomaPayload::RawStringUtf16Le { .. }
+            | BomaPayload::Book { .. }
+            | BomaPayload::Unknown { .. } => {}
+        }
+    }
 }
 
 /// Structured string payload inside a `boma` container.
@@ -41,11 +71,17 @@ pub struct BomaStringSection {
     /// Offset 8..12: Counter incrementing per parent `boma` subtype.
     pub parent_subtype_counter: u32,
     /// Offset 12..16: Unknown 4 bytes (typically 0).
-    pub unk_12: u32,
+    pub unk_12: Unknown<u32>,
     /// Decoded string value.
     pub text: String,
     /// Exact raw bytes of the string for 100% lossless round-trip serialization.
     pub raw_string_bytes: Vec<u8>,
+}
+
+impl VisitUnknowns for BomaStringSection {
+    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        visit_unknowns!(visitor, "boma::str", [(self.unk_12, 12)]);
+    }
 }
 
 /// Payload variants of a `boma` container.
@@ -344,7 +380,7 @@ impl BinRead for BomaSection {
             header_size,
             total_size,
             subtype,
-            unk_16_end,
+            unk_16_end: Unknown::new(unk_16_end),
             payload,
         })
     }
@@ -454,7 +490,7 @@ fn parse_boma_payload(subtype: u32, payload_bytes: Vec<u8>) -> BinResult<BomaPay
             encoding,
             string_byte_len,
             parent_subtype_counter,
-            unk_12,
+            unk_12: Unknown::new(unk_12),
             text,
             raw_string_bytes,
         }));
