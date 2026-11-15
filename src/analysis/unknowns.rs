@@ -338,12 +338,12 @@ pub(crate) fn analyze_unknowns(raw: &RawLibraryFile) -> UnknownsReport {
                 }
             }
             HsmaChild::Unknown {
-                subtype,
+                kind,
                 signature,
                 raw_bytes,
             } => {
                 collector.unknown_hsma_sections.push((
-                    *subtype,
+                    u32::from(*kind),
                     String::from_utf8_lossy(signature).into_owned(),
                     raw_bytes.len(),
                 ));

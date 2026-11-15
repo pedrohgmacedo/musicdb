@@ -519,12 +519,13 @@ mod tests {
             kind != SectionKind::TrackList
         })
         .expect("parse synthetic filtered");
-        assert!(
-            parsed_filtered
-                .sections
-                .iter()
-                .any(|s| matches!(s.child, HsmaChild::Skipped { subtype: 1, .. }))
-        );
+        assert!(parsed_filtered.sections.iter().any(|s| matches!(
+            s.child,
+            HsmaChild::Skipped {
+                kind: SectionKind::TrackList,
+                ..
+            }
+        )));
         assert_eq!(parsed_filtered.to_raw_bytes().unwrap(), decrypted_raw);
         assert_eq!(
             parsed_filtered.to_encrypted_bytes().unwrap(),

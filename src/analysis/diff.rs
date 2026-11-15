@@ -7,7 +7,7 @@ use musicdb::PersistentId;
 use musicdb::model::{Album, Artist, Playlist, Track};
 use musicdb::sections::{
     AlbumItem, ArtistItem, BomaPayload, BomaSection, HsmaChild, LibraryMasterSection, PlaylistItem,
-    RawLibraryFile, TrackItem, TrackNumerics,
+    RawLibraryFile, SectionKind, TrackItem, TrackNumerics,
 };
 
 use super::{diff_4byte_words, serialize_le};
@@ -88,7 +88,7 @@ impl<'a> DiffInputs<'a> {
                     }
                 }
                 HsmaChild::Unknown {
-                    subtype: 10,
+                    kind: SectionKind::Trailer,
                     signature,
                     raw_bytes,
                 } => {

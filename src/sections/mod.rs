@@ -205,8 +205,8 @@ pub enum HsmaChild {
     Padding(PaddingSection),
     /// Any other / unknown `hsma` child (e.g. `Library Preferences.musicdb` or future subtype), preserved losslessly.
     Unknown {
-        /// Section subtype from [`HsmaHeader::subtype`].
-        subtype: u32,
+        /// Section kind from [`HsmaHeader::kind`].
+        kind: SectionKind,
         /// First 4 magic bytes of the child payload (or zeros if shorter than 4 bytes).
         signature: [u8; 4],
         /// Full raw bytes of the child section (`total_size - header_size`).
@@ -215,8 +215,8 @@ pub enum HsmaChild {
     /// A section intentionally skipped during [`RawLibraryFile::from_raw_bytes_filtered`],
     /// retaining its raw bytes so [`RawLibraryFile::to_raw_bytes`] remains 100% lossless.
     Skipped {
-        /// Section subtype from [`HsmaHeader::subtype`].
-        subtype: u32,
+        /// Section kind from [`HsmaHeader::kind`].
+        kind: SectionKind,
         /// Full unparsed raw bytes of the skipped child section (`total_size - header_size`).
         raw_bytes: Vec<u8>,
     },
@@ -279,7 +279,7 @@ impl HsmaSection {
             return Ok(Self {
                 header,
                 child: HsmaChild::Skipped {
-                    subtype,
+                    kind,
                     raw_bytes: child_bytes,
                 },
             });
@@ -295,7 +295,7 @@ impl HsmaSection {
             return Ok(Self {
                 header,
                 child: HsmaChild::Unknown {
-                    subtype,
+                    kind,
                     signature: sig,
                     raw_bytes: child_bytes,
                 },
@@ -550,6 +550,113 @@ impl VisitUnknowns for RawLibraryFile {
         self.outer_header.visit_unknowns("hfma(outer)", visitor);
         for section in &self.sections {
             section.visit_unknowns("hsma", visitor);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synthetic_hsma_bytes(subtype: u32, payload: &[u8]) -> Vec<u8> {
+        let header_size = 24u32;
+        let total_size = header_size + u32::try_from(payload.len()).expect("payload fits in u32");
+        let raw = RawLibraryFile {
+            outer_header: HfmaHeader {
+                header_size: 160,
+                major_version: 21,
+                minor_version: 1,
+                ..Default::default()
+            },
+            sections: vec![HsmaSection {
+                header: HsmaHeader {
+                    header_size,
+                    total_size,
+                    subtype,
+                    total_size_64: 0,
+                    unk_24_end: Unknown::new(Vec::new()),
+                },
+                child: HsmaChild::Unknown {
+                    kind: SectionKind::from(subtype),
+                    signature: [0; 4],
+                    raw_bytes: payload.to_vec(),
+                },
+            }],
+            trailing_bytes: Vec::new(),
+        };
+        raw.to_raw_bytes().expect("serialize synthetic raw")
+    }
+
+    #[test]
+    fn filtered_parsing_produces_skipped_with_section_kind_and_round_trips() {
+        for (subtype, expected_kind, payload) in [
+            (10, SectionKind::Trailer, b"SIG1payload".as_slice()),
+            (99, SectionKind::Unknown(99), b"XYZ9extra".as_slice()),
+        ] {
+            let bytes = synthetic_hsma_bytes(subtype, payload);
+            let parsed =
+                RawLibraryFile::from_raw_bytes_filtered(&bytes, |_| false).expect("filtered parse");
+            assert_eq!(parsed.sections.len(), 1);
+            assert_eq!(
+                parsed.sections[0].child,
+                HsmaChild::Skipped {
+                    kind: expected_kind,
+                    raw_bytes: payload.to_vec(),
+                }
+            );
+            assert_eq!(parsed.to_raw_bytes().expect("round-trip"), bytes);
+        }
+    }
+
+    #[test]
+    fn unfiltered_parsing_produces_unknown_with_section_kind_and_round_trips() {
+        for (subtype, expected_kind, payload, expected_sig) in [
+            (10, SectionKind::Trailer, b"TRLR1234".as_slice(), *b"TRLR"),
+            (99, SectionKind::Unknown(99), b"FOO!".as_slice(), *b"FOO!"),
+        ] {
+            let bytes = synthetic_hsma_bytes(subtype, payload);
+            let parsed = RawLibraryFile::from_raw_bytes(&bytes).expect("unfiltered parse");
+            assert_eq!(parsed.sections.len(), 1);
+            assert_eq!(
+                parsed.sections[0].child,
+                HsmaChild::Unknown {
+                    kind: expected_kind,
+                    signature: expected_sig,
+                    raw_bytes: payload.to_vec(),
+                }
+            );
+            assert_eq!(parsed.to_raw_bytes().expect("round-trip"), bytes);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hsma_child_unknown_and_skipped_serde_round_trip() {
+        let cases = [
+            HsmaChild::Skipped {
+                kind: SectionKind::Trailer,
+                raw_bytes: vec![1, 2, 3, 4],
+            },
+            HsmaChild::Skipped {
+                kind: SectionKind::Unknown(99),
+                raw_bytes: vec![5, 6],
+            },
+            HsmaChild::Unknown {
+                kind: SectionKind::Trailer,
+                signature: *b"TRLR",
+                raw_bytes: vec![0x54, 0x52, 0x4c, 0x52, 9],
+            },
+            HsmaChild::Unknown {
+                kind: SectionKind::Unknown(99),
+                signature: *b"ABCD",
+                raw_bytes: vec![0x41, 0x42, 0x43, 0x44],
+            },
+        ];
+
+        for child in cases {
+            let json = serde_json::to_string(&child).expect("serialize HsmaChild");
+            let back: HsmaChild = serde_json::from_str(&json).expect("deserialize HsmaChild");
+            assert_eq!(back, child);
         }
     }
 }

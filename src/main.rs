@@ -356,16 +356,16 @@ fn describe_hsma_child(child: &HsmaChild) -> String {
         ),
         HsmaChild::Padding(p) => format!("LPma Padding (section_size={})", p.section_size),
         HsmaChild::Unknown {
-            subtype,
+            kind,
             signature,
             raw_bytes,
         } => format!(
-            "Unknown(subtype={subtype}, sig={:?}, len={})",
+            "Unknown(kind={kind}, sig={:?}, len={})",
             String::from_utf8_lossy(signature),
             raw_bytes.len()
         ),
-        HsmaChild::Skipped { subtype, raw_bytes } => {
-            format!("Skipped(subtype={subtype}, len={})", raw_bytes.len())
+        HsmaChild::Skipped { kind, raw_bytes } => {
+            format!("Skipped(kind={kind}, len={})", raw_bytes.len())
         }
         _ => "Other".to_string(),
     }
