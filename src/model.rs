@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use bitflags::bitflags;
@@ -105,13 +106,27 @@ impl From<u16> for SuggestionFlag {
 
 impl SuggestionFlag {
     /// Returns the `SuggestionFlags` bitmask representation of a raw `suggestion_flag` value.
+    #[must_use]
     pub fn flags(raw: u16) -> SuggestionFlags {
         SuggestionFlags::from_bits_retain(raw)
     }
 
     /// Returns `true` if the `0x0100` local user-modified bit is set (e.g. `0x0102` when favorited offline, `0x0101` when marked Suggest Less offline).
+    #[must_use]
     pub fn is_locally_modified(raw: u16) -> bool {
         SuggestionFlags::from_bits_retain(raw).contains(SuggestionFlags::LOCALLY_MODIFIED)
+    }
+}
+
+impl fmt::Display for SuggestionFlag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Neutral => f.write_str("Neutral"),
+            Self::Removed => f.write_str("Removed"),
+            Self::Favorite => f.write_str("Favorite"),
+            Self::SuggestLess => f.write_str("SuggestLess"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
     }
 }
 
@@ -163,6 +178,25 @@ impl From<u8> for CloudStatus {
     }
 }
 
+impl fmt::Display for CloudStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LocalOnly => f.write_str("LocalOnly"),
+            Self::Purchased => f.write_str("Purchased"),
+            Self::Matched => f.write_str("Matched"),
+            Self::Uploaded => f.write_str("Uploaded"),
+            Self::Ineligible => f.write_str("Ineligible"),
+            Self::Error => f.write_str("Error"),
+            Self::SyncError => f.write_str("SyncError"),
+            Self::Duplicate => f.write_str("Duplicate"),
+            Self::AppleMusic => f.write_str("AppleMusic"),
+            Self::NoLongerAvailable => f.write_str("NoLongerAvailable"),
+            Self::NotUploaded => f.write_str("NotUploaded"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
 /// Content advisory rating (`itma` offset 59).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContentRating {
@@ -185,6 +219,18 @@ impl From<u8> for ContentRating {
     }
 }
 
+impl fmt::Display for ContentRating {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("None"),
+            Self::Explicit => f.write_str("Explicit"),
+            Self::Clean => f.write_str("Clean"),
+            Self::ParentalGuidance => f.write_str("ParentalGuidance"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
 /// Local download vs. cloud-only status (`itma` offset 57).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadedStatus {
@@ -199,6 +245,16 @@ impl From<u8> for DownloadedStatus {
             1 => Self::DownloadedLocal,
             3 => Self::CloudOnly,
             other => Self::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for DownloadedStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DownloadedLocal => f.write_str("DownloadedLocal"),
+            Self::CloudOnly => f.write_str("CloudOnly"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
         }
     }
 }
@@ -287,6 +343,29 @@ impl From<u32> for MediaKind {
     }
 }
 
+impl fmt::Display for MediaKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Music => f.write_str("Music"),
+            Self::Movie => f.write_str("Movie"),
+            Self::Podcast => f.write_str("Podcast"),
+            Self::Audiobook => f.write_str("Audiobook"),
+            Self::BookletPdf => f.write_str("BookletPdf"),
+            Self::MusicVideo => f.write_str("MusicVideo"),
+            Self::TvShow => f.write_str("TvShow"),
+            Self::MovieOrTvShow => f.write_str("MovieOrTvShow"),
+            Self::HomeVideo => f.write_str("HomeVideo"),
+            Self::Ringtone => f.write_str("Ringtone"),
+            Self::ItunesExtras => f.write_str("ItunesExtras"),
+            Self::VoiceMemo => f.write_str("VoiceMemo"),
+            Self::AllMusicAndAudio => f.write_str("AllMusicAndAudio"),
+            Self::PodcastOrVoiceMemo => f.write_str("PodcastOrVoiceMemo"),
+            Self::PodcastItunesUOrVoiceMemo => f.write_str("PodcastItunesUOrVoiceMemo"),
+            Self::Other(v) => write!(f, "Other({v})"),
+        }
+    }
+}
+
 bitflags! {
     /// Raw bitflags for a sortable text field's sort mode (`itma` offset 66..72).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -333,6 +412,17 @@ impl From<u8> for SortMode {
             Self::CustomUserOverride
         } else {
             Self::Unknown(v)
+        }
+    }
+}
+
+impl fmt::Display for SortMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("None"),
+            Self::AutoGenerated => f.write_str("AutoGenerated"),
+            Self::CustomUserOverride => f.write_str("CustomUserOverride"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
         }
     }
 }
@@ -431,6 +521,17 @@ impl From<u32> for PlaylistShareMode {
     }
 }
 
+impl fmt::Display for PlaylistShareMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Private => f.write_str("Private"),
+            Self::SubscribedCatalog => f.write_str("SubscribedCatalog"),
+            Self::PublicShared => f.write_str("PublicShared"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
 /// Built-in Apple Music system playlist kind (`lpma` offset 78..80).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DistinguishedPlaylistKind {
@@ -483,6 +584,33 @@ impl From<u16> for DistinguishedPlaylistKind {
     }
 }
 
+impl fmt::Display for DistinguishedPlaylistKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("None"),
+            Self::Movies => f.write_str("Movies"),
+            Self::TvShows => f.write_str("TvShows"),
+            Self::Music => f.write_str("Music"),
+            Self::Audiobooks => f.write_str("Audiobooks"),
+            Self::Podcasts => f.write_str("Podcasts"),
+            Self::VoiceMemos => f.write_str("VoiceMemos"),
+            Self::Purchased => f.write_str("Purchased"),
+            Self::ITunesDj => f.write_str("ITunesDj"),
+            Self::Genius => f.write_str("Genius"),
+            Self::MyTopRated => f.write_str("MyTopRated"),
+            Self::RecentlyPlayed => f.write_str("RecentlyPlayed"),
+            Self::RecentlyAdded => f.write_str("RecentlyAdded"),
+            Self::MusicVideos => f.write_str("MusicVideos"),
+            Self::ClassicalMusic => f.write_str("ClassicalMusic"),
+            Self::FavoriteSongs => f.write_str("FavoriteSongs"),
+            Self::HiddenCloudPlaylistOnlyTracks => f.write_str("HiddenCloudPlaylistOnlyTracks"),
+            Self::TvAndMovies => f.write_str("TvAndMovies"),
+            Self::Downloaded => f.write_str("Downloaded"),
+            Self::Other(v) => write!(f, "Other({v})"),
+        }
+    }
+}
+
 /// High-level semantic classification of a playlist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlaylistKind {
@@ -492,6 +620,19 @@ pub enum PlaylistKind {
     Smart,
     SubscribedCatalog,
     Standard,
+}
+
+impl fmt::Display for PlaylistKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Master => f.write_str("Master"),
+            Self::Distinguished => f.write_str("Distinguished"),
+            Self::Folder => f.write_str("Folder"),
+            Self::Smart => f.write_str("Smart"),
+            Self::SubscribedCatalog => f.write_str("SubscribedCatalog"),
+            Self::Standard => f.write_str("Standard"),
+        }
+    }
 }
 
 /// Smart Playlist configuration (`boma 0x00CA` options + `boma 0x00C9` `SLst` rule tree).
@@ -530,6 +671,19 @@ impl From<u8> for SmartLimitUnit {
             4 => Self::Hours,
             5 => Self::Gigabytes,
             other => Self::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for SmartLimitUnit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Minutes => f.write_str("Minutes"),
+            Self::Megabytes => f.write_str("Megabytes"),
+            Self::Items => f.write_str("Items"),
+            Self::Hours => f.write_str("Hours"),
+            Self::Gigabytes => f.write_str("Gigabytes"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
         }
     }
 }
@@ -576,10 +730,42 @@ impl SmartSelectionMethod {
     }
 }
 
+impl fmt::Display for SmartSelectionMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Random => f.write_str("Random"),
+            Self::Title => f.write_str("Title"),
+            Self::Album => f.write_str("Album"),
+            Self::Artist => f.write_str("Artist"),
+            Self::Genre => f.write_str("Genre"),
+            Self::MostRecentlyAdded => f.write_str("MostRecentlyAdded"),
+            Self::LeastRecentlyAdded => f.write_str("LeastRecentlyAdded"),
+            Self::MostOftenPlayed => f.write_str("MostOftenPlayed"),
+            Self::LeastOftenPlayed => f.write_str("LeastOftenPlayed"),
+            Self::MostRecentlyPlayed => f.write_str("MostRecentlyPlayed"),
+            Self::LeastRecentlyPlayed => f.write_str("LeastRecentlyPlayed"),
+            Self::HighestRating => f.write_str("HighestRating"),
+            Self::LowestRating => f.write_str("LowestRating"),
+            Self::Unknown { method, negate } => {
+                write!(f, "Unknown {{ method: {method}, negate: {negate} }}")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SmartConjunction {
     All,
     Any,
+}
+
+impl fmt::Display for SmartConjunction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::All => f.write_str("All"),
+            Self::Any => f.write_str("Any"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -704,6 +890,62 @@ impl From<u32> for SmartField {
     }
 }
 
+impl fmt::Display for SmartField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Title => f.write_str("Title"),
+            Self::Album => f.write_str("Album"),
+            Self::Artist => f.write_str("Artist"),
+            Self::BitRate => f.write_str("BitRate"),
+            Self::SampleRate => f.write_str("SampleRate"),
+            Self::Year => f.write_str("Year"),
+            Self::Genre => f.write_str("Genre"),
+            Self::Kind => f.write_str("Kind"),
+            Self::DateModified => f.write_str("DateModified"),
+            Self::TrackNumber => f.write_str("TrackNumber"),
+            Self::Size => f.write_str("Size"),
+            Self::Time => f.write_str("Time"),
+            Self::Comments => f.write_str("Comments"),
+            Self::DateAdded => f.write_str("DateAdded"),
+            Self::Composer => f.write_str("Composer"),
+            Self::Plays => f.write_str("Plays"),
+            Self::LastPlayed => f.write_str("LastPlayed"),
+            Self::DiscNumber => f.write_str("DiscNumber"),
+            Self::Rating => f.write_str("Rating"),
+            Self::Checked => f.write_str("Checked"),
+            Self::Compilation => f.write_str("Compilation"),
+            Self::Bpm => f.write_str("Bpm"),
+            Self::AlbumArtwork => f.write_str("AlbumArtwork"),
+            Self::Grouping => f.write_str("Grouping"),
+            Self::Playlist => f.write_str("Playlist"),
+            Self::Purchased => f.write_str("Purchased"),
+            Self::Description => f.write_str("Description"),
+            Self::Category => f.write_str("Category"),
+            Self::AlbumRating => f.write_str("AlbumRating"),
+            Self::MediaKind => f.write_str("MediaKind"),
+            Self::Skips => f.write_str("Skips"),
+            Self::LastSkipped => f.write_str("LastSkipped"),
+            Self::AlbumArtist => f.write_str("AlbumArtist"),
+            Self::SortTitle => f.write_str("SortTitle"),
+            Self::SortAlbum => f.write_str("SortAlbum"),
+            Self::SortArtist => f.write_str("SortArtist"),
+            Self::SortAlbumArtist => f.write_str("SortAlbumArtist"),
+            Self::SortComposer => f.write_str("SortComposer"),
+            Self::SortShow => f.write_str("SortShow"),
+            Self::VideoRating => f.write_str("VideoRating"),
+            Self::Location => f.write_str("Location"),
+            Self::CloudStatus => f.write_str("CloudStatus"),
+            Self::Favorite => f.write_str("Favorite"),
+            Self::AlbumFavorite => f.write_str("AlbumFavorite"),
+            Self::Work => f.write_str("Work"),
+            Self::MovementName => f.write_str("MovementName"),
+            Self::MovementNumber => f.write_str("MovementNumber"),
+            Self::HasVideo => f.write_str("HasVideo"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
 bitflags! {
     /// Raw bitflags for a Smart Playlist comparison operator (`SLst` rule offset 4..8, Big-Endian).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -776,12 +1018,43 @@ impl From<u32> for SmartOperator {
     }
 }
 
+impl fmt::Display for SmartOperator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Is => f.write_str("Is"),
+            Self::IsNot => f.write_str("IsNot"),
+            Self::Contains => f.write_str("Contains"),
+            Self::DoesNotContain => f.write_str("DoesNotContain"),
+            Self::StartsWith => f.write_str("StartsWith"),
+            Self::EndsWith => f.write_str("EndsWith"),
+            Self::GreaterThan => f.write_str("GreaterThan"),
+            Self::LessThan => f.write_str("LessThan"),
+            Self::InRange => f.write_str("InRange"),
+            Self::NotInRange => f.write_str("NotInRange"),
+            Self::InTheLast => f.write_str("InTheLast"),
+            Self::NotInTheLast => f.write_str("NotInTheLast"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelativeTimeUnit {
     Days,
     Weeks,
     Months,
     Unknown(i64),
+}
+
+impl fmt::Display for RelativeTimeUnit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Days => f.write_str("Days"),
+            Self::Weeks => f.write_str("Weeks"),
+            Self::Months => f.write_str("Months"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
