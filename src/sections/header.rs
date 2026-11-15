@@ -149,6 +149,21 @@ impl HsmaHeader {
 }
 
 /// Typed identifier for an `hsma` container section's `subtype` field.
+///
+/// # Examples
+/// ```
+/// use musicdb::SectionKind;
+///
+/// let tracks = SectionKind::from(1);
+/// assert_eq!(tracks, SectionKind::TrackList);
+/// assert_eq!(u32::from(tracks), 1);
+/// assert_eq!(tracks.to_string(), "TrackList");
+///
+/// let custom = SectionKind::from(42);
+/// assert_eq!(custom, SectionKind::Unknown(42));
+/// assert_eq!(u32::from(custom), 42);
+/// assert_eq!(custom.to_string(), "Unknown(42)");
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

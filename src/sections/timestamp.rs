@@ -12,6 +12,25 @@ pub(crate) const APPLE_TO_UNIX_EPOCH_OFFSET: i64 = 2_082_844_800;
 ///
 /// Values below `86_400` are treated as non-timestamp sentinel values (such as `0` for unset
 /// or `2` on local `TrackNumerics[0].date_cloud_synced`) by [`AppleTimestamp::to_utc`].
+///
+/// # Examples
+/// ```
+/// use musicdb::AppleTimestamp;
+///
+/// let unset = AppleTimestamp(0);
+/// assert_eq!(unset.to_utc(), None);
+/// assert_eq!(unset.to_string(), "0");
+///
+/// let sentinel = AppleTimestamp(2);
+/// assert_eq!(sentinel.to_utc(), None);
+///
+/// let valid = AppleTimestamp(3_800_000_000);
+/// assert!(valid.to_utc().is_some());
+/// assert_eq!(valid.raw(), 3_800_000_000);
+///
+/// let AppleTimestamp(raw) = valid;
+/// assert_eq!(raw, 3_800_000_000);
+/// ```
 #[binrw]
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]

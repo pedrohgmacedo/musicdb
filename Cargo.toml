@@ -14,7 +14,7 @@ categories = [
   "command-line-utilities",
 ]
 repository = "https://github.com/pedrohgmacedo/musicdb"
-include = ["src/**/*", "Cargo.toml", "LICENSE", "NOTICE", "README.md"]
+include = ["src/**/*", "examples/**/*", "Cargo.toml", "LICENSE", "NOTICE", "README.md"]
 
 [[bin]]
 name = "musicdb"

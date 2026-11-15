@@ -467,6 +467,28 @@ impl RawLibraryFile {
     /// Parses only selected `hsma` section kinds from a `.musicdb` file (or `.musiclibrary` bundle),
     /// storing unselected sections as [`HsmaChild::Skipped`] so serialization remains 100% lossless.
     ///
+    /// # Examples
+    /// ```no_run
+    /// use musicdb::sections::HsmaChild;
+    /// use musicdb::{RawLibraryFile, SectionKind};
+    ///
+    /// # fn main() -> musicdb::Result<()> {
+    /// let raw = RawLibraryFile::open_filtered("Library.musiclibrary", |kind| {
+    ///     !matches!(kind, SectionKind::TrackList | SectionKind::PlaylistList)
+    /// })?;
+    ///
+    /// for sec in &raw.sections {
+    ///     if let HsmaChild::Skipped { kind, raw_bytes } = &sec.child {
+    ///         println!("skipped {kind}: {} bytes", raw_bytes.len());
+    ///     }
+    /// }
+    ///
+    /// let round_trip = raw.to_raw_bytes()?;
+    /// # let _ = round_trip;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// # Errors
     /// Returns [`MusicDbError`] if reading, decrypting, decompressing, or parsing fails.
     pub fn open_filtered<F>(path: impl AsRef<Path>, include_kind: F) -> Result<Self>
@@ -488,6 +510,29 @@ impl RawLibraryFile {
 
     /// Parses already-decrypted and decompressed raw `.musicdb` bytes, storing `hsma` sections where
     /// `include_kind(kind)` is `false` as [`HsmaChild::Skipped`] so round-tripping stays lossless.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use musicdb::sections::HsmaChild;
+    /// use musicdb::{RawLibraryFile, SectionKind};
+    ///
+    /// # fn main() -> musicdb::Result<()> {
+    /// let decrypted_bytes: Vec<u8> = Vec::new();
+    /// let raw = RawLibraryFile::from_raw_bytes_filtered(&decrypted_bytes, |kind| {
+    ///     !matches!(kind, SectionKind::TrackList | SectionKind::PlaylistList)
+    /// })?;
+    ///
+    /// for sec in &raw.sections {
+    ///     if let HsmaChild::Skipped { kind, raw_bytes } = &sec.child {
+    ///         println!("skipped {kind}: {} bytes", raw_bytes.len());
+    ///     }
+    /// }
+    ///
+    /// let round_trip = raw.to_raw_bytes()?;
+    /// # let _ = round_trip;
+    /// # Ok(())
+    /// # }
+    /// ```
     ///
     /// # Errors
     /// Returns [`MusicDbError`] if any header or section boundary is malformed or truncated.

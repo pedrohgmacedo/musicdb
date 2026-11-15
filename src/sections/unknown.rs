@@ -13,6 +13,20 @@ use super::read_header_tail;
 /// Wrapping unknown fields in [`Unknown<T>`] distinguishes undecoded regions from
 /// settled format fields at the type level and enables automatic traversal via
 /// [`VisitUnknowns`].
+///
+/// # Examples
+/// ```
+/// use musicdb::sections::Unknown;
+///
+/// let val = Unknown(0u32);
+/// assert!(val.is_zero());
+/// assert_eq!(val.format_unknown(), "0 (0x00000000)");
+///
+/// let constructed = Unknown::new(0x1234u32);
+/// let Unknown(raw) = constructed;
+/// assert_eq!(raw, 0x1234);
+/// assert_eq!(constructed.into_inner(), 0x1234);
+/// ```
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Unknown<T>(pub T);
