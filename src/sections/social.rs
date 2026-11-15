@@ -3,13 +3,13 @@ use binrw::binrw;
 use super::boma::BomaSection;
 use super::{read_bounded_vec, read_header_tail};
 
-/// `Lsma` (Social Profiles List Master, `hsma` subtype 15) header (typically 92 bytes).
+/// Social profiles list master header (`Lsma`, `hsma` subtype 15, typically 92 bytes).
 #[binrw]
 #[brw(little, magic = b"Lsma")]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LsmaHeader {
+pub struct SocialProfileListHeader {
     /// Offset 4: Header size in bytes (typically 92, minimum 12).
     pub header_size: u32,
     /// Offset 8: Number of `isma` social profile items that follow.
@@ -19,27 +19,27 @@ pub struct LsmaHeader {
     pub unk_12_end: Vec<u8>,
 }
 
-/// Complete `Lsma` section with all `isma` social profile items.
+/// Complete social profile list section (`Lsma`) with all social profile items (`isma`).
 #[binrw]
 #[brw(little)]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LsmaSection {
+pub struct SocialProfileListSection {
     /// The `Lsma` list header.
-    pub header: LsmaHeader,
+    pub header: SocialProfileListHeader,
     /// All `isma` social profile records in the library.
     #[br(parse_with = read_bounded_vec, args(header.profile_count, 64, "Lsma.profiles"))]
-    pub profiles: Vec<IsmaSection>,
+    pub profiles: Vec<SocialProfileItem>,
 }
 
-/// `isma` (Social Profile Item) header (typically 136 bytes).
+/// Social profile item header (`isma`, typically 136 bytes).
 #[binrw]
 #[brw(little, magic = b"isma")]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct IsmaHeader {
+pub struct SocialProfileItemHeader {
     /// Offset 4: Header size in bytes (typically 136).
     pub header_size: u32,
     /// Offset 8: Total size of this `isma` + its `boma` children.
@@ -65,15 +65,15 @@ pub struct IsmaHeader {
     pub unk_64_end: Vec<u8>,
 }
 
-/// Complete `isma` section (header + `boma` children).
+/// Complete social profile item section (`isma` header + `boma` children).
 #[binrw]
 #[brw(little)]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct IsmaSection {
+pub struct SocialProfileItem {
     /// The `isma` social profile header.
-    pub header: IsmaHeader,
+    pub header: SocialProfileItemHeader,
     /// Metadata `boma` children attached to this social profile.
     #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "isma.bomas"))]
     pub bomas: Vec<BomaSection>,

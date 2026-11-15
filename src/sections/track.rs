@@ -3,13 +3,13 @@ use binrw::binrw;
 use super::boma::BomaSection;
 use super::{read_bounded_vec, read_header_tail};
 
-/// `ltma` (Track List Master) header (typically 92 bytes).
+/// Track list master header (`ltma`, typically 92 bytes).
 #[binrw]
 #[brw(little, magic = b"ltma")]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LtmaHeader {
+pub struct TrackListHeader {
     /// Offset 4: Header size in bytes (typically 92, minimum 12).
     pub header_size: u32,
     /// Offset 8: Number of `itma` track subsections that follow.
@@ -19,27 +19,27 @@ pub struct LtmaHeader {
     pub unk_12_end: Vec<u8>,
 }
 
-/// Complete `ltma` section with all `itma` track items.
+/// Complete track list section (`ltma`) with all track items (`itma`).
 #[binrw]
 #[brw(little)]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LtmaSection {
+pub struct TrackListSection {
     /// The `ltma` list header.
-    pub header: LtmaHeader,
+    pub header: TrackListHeader,
     /// All `itma` track records in the library.
     #[br(parse_with = read_bounded_vec, args(header.track_count, 376, "ltma.tracks"))]
-    pub tracks: Vec<ItmaSection>,
+    pub tracks: Vec<TrackItem>,
 }
 
-/// `itma` (Track Item) header (typically 376 bytes).
+/// Track item header (`itma`, typically 376 bytes).
 #[binrw]
 #[brw(little, magic = b"itma")]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ItmaHeader {
+pub struct TrackItemHeader {
     /// Offset 4: Header size in bytes (typically 376).
     pub header_size: u32,
     /// Offset 8: Total size in bytes of this `itma` + all its `boma` children.
@@ -215,15 +215,15 @@ pub struct ItmaHeader {
     pub extra_bytes: Vec<u8>,
 }
 
-/// Complete `itma` section (header + `boma` children).
+/// Complete track item section (`itma` header + `boma` children).
 #[binrw]
 #[brw(little)]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ItmaSection {
+pub struct TrackItem {
     /// The `itma` track header.
-    pub header: ItmaHeader,
+    pub header: TrackItemHeader,
     /// Metadata `boma` children attached to this track.
     #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "itma.bomas"))]
     pub bomas: Vec<BomaSection>,

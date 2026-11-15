@@ -3,13 +3,13 @@ use binrw::binrw;
 use super::boma::BomaSection;
 use super::{read_bounded_vec, read_header_tail};
 
-/// `plma` (Library Master) header (typically 194 bytes in modern Apple Music, 160 in Catalina).
+/// Library master header (`plma`, typically 194 bytes in modern Apple Music, 160 in Catalina).
 #[binrw]
 #[brw(little, magic = b"plma")]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct PlmaHeader {
+pub struct LibraryMasterHeader {
     /// Offset 4: Header size in bytes (194 or 160, minimum 160).
     pub header_size: u32,
     /// Offset 8: Number of `boma` subsections that follow.
@@ -59,15 +59,15 @@ pub struct PlmaHeader {
     pub unk_160_end: Vec<u8>,
 }
 
-/// Complete `plma` section including its `boma` children.
+/// Complete library master section (`plma`) including its `boma` children.
 #[binrw]
 #[brw(little)]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct PlmaSection {
+pub struct LibraryMasterSection {
     /// The `plma` library master header.
-    pub header: PlmaHeader,
+    pub header: LibraryMasterHeader,
     /// Metadata `boma` children attached to the library master section.
     #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "plma.bomas"))]
     pub bomas: Vec<BomaSection>,

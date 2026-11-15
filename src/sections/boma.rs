@@ -5,7 +5,9 @@ use std::io::{Cursor, Read, Seek, Write};
 use binrw::{BinRead, BinResult, BinWrite, Endian};
 
 use super::library_master::{PlmaSub1F6, PlmaSub1FF};
-use super::playlist::{IPfaSection, IpfaSection, SlstSection, SmartPlaylistOptions};
+use super::playlist::{
+    CompactPlaylistTrackItem, PlaylistTrackItem, SlstSection, SmartPlaylistOptions,
+};
 use super::remaining_stream_bytes;
 use super::track::{TrackNumerics, TrackPlaysSkips, VideoInfo};
 use crate::error::MusicDbError;
@@ -58,9 +60,9 @@ pub enum BomaPayload {
     /// Subtype `0x0024`: Video resolution and codec info (84 bytes).
     VideoInfo(Box<VideoInfo>),
     /// Subtype `0x00CE`: Playlist track reference (`ipfa`, 68 bytes in format <= 22).
-    PlaylistItem(IpfaSection),
+    PlaylistItem(PlaylistTrackItem),
     /// Subtype `0x00DA`: Compact playlist track reference (`IPfa`, 32 bytes in format >= 23).
-    PlaylistItemCompact(IPfaSection),
+    PlaylistItemCompact(CompactPlaylistTrackItem),
     /// Subtype `0x00CA`: Smart playlist options (112 bytes).
     SmartPlaylistOptions(Box<SmartPlaylistOptions>),
     /// Subtype `0x00C9`: Smart playlist rules list (`SLst`, big-endian).
@@ -374,13 +376,15 @@ fn parse_structured_boma_payload(
         }
         0x00CE if payload_bytes.len() >= 52 && first_four == Some(b"ipfa") => {
             let mut cur = Cursor::new(payload_bytes);
-            Some(BomaPayload::PlaylistItem(IpfaSection::read_le(&mut cur)?))
+            Some(BomaPayload::PlaylistItem(PlaylistTrackItem::read_le(
+                &mut cur,
+            )?))
         }
         0x00DA if payload_bytes.len() >= 24 && first_four == Some(b"IPfa") => {
             let mut cur = Cursor::new(payload_bytes);
-            Some(BomaPayload::PlaylistItemCompact(IPfaSection::read_le(
-                &mut cur,
-            )?))
+            Some(BomaPayload::PlaylistItemCompact(
+                CompactPlaylistTrackItem::read_le(&mut cur)?,
+            ))
         }
         0x00CA if payload_bytes.len() == 112 => {
             let mut cur = Cursor::new(payload_bytes);

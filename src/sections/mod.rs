@@ -23,18 +23,22 @@ use binrw::{BinRead, BinResult, BinWrite, Endian, binrw};
 use crate::crypto::{DEFAULT_MUSICDB_KEY, compress_and_encrypt_bytes, load_raw_musicdb};
 use crate::error::{MusicDbError, Result};
 
-pub use album::{IamaHeader, IamaSection, LamaHeader, LamaSection};
-pub use artist::{IAmaHeader, IAmaSection, LAmaHeader, LAmaSection};
+pub use album::{AlbumItem, AlbumItemHeader, AlbumListHeader, AlbumListSection};
+pub use artist::{ArtistItem, ArtistItemHeader, ArtistListHeader, ArtistListSection};
 pub use boma::{BomaPayload, BomaSection, BomaStringSection};
 pub use header::{HfmaHeader, HsmaHeader};
-pub use library_master::{PlmaHeader, PlmaSection, PlmaSub1F6, PlmaSub1FF};
+pub use library_master::{LibraryMasterHeader, LibraryMasterSection, PlmaSub1F6, PlmaSub1FF};
 pub use playlist::{
-    IPfaSection, IpfaSection, LPmaHeader, LPmaSection, LpmaHeader, LpmaSection, SlstSection,
-    SmartPlaylistOptions, SmartPlaylistRule, SmartPlaylistRuleArguments, SmartRuleChild,
+    CompactPlaylistTrackItem, PlaylistItem, PlaylistItemHeader, PlaylistListHeader,
+    PlaylistListSection, PlaylistTrackItem, SlstSection, SmartPlaylistOptions, SmartPlaylistRule,
+    SmartPlaylistRuleArguments, SmartRuleChild,
 };
-pub use social::{IsmaHeader, IsmaSection, LsmaHeader, LsmaSection};
+pub use social::{
+    SocialProfileItem, SocialProfileItemHeader, SocialProfileListHeader, SocialProfileListSection,
+};
 pub use track::{
-    ItmaHeader, ItmaSection, LtmaHeader, LtmaSection, TrackNumerics, TrackPlaysSkips, VideoInfo,
+    TrackItem, TrackItemHeader, TrackListHeader, TrackListSection, TrackNumerics, TrackPlaysSkips,
+    VideoInfo,
 };
 
 /// Returns the number of bytes remaining from the current cursor position to the end of `reader`.
@@ -178,13 +182,13 @@ pub(crate) mod hex_array {
     }
 }
 
-/// `LPma` (Padding / Footer section at the end of recent libraries, subtype 17 of `hsma`).
+/// Padding / footer section (`LPma`, subtype 17 of `hsma`).
 #[binrw]
 #[brw(little, magic = b"LPma")]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LPmaPaddingSection {
+pub struct PaddingSection {
     /// Offset 4: Section size in bytes (typically 96, minimum 8).
     pub section_size: u32,
     /// Offset 8..`section_size`: Remaining bytes (offset 12 is typically 6).
@@ -211,19 +215,19 @@ pub enum HsmaChild {
     /// Subtype 3: Inner `hfma` header.
     InnerHfma(HfmaHeader),
     /// Subtype 6: `plma` Library Master.
-    LibraryMaster(PlmaSection),
+    LibraryMaster(LibraryMasterSection),
     /// Subtype 4: `lama` Album List.
-    AlbumList(LamaSection),
+    AlbumList(AlbumListSection),
     /// Subtype 5: `lAma` Artist List.
-    ArtistList(LAmaSection),
+    ArtistList(ArtistListSection),
     /// Subtype 1: `ltma` Track List.
-    TrackList(LtmaSection),
+    TrackList(TrackListSection),
     /// Subtype 2: `lPma` Playlist List.
-    PlaylistList(LPmaSection),
+    PlaylistList(PlaylistListSection),
     /// Subtype 15: `Lsma` Social Profile List.
-    SocialProfileList(LsmaSection),
+    SocialProfileList(SocialProfileListSection),
     /// Subtype 17: `LPma` Padding / Footer.
-    Padding(LPmaPaddingSection),
+    Padding(PaddingSection),
     /// Any other / unknown `hsma` child (e.g. `Library Preferences.musicdb` or future subtype), preserved losslessly.
     Unknown {
         /// Section subtype from [`HsmaHeader::subtype`].
@@ -351,26 +355,26 @@ impl HsmaSection {
             (3, Some(b"hfma")) if child_bytes.len() >= 160 => {
                 Some(HsmaChild::InnerHfma(HfmaHeader::read_le(cur)?))
             }
-            (6, Some(b"plma")) if child_bytes.len() >= 160 => {
-                Some(HsmaChild::LibraryMaster(PlmaSection::read_le(cur)?))
-            }
+            (6, Some(b"plma")) if child_bytes.len() >= 160 => Some(HsmaChild::LibraryMaster(
+                LibraryMasterSection::read_le(cur)?,
+            )),
             (4, Some(b"lama")) if child_bytes.len() >= 12 => {
-                Some(HsmaChild::AlbumList(LamaSection::read_le(cur)?))
+                Some(HsmaChild::AlbumList(AlbumListSection::read_le(cur)?))
             }
             (5, Some(b"lAma")) if child_bytes.len() >= 12 => {
-                Some(HsmaChild::ArtistList(LAmaSection::read_le(cur)?))
+                Some(HsmaChild::ArtistList(ArtistListSection::read_le(cur)?))
             }
             (1, Some(b"ltma")) if child_bytes.len() >= 12 => {
-                Some(HsmaChild::TrackList(LtmaSection::read_le(cur)?))
+                Some(HsmaChild::TrackList(TrackListSection::read_le(cur)?))
             }
             (2, Some(b"lPma")) if child_bytes.len() >= 12 => {
-                Some(HsmaChild::PlaylistList(LPmaSection::read_le(cur)?))
+                Some(HsmaChild::PlaylistList(PlaylistListSection::read_le(cur)?))
             }
-            (15, Some(b"Lsma")) if child_bytes.len() >= 12 => {
-                Some(HsmaChild::SocialProfileList(LsmaSection::read_le(cur)?))
-            }
+            (15, Some(b"Lsma")) if child_bytes.len() >= 12 => Some(HsmaChild::SocialProfileList(
+                SocialProfileListSection::read_le(cur)?,
+            )),
             (17, Some(b"LPma")) if child_bytes.len() >= 8 => {
-                Some(HsmaChild::Padding(LPmaPaddingSection::read_le(cur)?))
+                Some(HsmaChild::Padding(PaddingSection::read_le(cur)?))
             }
             _ => None,
         };

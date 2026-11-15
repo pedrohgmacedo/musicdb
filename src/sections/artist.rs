@@ -3,13 +3,13 @@ use binrw::binrw;
 use super::boma::BomaSection;
 use super::{read_bounded_vec, read_header_tail};
 
-/// `lAma` (Artist List Master) header (typically 100 bytes).
+/// Artist list master header (`lAma`, typically 100 bytes).
 #[binrw]
 #[brw(little, magic = b"lAma")]
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LAmaHeader {
+pub struct ArtistListHeader {
     /// Offset 4: Header size in bytes (typically 100, minimum 12).
     pub header_size: u32,
     /// Offset 8: Number of `iAma` artist subsections that follow.
@@ -19,27 +19,27 @@ pub struct LAmaHeader {
     pub unk_12_end: Vec<u8>,
 }
 
-/// Complete `lAma` section with all `iAma` artist items.
+/// Complete artist list section (`lAma`) with all artist items (`iAma`).
 #[binrw]
 #[brw(little)]
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LAmaSection {
+pub struct ArtistListSection {
     /// The `lAma` list header.
-    pub header: LAmaHeader,
+    pub header: ArtistListHeader,
     /// All `iAma` artist records in the library.
     #[br(parse_with = read_bounded_vec, args(header.artist_count, 120, "lAma.artists"))]
-    pub artists: Vec<IAmaSection>,
+    pub artists: Vec<ArtistItem>,
 }
 
-/// `iAma` (Artist Item) header (132 bytes in modern Apple Music, 120 in Catalina).
+/// Artist item header (`iAma`, 132 bytes in modern Apple Music, 120 in Catalina).
 #[binrw]
 #[brw(little, magic = b"iAma")]
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct IAmaHeader {
+pub struct ArtistItemHeader {
     /// Offset 4: Header size in bytes (typically 132).
     pub header_size: u32,
     /// Offset 8: Total size of this `iAma` + its `boma` children.
@@ -86,15 +86,15 @@ pub struct IAmaHeader {
     pub unk_tail: Vec<u8>,
 }
 
-/// Complete `iAma` section (header + `boma` children).
+/// Complete artist item section (`iAma` header + `boma` children).
 #[binrw]
 #[brw(little)]
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct IAmaSection {
+pub struct ArtistItem {
     /// The `iAma` artist header.
-    pub header: IAmaHeader,
+    pub header: ArtistItemHeader,
     /// Metadata `boma` children attached to this artist.
     #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "iAma.bomas"))]
     pub bomas: Vec<BomaSection>,

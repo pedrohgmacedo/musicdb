@@ -189,8 +189,8 @@ mod tests {
         inner_hfma.max_crypt_size = 0;
 
         let album_boma = make_utf16le_boma(0x012C, "Synthetic Album");
-        let iama = IamaSection {
-            header: IamaHeader {
+        let iama = AlbumItem {
+            header: AlbumItemHeader {
                 header_size: 140,
                 total_size: 140 + album_boma.total_size,
                 boma_count: 1,
@@ -216,8 +216,8 @@ mod tests {
             },
             bomas: vec![album_boma],
         };
-        let lama = LamaSection {
-            header: LamaHeader {
+        let lama = AlbumListSection {
+            header: AlbumListHeader {
                 header_size: 48,
                 album_count: 1,
                 unk_12_end: vec![0; 36],
@@ -226,8 +226,8 @@ mod tests {
         };
 
         let artist_boma = make_utf16le_boma(0x0190, "Synthetic Artist");
-        let i_ama = IAmaSection {
-            header: IAmaHeader {
+        let i_ama = ArtistItem {
+            header: ArtistItemHeader {
                 header_size: 132,
                 total_size: 132 + artist_boma.total_size,
                 boma_count: 1,
@@ -252,8 +252,8 @@ mod tests {
             },
             bomas: vec![artist_boma],
         };
-        let l_ama = LAmaSection {
-            header: LAmaHeader {
+        let l_ama = ArtistListSection {
+            header: ArtistListHeader {
                 header_size: 100,
                 artist_count: 1,
                 unk_12_end: vec![0; 88],
@@ -378,8 +378,8 @@ mod tests {
             make_utf16le_boma(0x0007, "#!#116#!#"),
         ];
         let itma_boma_bytes: u32 = track_bomas.iter().map(|b| b.total_size).sum();
-        let itma = ItmaSection {
-            header: ItmaHeader {
+        let itma = TrackItem {
+            header: TrackItemHeader {
                 header_size: 376,
                 total_size: 376 + itma_boma_bytes,
                 boma_count: track_bomas.len() as u32,
@@ -469,8 +469,8 @@ mod tests {
             },
             bomas: track_bomas,
         };
-        let ltma = LtmaSection {
-            header: LtmaHeader {
+        let ltma = TrackListSection {
+            header: TrackListHeader {
                 header_size: 92,
                 track_count: 1,
                 unk_12_end: vec![0; 80],

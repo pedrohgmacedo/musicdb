@@ -5,7 +5,7 @@ use plist::Value as PlistValue;
 use serde::{Deserialize, Serialize};
 
 use musicdb::model::format_persistent_id;
-use musicdb::sections::{BomaPayload, HsmaChild, ItmaSection, RawLibraryFile};
+use musicdb::sections::{BomaPayload, HsmaChild, RawLibraryFile, TrackItem};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct UnknownFieldSummary {
@@ -955,8 +955,8 @@ pub(crate) fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> 
     let mut artists_b = HashMap::new();
     let mut playlists_a = HashMap::new();
     let mut playlists_b = HashMap::new();
-    let mut map_a: HashMap<u64, &ItmaSection> = HashMap::new();
-    let mut map_b: HashMap<u64, &ItmaSection> = HashMap::new();
+    let mut map_a: HashMap<u64, &TrackItem> = HashMap::new();
+    let mut map_b: HashMap<u64, &TrackItem> = HashMap::new();
 
     for hsma in &raw_a.sections {
         match &hsma.child {
@@ -1571,7 +1571,7 @@ pub(crate) fn compare_with_itunes_xml(
         .and_then(|v| v.as_dictionary())
         .ok_or_else(|| anyhow::anyhow!("Missing 'Tracks' dictionary in XML plist"))?;
 
-    let mut mdb_tracks: HashMap<String, &ItmaSection> = HashMap::new();
+    let mut mdb_tracks: HashMap<String, &TrackItem> = HashMap::new();
     for hsma in &raw.sections {
         if let HsmaChild::TrackList(ltma) = &hsma.child {
             for t in &ltma.tracks {

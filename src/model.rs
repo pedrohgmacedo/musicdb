@@ -7,9 +7,9 @@ use chrono::{DateTime, TimeZone, Utc};
 
 use crate::error::Result;
 use crate::sections::{
-    BomaPayload, HsmaChild, IAmaSection, IamaSection, IsmaSection, ItmaSection, LpmaSection,
-    PlmaSection, RawLibraryFile, SlstSection, SmartPlaylistOptions, SmartPlaylistRule,
-    SmartRuleChild,
+    AlbumItem, ArtistItem, BomaPayload, HsmaChild, LibraryMasterSection, PlaylistItem,
+    RawLibraryFile, SlstSection, SmartPlaylistOptions, SmartPlaylistRule, SmartRuleChild,
+    SocialProfileItem, TrackItem,
 };
 
 /// Seconds between 1904-01-01 00:00:00 UTC (Apple/Mac epoch) and 1970-01-01 00:00:00 UTC (Unix epoch).
@@ -1775,7 +1775,7 @@ impl Library {
 }
 
 impl SocialProfile {
-    pub fn from_raw(isma: &IsmaSection) -> Self {
+    pub fn from_raw(isma: &SocialProfileItem) -> Self {
         let mut profile_id = None;
         let mut name = None;
         let mut handle = None;
@@ -1807,7 +1807,7 @@ impl SocialProfile {
     }
 }
 
-fn populate_plma_metadata(plma: &PlmaSection, meta: &mut LibraryMetadata) {
+fn populate_plma_metadata(plma: &LibraryMasterSection, meta: &mut LibraryMetadata) {
     meta.show_song_list_checkboxes = Some(plma.header.checkbox_show_song_list_checkboxes != 0);
     meta.keep_media_folder_organized = Some(plma.header.checkbox_keep_media_folder_organized != 0);
     for boma in &plma.bomas {
@@ -1823,7 +1823,7 @@ fn populate_plma_metadata(plma: &PlmaSection, meta: &mut LibraryMetadata) {
 }
 
 impl Album {
-    pub fn from_raw(iama: &IamaSection) -> Self {
+    pub fn from_raw(iama: &AlbumItem) -> Self {
         let h = &iama.header;
         let mut title = None;
         let mut artist = None;
@@ -1872,7 +1872,7 @@ impl Album {
 }
 
 impl Artist {
-    pub fn from_raw(i_ama: &IAmaSection) -> Self {
+    pub fn from_raw(i_ama: &ArtistItem) -> Self {
         let h = &i_ama.header;
         let mut name = None;
         let mut sort_name = None;
@@ -1915,7 +1915,7 @@ impl Artist {
 }
 
 impl Track {
-    pub fn from_raw(itma: &ItmaSection) -> Self {
+    pub fn from_raw(itma: &TrackItem) -> Self {
         let h = &itma.header;
 
         let cloud_saga_id = (h.cloud_saga_id != 0 && h.cloud_saga_id != 0xFFFF_FFFF_FFFF_FFFD)
@@ -2318,7 +2318,7 @@ impl Track {
 }
 
 impl Playlist {
-    pub fn from_raw(lpma: &LpmaSection) -> Self {
+    pub fn from_raw(lpma: &PlaylistItem) -> Self {
         let h = &lpma.header;
         let mut name = None;
         let mut description = None;

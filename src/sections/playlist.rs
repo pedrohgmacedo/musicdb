@@ -7,13 +7,13 @@ use super::{read_bounded_vec, read_header_tail, remaining_stream_bytes};
 use crate::error::MusicDbError;
 use crate::model::SmartOperatorFlags;
 
-/// `lPma` (Playlist List Master) header (typically 92 bytes).
+/// Playlist list master header (`lPma`, typically 92 bytes).
 #[binrw]
 #[brw(little, magic = b"lPma")]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LPmaHeader {
+pub struct PlaylistListHeader {
     /// Offset 4: Header size in bytes (typically 92, minimum 12).
     pub header_size: u32,
     /// Offset 8: Number of `lpma` playlist subsections that follow.
@@ -23,27 +23,27 @@ pub struct LPmaHeader {
     pub unk_12_end: Vec<u8>,
 }
 
-/// Complete `lPma` section with all `lpma` playlist items.
+/// Complete playlist list section (`lPma`) with all playlist items (`lpma`).
 #[binrw]
 #[brw(little)]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LPmaSection {
+pub struct PlaylistListSection {
     /// The `lPma` list header.
-    pub header: LPmaHeader,
+    pub header: PlaylistListHeader,
     /// All `lpma` playlist records in the library.
     #[br(parse_with = read_bounded_vec, args(header.playlist_count, 324, "lPma.playlists"))]
-    pub playlists: Vec<LpmaSection>,
+    pub playlists: Vec<PlaylistItem>,
 }
 
-/// `lpma` (Playlist Item) header (typically 368 bytes in modern Apple Music, 324 in Catalina).
+/// Playlist item header (`lpma`, typically 368 bytes in modern Apple Music, 324 in Catalina).
 #[binrw]
 #[brw(little, magic = b"lpma")]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LpmaHeader {
+pub struct PlaylistItemHeader {
     /// Offset 4: Header size in bytes (typically 368).
     pub header_size: u32,
     /// Offset 8: Total size of this `lpma` + its `boma` children.
@@ -160,15 +160,15 @@ pub struct LpmaHeader {
     pub unk_tail: Vec<u8>,
 }
 
-/// Complete `lpma` section (header + `boma` children).
+/// Complete playlist item section (`lpma` header + `boma` children).
 #[binrw]
 #[brw(little)]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LpmaSection {
+pub struct PlaylistItem {
     /// The `lpma` playlist header.
-    pub header: LpmaHeader,
+    pub header: PlaylistItemHeader,
     /// Metadata and track item `boma` children attached to this playlist.
     #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "lpma.bomas"))]
     pub bomas: Vec<BomaSection>,
@@ -180,7 +180,7 @@ pub struct LpmaSection {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct IpfaSection {
+pub struct PlaylistTrackItem {
     /// Offset 4: Section size in bytes (typically 68, minimum 52).
     pub section_size: u32,
     /// Offset 8..12: Global counter.
@@ -206,7 +206,7 @@ pub struct IpfaSection {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct IPfaSection {
+pub struct CompactPlaylistTrackItem {
     /// Offset 4: Section size in bytes (typically 32, minimum 24).
     pub section_size: u32,
     /// Offset 8..16: Playlist item (`IPfa`) Persistent ID.
