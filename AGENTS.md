@@ -18,10 +18,16 @@ Before you say a change is finished, run these and make sure they pass:
 
 ```sh
 cargo fmt --all
+cargo clippy --all-targets --no-default-features -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
+cargo test --no-default-features
+cargo test --no-default-features --features serde
 cargo test --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --no-default-features
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 ```
+
+Running `cargo test --all-features` locally in this workspace exercises the private real-corpus regression tests in `src/lib.rs`, whereas CI skips those corpus tests and serves as the multi-OS, lint, doc, feature-matrix, and synthetic-test canary.
 
 If you add or update a dependency, also run `cargo deny check` (see [Tooling configuration](#tooling-configuration-clippytoml-and-denytoml)).
 
