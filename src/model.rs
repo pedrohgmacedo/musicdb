@@ -18,7 +18,7 @@ use crate::sections::{
 /// Seconds between 1904-01-01 00:00:00 UTC (Apple/Mac HFS+ epoch) and 1970-01-01 00:00:00 UTC (Unix epoch).
 pub const APPLE_TO_UNIX_EPOCH_OFFSET: i64 = crate::sections::timestamp::APPLE_TO_UNIX_EPOCH_OFFSET;
 
-/// Converts an Apple 32-bit timestamp (seconds since 1904-01-01 UTC/local) to a [`Timezone`].
+/// Converts an Apple 32-bit timestamp (seconds since 1904-01-01 UTC/local) to a [`Timestamp`].
 /// Returns `None` if `apple_ts < 86_400` (0 or small non-timestamp sentinel values such as `2` on local `TrackNumerics[0].date_cloud_synced`).
 #[must_use]
 pub fn apple_timestamp_to_utc(apple_ts: u32) -> Option<Timestamp> {
