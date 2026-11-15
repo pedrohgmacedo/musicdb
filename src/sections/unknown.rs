@@ -252,6 +252,13 @@ impl<const N: usize> UnknownValue for [u8; N] {
     ) -> Result<Self, D::Error> {
         use serde::de::Error;
         let s: String = serde::Deserialize::deserialize(deserializer)?;
+        let expected_hex_len = N.saturating_mul(2);
+        if s.len() != expected_hex_len {
+            return Err(D::Error::custom(format!(
+                "expected {expected_hex_len} hex chars ({N} bytes), got {}",
+                s.len()
+            )));
+        }
         let vec = hex::decode(&s).map_err(D::Error::custom)?;
         vec.try_into()
             .map_err(|v: Vec<u8>| D::Error::custom(format!("expected {N} bytes, got {}", v.len())))
@@ -290,7 +297,7 @@ impl UnknownValue for Vec<u8> {
 
 /// Byte offset range of an unknown field within its parent section.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnknownSpan {
     /// Fixed-width field occupying `[start, end)`.
     Fixed {
@@ -363,8 +370,19 @@ pub(crate) fn read_unknown_tail<R: Read + Seek>(
     read_header_tail(reader, endian, args).map(Unknown)
 }
 
-/// Computes a fixed [`UnknownSpan`] from a start offset and an [`UnknownValue`] type's wire length.
-pub(crate) fn fixed_span<T: UnknownValue>(start: usize, _val: &Unknown<T>) -> UnknownSpan {
+/// Marker trait for fixed-width [`UnknownValue`] types (excludes `Vec<u8>`).
+pub(crate) trait FixedUnknown: UnknownValue {}
+
+impl FixedUnknown for u8 {}
+impl FixedUnknown for u16 {}
+impl FixedUnknown for u32 {}
+impl FixedUnknown for u64 {}
+impl FixedUnknown for i32 {}
+impl FixedUnknown for i64 {}
+impl<const N: usize> FixedUnknown for [u8; N] {}
+
+/// Computes a fixed [`UnknownSpan`] from a start offset and a fixed-width [`UnknownValue`] type's wire length.
+pub(crate) fn fixed_span<T: FixedUnknown>(start: usize, _val: &Unknown<T>) -> UnknownSpan {
     let len = T::WIRE_LEN.unwrap_or(0);
     UnknownSpan::Fixed {
         start,
@@ -448,6 +466,24 @@ mod tests {
         let decoded: Unknown<[u8; 40]> = serde_json::from_str(&json).expect("deserialize [u8; 40]");
         assert_eq!(decoded, large);
 
+        let arr95 = Unknown::new([0x34u8; 95]);
+        let json95 = serde_json::to_string(&arr95).expect("serialize [u8; 95]");
+        let decoded95: Unknown<[u8; 95]> =
+            serde_json::from_str(&json95).expect("deserialize [u8; 95]");
+        assert_eq!(decoded95, arr95);
+
+        let arr120 = Unknown::new([0x56u8; 120]);
+        let json120 = serde_json::to_string(&arr120).expect("serialize [u8; 120]");
+        let decoded120: Unknown<[u8; 120]> =
+            serde_json::from_str(&json120).expect("deserialize [u8; 120]");
+        assert_eq!(decoded120, arr120);
+
+        let bad_short: Result<Unknown<[u8; 40]>, _> = serde_json::from_str("\"1234\"");
+        assert!(bad_short.is_err(), "short hex string must be rejected");
+        let bad_long: Result<Unknown<[u8; 40]>, _> =
+            serde_json::from_str(&format!("\"{}\"", "ab".repeat(41)));
+        assert!(bad_long.is_err(), "oversized hex string must be rejected");
+
         let tail = Unknown::new(vec![0xDE, 0xAD, 0xBE, 0xEF]);
         let tail_json = serde_json::to_string(&tail).expect("serialize Vec<u8>");
         assert_eq!(tail_json, "\"deadbeef\"");
@@ -464,14 +500,46 @@ mod tests {
 
     #[test]
     fn read_unknown_tail_rejects_underflow_and_truncation() {
+        use crate::error::MusicDbError;
+
         let mut cursor = Cursor::new(vec![0u8; 16]);
         let err = read_unknown_tail(&mut cursor, Endian::Little, (12, 20, "test"))
             .expect_err("header_size < fixed_size must fail");
-        assert!(err.to_string().contains("test"));
+        match err {
+            binrw::Error::Custom { err, .. } => {
+                let inner = err
+                    .downcast_ref::<MusicDbError>()
+                    .expect("expected MusicDbError");
+                assert!(matches!(
+                    inner,
+                    MusicDbError::InvalidHeaderSize {
+                        section: "test",
+                        header_size: 12,
+                        min_size: 20,
+                    }
+                ));
+            }
+            other => panic!("unexpected binrw error: {other:?}"),
+        }
 
         let mut short_cursor = Cursor::new(vec![0u8; 2]);
         let err = read_unknown_tail(&mut short_cursor, Endian::Little, (28, 20, "test"))
             .expect_err("truncated tail must fail");
-        assert_ne!(err.to_string(), "");
+        match err {
+            binrw::Error::Custom { err, .. } => {
+                let inner = err
+                    .downcast_ref::<MusicDbError>()
+                    .expect("expected MusicDbError");
+                assert!(matches!(
+                    inner,
+                    MusicDbError::TruncatedSection {
+                        needed: 8,
+                        available: 2,
+                        ..
+                    }
+                ));
+            }
+            other => panic!("unexpected binrw error: {other:?}"),
+        }
     }
 }

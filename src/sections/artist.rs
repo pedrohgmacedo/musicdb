@@ -105,7 +105,7 @@ pub struct ArtistItemHeader {
 impl ArtistItemHeader {
     /// Returns the minimum byte offset at which `unk_tail` begins for a given `header_size`.
     #[must_use]
-    pub const fn tail_start_offset(header_size: u32) -> u32 {
+    pub(crate) const fn tail_start_offset(header_size: u32) -> u32 {
         if header_size >= 124 { 124 } else { 120 }
     }
 }

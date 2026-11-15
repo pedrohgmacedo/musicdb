@@ -180,7 +180,7 @@ pub struct PlaylistItemHeader {
 impl PlaylistItemHeader {
     /// Returns the minimum byte offset at which `unk_tail` begins for a given `header_size`.
     #[must_use]
-    pub const fn tail_start_offset(header_size: u32) -> u32 {
+    pub(crate) const fn tail_start_offset(header_size: u32) -> u32 {
         if header_size >= 368 {
             368
         } else if header_size >= 328 {
@@ -503,12 +503,10 @@ impl BinRead for SmartPlaylistRule {
     ) -> BinResult<Self> {
         let field_id = u32::read_be(reader)?;
         let comparison_method = u32::read_be(reader)?;
-        let unk_8 = Unknown::new(u32::read_be(reader)?);
-        let mut unk_12_44_raw = [0u8; 32];
-        reader.read_exact(&mut unk_12_44_raw)?;
-        let unk_12_44 = Unknown::new(unk_12_44_raw);
-        let unk_44 = Unknown::new(u32::read_be(reader)?);
-        let unk_48 = Unknown::new(u32::read_be(reader)?);
+        let unk_8 = Unknown::<u32>::read_be(reader)?;
+        let unk_12_44 = Unknown::<[u8; 32]>::read_be(reader)?;
+        let unk_44 = Unknown::<u32>::read_be(reader)?;
+        let unk_48 = Unknown::<u32>::read_be(reader)?;
         let child_size = u32::read_be(reader)?;
 
         let payload_offset = reader.stream_position()?;
@@ -598,7 +596,7 @@ impl BinWrite for SmartPlaylistRule {
         self.field_id.write_be(writer)?;
         self.comparison_method.write_be(writer)?;
         self.unk_8.write_be(writer)?;
-        writer.write_all(&self.unk_12_44.0)?;
+        self.unk_12_44.write_be(writer)?;
         self.unk_44.write_be(writer)?;
         self.unk_48.write_be(writer)?;
         self.child_size.write_be(writer)?;

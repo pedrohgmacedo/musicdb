@@ -32,10 +32,15 @@ pub struct BomaSection {
 
 impl VisitUnknowns for BomaSection {
     fn visit_unknowns<V: UnknownVisitor>(&self, section: &str, visitor: &mut V) {
-        let label = if section.is_empty() {
-            "boma".to_string()
-        } else {
-            format!("{section}::boma")
+        let label: std::borrow::Cow<'_, str> = match section {
+            "" => std::borrow::Cow::Borrowed("boma"),
+            "plma" => std::borrow::Cow::Borrowed("plma::boma"),
+            "iama" => std::borrow::Cow::Borrowed("iama::boma"),
+            "iAma" => std::borrow::Cow::Borrowed("iAma::boma"),
+            "itma" => std::borrow::Cow::Borrowed("itma::boma"),
+            "lpma" => std::borrow::Cow::Borrowed("lpma::boma"),
+            "isma" => std::borrow::Cow::Borrowed("isma::boma"),
+            other => std::borrow::Cow::Owned(format!("{other}::boma")),
         };
         visit_unknowns!(visitor, &label, [(tail: self.unk_16_end, 16)]);
         match &self.payload {

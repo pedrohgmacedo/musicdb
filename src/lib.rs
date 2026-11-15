@@ -728,6 +728,29 @@ mod tests {
 
     struct SpanInvariantChecker {
         visited: usize,
+        enforce_order: bool,
+        min_start: usize,
+        prev_end: usize,
+    }
+
+    impl SpanInvariantChecker {
+        fn for_struct(magic_prefixed: bool) -> Self {
+            Self {
+                visited: 0,
+                enforce_order: true,
+                min_start: if magic_prefixed { 4 } else { 0 },
+                prev_end: 0,
+            }
+        }
+
+        fn for_tree() -> Self {
+            Self {
+                visited: 0,
+                enforce_order: false,
+                min_start: 0,
+                prev_end: 0,
+            }
+        }
     }
 
     impl crate::sections::unknown::UnknownVisitor for SpanInvariantChecker {
@@ -736,9 +759,22 @@ mod tests {
             section: &str,
             field_name: &str,
             span: crate::sections::unknown::UnknownSpan,
-            _value: &Unknown<T>,
+            value: &Unknown<T>,
         ) {
             self.visited += 1;
+            let start = span.start();
+            assert!(
+                start >= self.min_start,
+                "span start {start} < {} for {section}.{field_name}",
+                self.min_start
+            );
+            if self.enforce_order {
+                assert!(
+                    self.prev_end <= start,
+                    "overlapping or out-of-order span for {section}.{field_name}: prev_end={}, start={start}",
+                    self.prev_end
+                );
+            }
             match span {
                 crate::sections::unknown::UnknownSpan::Fixed { start, end } => {
                     let expected_len = T::WIRE_LEN
@@ -748,76 +784,338 @@ mod tests {
                         expected_len,
                         "span length mismatch for {section}.{field_name}"
                     );
+                    self.prev_end = end;
                 }
-                crate::sections::unknown::UnknownSpan::Tail { start, .. } => {
+                crate::sections::unknown::UnknownSpan::Tail { start, len } => {
                     assert!(
                         start > 0,
                         "tail span start should be > 0 for {section}.{field_name}"
                     );
+                    self.prev_end = start.saturating_add(len);
                 }
             }
+            let _ = value.is_zero();
         }
     }
 
-    #[test]
-    fn test_unknown_span_invariants() {
-        use crate::sections::playlist::{
-            PlaylistItem, PlaylistItemHeader, PlaylistListHeader, PlaylistListSection,
-            PlaylistTrackItem, SmartPlaylistOptions,
-        };
-        use crate::sections::unknown::VisitUnknowns;
+    fn check_struct_spans<V: crate::sections::unknown::VisitUnknowns>(
+        item: &V,
+        section: &str,
+        magic_prefixed: bool,
+    ) {
+        let mut checker = SpanInvariantChecker::for_struct(magic_prefixed);
+        item.visit_unknowns(section, &mut checker);
+        assert!(checker.visited > 0, "expected unknown fields in {section}");
+    }
 
-        let raw = RawLibraryFile {
-            outer_header: HfmaHeader {
-                header_size: 164,
-                extra_bytes: Unknown::new(vec![0x11, 0x22, 0x33, 0x44]),
-                ..Default::default()
-            },
-            sections: vec![HsmaSection {
+    fn wrap_boma_section(subtype: u32, total_size: u32, payload: BomaPayload) -> BomaSection {
+        BomaSection {
+            header_size: 20,
+            total_size,
+            subtype,
+            unk_16_end: Unknown::new(Vec::new()),
+            payload,
+        }
+    }
+
+    fn build_span_test_master_and_lists(outer_header: &HfmaHeader) -> Vec<HsmaSection> {
+        use crate::sections::PaddingSection;
+        use crate::sections::boma::BomaStringSection;
+        use crate::sections::library_master::{
+            LibraryMasterHeader, LibraryMasterSection, PlmaSub1F6, PlmaSub1FF,
+        };
+        use crate::sections::social::{
+            SocialProfileItem, SocialProfileItemHeader, SocialProfileListHeader,
+            SocialProfileListSection,
+        };
+
+        let str_boma = wrap_boma_section(
+            0x0002,
+            36,
+            BomaPayload::StringSection(BomaStringSection {
+                encoding: 2,
+                string_byte_len: 0,
+                parent_subtype_counter: 0,
+                unk_12: Unknown::new(0),
+                text: String::new(),
+                raw_string_bytes: Vec::new(),
+            }),
+        );
+        let hsma = |child| HsmaSection {
+            header: HsmaHeader::default(),
+            child,
+        };
+        vec![
+            HsmaSection {
                 header: HsmaHeader {
                     header_size: 56,
                     ..Default::default()
                 },
-                child: HsmaChild::PlaylistList(PlaylistListSection {
-                    header: PlaylistListHeader {
-                        header_size: 92,
-                        ..Default::default()
-                    },
-                    playlists: vec![PlaylistItem {
-                        header: PlaylistItemHeader {
-                            header_size: 100,
-                            ..Default::default()
-                        },
-                        bomas: vec![
-                            BomaSection {
-                                header_size: 20,
-                                total_size: 20 + 112,
-                                subtype: 0x0064,
-                                unk_16_end: Unknown::new(vec![0xAA, 0xBB, 0xCC, 0xDD]),
-                                payload: BomaPayload::SmartPlaylistOptions(Box::new(
-                                    SmartPlaylistOptions {
-                                        unk_15: Unknown::new(0x42),
-                                        ..Default::default()
-                                    },
-                                )),
-                            },
-                            BomaSection {
-                                header_size: 20,
-                                total_size: 20 + 68,
-                                subtype: 0x00CE,
-                                unk_16_end: Unknown::new(Vec::new()),
-                                payload: BomaPayload::PlaylistItem(PlaylistTrackItem::default()),
-                            },
-                        ],
-                    }],
-                }),
-            }],
-            trailing_bytes: Vec::new(),
+                child: HsmaChild::InnerHfma(outer_header.clone()),
+            },
+            hsma(HsmaChild::LibraryMaster(LibraryMasterSection {
+                header: LibraryMasterHeader {
+                    header_size: 160,
+                    ..Default::default()
+                },
+                bomas: vec![
+                    wrap_boma_section(0x01F6, 20, BomaPayload::Plma1F6(PlmaSub1F6::default())),
+                    wrap_boma_section(0x01FF, 44, BomaPayload::Plma1FF(PlmaSub1FF::default())),
+                    str_boma,
+                ],
+            })),
+            hsma(HsmaChild::AlbumList(AlbumListSection {
+                header: AlbumListHeader::default(),
+                albums: vec![AlbumItem {
+                    header: AlbumItemHeader::default(),
+                    bomas: Vec::new(),
+                }],
+            })),
+            hsma(HsmaChild::ArtistList(ArtistListSection {
+                header: ArtistListHeader::default(),
+                artists: vec![ArtistItem {
+                    header: ArtistItemHeader::default(),
+                    bomas: Vec::new(),
+                }],
+            })),
+            hsma(HsmaChild::SocialProfileList(SocialProfileListSection {
+                header: SocialProfileListHeader::default(),
+                profiles: vec![SocialProfileItem {
+                    header: SocialProfileItemHeader::default(),
+                    bomas: Vec::new(),
+                }],
+            })),
+            hsma(HsmaChild::Padding(PaddingSection {
+                section_size: 8,
+                raw_bytes: Unknown::new(vec![0; 8]),
+            })),
+        ]
+    }
+
+    fn build_span_test_track_bomas() -> Vec<BomaSection> {
+        vec![
+            BomaSection {
+                header_size: 20,
+                total_size: 384,
+                subtype: 0x0001,
+                unk_16_end: Unknown::new(Vec::new()),
+                payload: BomaPayload::TrackNumerics(Box::default()),
+            },
+            BomaSection {
+                header_size: 20,
+                total_size: 72,
+                subtype: 0x0017,
+                unk_16_end: Unknown::new(Vec::new()),
+                payload: BomaPayload::TrackPlaysSkips(TrackPlaysSkips::default()),
+            },
+            BomaSection {
+                header_size: 20,
+                total_size: 104,
+                subtype: 0x0024,
+                unk_16_end: Unknown::new(Vec::new()),
+                payload: BomaPayload::VideoInfo(Box::default()),
+            },
+        ]
+    }
+
+    fn build_span_test_tracks_and_playlists() -> Vec<HsmaSection> {
+        use crate::sections::playlist::{
+            CompactPlaylistTrackItem, PlaylistItem, PlaylistItemHeader, PlaylistListHeader,
+            PlaylistListSection, PlaylistTrackItem, SlstSection, SmartPlaylistRule,
+            SmartPlaylistRuleArguments, SmartRuleChild,
         };
 
-        let mut checker = SpanInvariantChecker { visited: 0 };
-        raw.visit_unknowns("", &mut checker);
-        assert!(checker.visited > 10);
+        let lpma_header = PlaylistItemHeader {
+            header_size: 368,
+            unk_328_340: Some(Unknown::new([1; 12])),
+            unk_348_356: Some(Unknown::new(2)),
+            unk_360_368: Some(Unknown::new(3)),
+            ..Default::default()
+        };
+        let slst = SlstSection {
+            rule_count: 1,
+            rules: vec![SmartPlaylistRule {
+                field_id: 0,
+                comparison_method: 0,
+                unk_8: Unknown::new(1),
+                unk_12_44: Unknown::new([0; 32]),
+                unk_44: Unknown::new(0),
+                unk_48: Unknown::new(0),
+                child_size: 260,
+                child: SmartRuleChild::Nested(Box::new(SlstSection {
+                    rule_count: 1,
+                    rules: vec![SmartPlaylistRule {
+                        field_id: 2,
+                        comparison_method: 1,
+                        unk_8: Unknown::new(0),
+                        unk_12_44: Unknown::new([0; 32]),
+                        unk_44: Unknown::new(0),
+                        unk_48: Unknown::new(0),
+                        child_size: 68,
+                        child: SmartRuleChild::Arguments(SmartPlaylistRuleArguments::default()),
+                    }],
+                    ..Default::default()
+                })),
+            }],
+            ..Default::default()
+        };
+        let playlist_bomas = vec![
+            wrap_boma_section(
+                0x0064,
+                132,
+                BomaPayload::SmartPlaylistOptions(Box::default()),
+            ),
+            wrap_boma_section(0x0065, 156, BomaPayload::SmartPlaylistRules(Box::new(slst))),
+            wrap_boma_section(
+                0x00CE,
+                88,
+                BomaPayload::PlaylistItem(PlaylistTrackItem::default()),
+            ),
+            wrap_boma_section(
+                0x00DA,
+                52,
+                BomaPayload::PlaylistItemCompact(CompactPlaylistTrackItem::default()),
+            ),
+        ];
+        vec![
+            HsmaSection {
+                header: HsmaHeader::default(),
+                child: HsmaChild::TrackList(TrackListSection {
+                    header: TrackListHeader::default(),
+                    tracks: vec![TrackItem {
+                        header: TrackItemHeader::default(),
+                        bomas: build_span_test_track_bomas(),
+                    }],
+                }),
+            },
+            HsmaSection {
+                header: HsmaHeader::default(),
+                child: HsmaChild::PlaylistList(PlaylistListSection {
+                    header: PlaylistListHeader::default(),
+                    playlists: vec![PlaylistItem {
+                        header: lpma_header,
+                        bomas: playlist_bomas,
+                    }],
+                }),
+            },
+        ]
+    }
+
+    fn build_full_span_test_file() -> RawLibraryFile {
+        let outer_header = HfmaHeader {
+            header_size: 164,
+            extra_bytes: Unknown::new(vec![0x11, 0x22, 0x33, 0x44]),
+            ..Default::default()
+        };
+        let mut sections = build_span_test_master_and_lists(&outer_header);
+        sections.extend(build_span_test_tracks_and_playlists());
+        RawLibraryFile {
+            outer_header,
+            sections,
+            trailing_bytes: Vec::new(),
+        }
+    }
+
+    fn check_payload_spans() {
+        use crate::sections::boma::BomaStringSection;
+        use crate::sections::library_master::{PlmaSub1F6, PlmaSub1FF};
+        use crate::sections::playlist::{
+            SmartPlaylistOptions, SmartPlaylistRule, SmartPlaylistRuleArguments, SmartRuleChild,
+        };
+
+        check_struct_spans(&TrackNumerics::default(), "TrackNumerics", false);
+        check_struct_spans(&TrackPlaysSkips::default(), "TrackPlaysSkips", false);
+        check_struct_spans(&VideoInfo::default(), "VideoInfo", false);
+        check_struct_spans(
+            &SmartPlaylistOptions::default(),
+            "SmartPlaylistOptions",
+            false,
+        );
+        check_struct_spans(&PlmaSub1F6::default(), "plma::0x01F6", false);
+        check_struct_spans(&PlmaSub1FF::default(), "plma::0x01FF", false);
+        check_struct_spans(
+            &BomaStringSection {
+                encoding: 2,
+                string_byte_len: 0,
+                parent_subtype_counter: 0,
+                unk_12: Unknown::new(0),
+                text: String::new(),
+                raw_string_bytes: Vec::new(),
+            },
+            "boma::str",
+            false,
+        );
+        check_struct_spans(
+            &SmartPlaylistRule {
+                field_id: 2,
+                comparison_method: 1,
+                unk_8: Unknown::new(0),
+                unk_12_44: Unknown::new([0; 32]),
+                unk_44: Unknown::new(0),
+                unk_48: Unknown::new(0),
+                child_size: 0,
+                child: SmartRuleChild::Raw(Vec::new()),
+            },
+            "SmartPlaylistRule",
+            false,
+        );
+        check_struct_spans(
+            &SmartPlaylistRuleArguments::default(),
+            "SmartPlaylistRuleArguments",
+            false,
+        );
+    }
+
+    #[test]
+    fn test_unknown_span_invariants() {
+        use crate::sections::PaddingSection;
+        use crate::sections::library_master::LibraryMasterHeader;
+        use crate::sections::playlist::{
+            CompactPlaylistTrackItem, PlaylistItemHeader, PlaylistListHeader, PlaylistTrackItem,
+            SlstSection,
+        };
+        use crate::sections::social::{SocialProfileItemHeader, SocialProfileListHeader};
+        use crate::sections::unknown::VisitUnknowns;
+
+        let raw = build_full_span_test_file();
+
+        // Check strict per-struct ordering and start >= 4 on magic-prefixed headers.
+        check_struct_spans(&raw.outer_header, "hfma", true);
+        check_struct_spans(&HsmaHeader::default(), "hsma", true);
+        check_struct_spans(&LibraryMasterHeader::default(), "plma", true);
+        check_struct_spans(&AlbumListHeader::default(), "lama", true);
+        check_struct_spans(&AlbumItemHeader::default(), "iama", true);
+        check_struct_spans(&ArtistListHeader::default(), "lAma", true);
+        check_struct_spans(&ArtistItemHeader::default(), "iAma", true);
+        check_struct_spans(&TrackListHeader::default(), "ltma", true);
+        check_struct_spans(&TrackItemHeader::default(), "itma", true);
+        check_struct_spans(&PlaylistListHeader::default(), "lPma", true);
+        let lpma_368 = PlaylistItemHeader {
+            header_size: 368,
+            unk_328_340: Some(Unknown::new([1; 12])),
+            unk_348_356: Some(Unknown::new(2)),
+            unk_360_368: Some(Unknown::new(3)),
+            ..Default::default()
+        };
+        check_struct_spans(&lpma_368, "lpma", true);
+        check_struct_spans(&SocialProfileListHeader::default(), "Lsma", true);
+        check_struct_spans(&SocialProfileItemHeader::default(), "isma", true);
+        check_struct_spans(&PlaylistTrackItem::default(), "ipfa", true);
+        check_struct_spans(&CompactPlaylistTrackItem::default(), "IPfa", true);
+        check_struct_spans(
+            &PaddingSection {
+                section_size: 8,
+                raw_bytes: Unknown::new(vec![0; 4]),
+            },
+            "LPma",
+            true,
+        );
+        check_struct_spans(&SlstSection::default(), "SLst", true);
+        check_payload_spans();
+
+        let mut tree_checker = SpanInvariantChecker::for_tree();
+        raw.visit_unknowns("", &mut tree_checker);
+        assert!(tree_checker.visited > 80);
     }
 
     #[test]

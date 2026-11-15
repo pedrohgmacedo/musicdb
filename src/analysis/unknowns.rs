@@ -106,7 +106,7 @@ impl FieldTracker {
 #[derive(Default)]
 struct TrackerSet {
     trackers: Vec<FieldTracker>,
-    map: HashMap<(String, String), usize>,
+    map: HashMap<String, HashMap<String, usize>>,
 }
 
 impl TrackerSet {
@@ -114,26 +114,31 @@ impl TrackerSet {
         &mut self,
         sec: &str,
         name: &str,
-        off: &str,
+        make_off: impl FnOnce() -> String,
         apply: impl FnOnce(&mut FieldTracker),
     ) {
-        let key = (sec.to_string(), name.to_string());
-        let idx = *self.map.entry(key).or_insert_with(|| {
+        let idx = if let Some(&existing) = self.map.get(sec).and_then(|fields| fields.get(name)) {
+            existing
+        } else {
             let i = self.trackers.len();
             self.trackers.push(FieldTracker::new(
                 sec.to_string(),
                 name.to_string(),
-                off.to_string(),
+                make_off(),
             ));
+            self.map
+                .entry(sec.to_string())
+                .or_default()
+                .insert(name.to_string(), i);
             i
-        });
+        };
         if let Some(tracker) = self.trackers.get_mut(idx) {
             apply(tracker);
         }
     }
 
     fn bytes(&mut self, sec: &str, name: &str, off: &str, val: &[u8]) {
-        self.with_tracker(sec, name, off, |t| t.record_bytes(val));
+        self.with_tracker(sec, name, || off.to_string(), |t| t.record_bytes(val));
     }
 
     fn into_summaries(self) -> Vec<UnknownFieldSummary> {
@@ -152,8 +157,12 @@ impl UnknownVisitor for TrackerSet {
         span: UnknownSpan,
         value: &Unknown<T>,
     ) {
-        let off = span.to_string();
-        self.with_tracker(section, field_name, &off, |t| t.record_value(value));
+        self.with_tracker(
+            section,
+            field_name,
+            || span.to_string(),
+            |t| t.record_value(value),
+        );
     }
 }
 
@@ -407,8 +416,7 @@ mod tests {
         out
     }
 
-    #[test]
-    fn analyze_unknowns_reports_previously_missed_sections() {
+    fn build_missed_plma_hsma() -> Vec<u8> {
         let mut boma_str_payload = vec![0u8; 18];
         boma_str_payload[0..4].copy_from_slice(&2u32.to_le_bytes());
         boma_str_payload[4..8].copy_from_slice(&2u32.to_le_bytes());
@@ -432,15 +440,17 @@ mod tests {
         plma.extend_from_slice(&boma_str);
         plma.extend_from_slice(&first_sub_boma);
         plma.extend_from_slice(&second_sub_boma);
-        let hsma_plma = wrap_hsma(6, &plma);
+        wrap_hsma(6, &plma)
+    }
 
+    fn build_missed_playlist_hsma() -> Vec<u8> {
         let mut smart_opts = vec![0u8; 112];
         smart_opts[15] = 1;
         let boma_opts = make_boma(0x00CA, &[0; 4], &smart_opts);
 
         let mut args = vec![0u8; 68];
         args[64..68].copy_from_slice(&1u32.to_be_bytes());
-        let inner_rule = make_smart_rule_be(2, 0, &args);
+        let inner_rule = make_smart_rule_be(2, 2, &args);
         let inner_slst = make_slst_be(2, &inner_rule, 1);
         let outer_rule = make_smart_rule_be(0, 1, &inner_slst);
         let outer_slst = make_slst_be(1, &outer_rule, 1);
@@ -453,6 +463,7 @@ mod tests {
             u32::try_from(324 + boma_opts.len() + boma_slst.len()).expect("lpma total");
         playlist_item_buf[8..12].copy_from_slice(&lpma_total.to_le_bytes());
         playlist_item_buf[12..16].copy_from_slice(&2u32.to_le_bytes());
+        playlist_item_buf[48] = 0x77;
         playlist_item_buf.extend_from_slice(&boma_opts);
         playlist_item_buf.extend_from_slice(&boma_slst);
 
@@ -461,18 +472,64 @@ mod tests {
         playlist_list_buf[4..8].copy_from_slice(&92u32.to_le_bytes());
         playlist_list_buf[8..12].copy_from_slice(&1u32.to_le_bytes());
         playlist_list_buf.extend_from_slice(&playlist_item_buf);
-        let hsma_lpma = wrap_hsma(2, &playlist_list_buf);
+        wrap_hsma(2, &playlist_list_buf)
+    }
+
+    fn build_missed_album_and_track_hsmas() -> (Vec<u8>, Vec<u8>) {
+        let mut album_item_buf = vec![0u8; 104];
+        album_item_buf[0..4].copy_from_slice(b"iama");
+        album_item_buf[4..8].copy_from_slice(&104u32.to_le_bytes());
+        album_item_buf[8..12].copy_from_slice(&104u32.to_le_bytes());
+        album_item_buf[27] = 0x55;
+        let mut album_list_buf = vec![0u8; 92];
+        album_list_buf[0..4].copy_from_slice(b"lama");
+        album_list_buf[4..8].copy_from_slice(&92u32.to_le_bytes());
+        album_list_buf[8..12].copy_from_slice(&1u32.to_le_bytes());
+        album_list_buf.extend_from_slice(&album_item_buf);
+
+        let mut video_info = vec![0u8; 84];
+        video_info[40..44].copy_from_slice(&9u32.to_le_bytes());
+        let boma_video = make_boma(0x0024, &[0; 4], &video_info);
+        let mut track_item_buf = vec![0u8; 380];
+        track_item_buf[0..4].copy_from_slice(b"itma");
+        track_item_buf[4..8].copy_from_slice(&380u32.to_le_bytes());
+        let itma_total = u32::try_from(380 + boma_video.len()).expect("itma total");
+        track_item_buf[8..12].copy_from_slice(&itma_total.to_le_bytes());
+        track_item_buf[12..16].copy_from_slice(&1u32.to_le_bytes());
+        track_item_buf[376..380].copy_from_slice(&[0xEE; 4]);
+        track_item_buf.extend_from_slice(&boma_video);
+        let mut track_list_buf = vec![0u8; 92];
+        track_list_buf[0..4].copy_from_slice(b"ltma");
+        track_list_buf[4..8].copy_from_slice(&92u32.to_le_bytes());
+        track_list_buf[8..12].copy_from_slice(&1u32.to_le_bytes());
+        track_list_buf.extend_from_slice(&track_item_buf);
+
+        (wrap_hsma(4, &album_list_buf), wrap_hsma(1, &track_list_buf))
+    }
+
+    #[test]
+    fn analyze_unknowns_reports_previously_missed_sections() {
+        let master_section = build_missed_plma_hsma();
+        let playlist_section = build_missed_playlist_hsma();
+        let (album_section, track_section) = build_missed_album_and_track_hsmas();
 
         let mut file_bytes = vec![0u8; 164];
         file_bytes[0..4].copy_from_slice(b"hfma");
         file_bytes[4..8].copy_from_slice(&164u32.to_le_bytes());
-        let file_total =
-            u32::try_from(164 + hsma_plma.len() + hsma_lpma.len()).expect("file total");
+        let file_total = u32::try_from(
+            164 + master_section.len()
+                + playlist_section.len()
+                + album_section.len()
+                + track_section.len(),
+        )
+        .expect("file total");
         file_bytes[8..12].copy_from_slice(&file_total.to_le_bytes());
-        file_bytes[16..20].copy_from_slice(&2u32.to_le_bytes());
+        file_bytes[16..20].copy_from_slice(&4u32.to_le_bytes());
         file_bytes[160] = 0xAA;
-        file_bytes.extend_from_slice(&hsma_plma);
-        file_bytes.extend_from_slice(&hsma_lpma);
+        file_bytes.extend_from_slice(&master_section);
+        file_bytes.extend_from_slice(&playlist_section);
+        file_bytes.extend_from_slice(&album_section);
+        file_bytes.extend_from_slice(&track_section);
 
         let raw = RawLibraryFile::from_raw_bytes(&file_bytes).expect("parse synthetic file");
         let report = analyze_unknowns(&raw);
@@ -489,6 +546,10 @@ mod tests {
             ("plma::0x01F6", "unk_0"),
             ("plma::0x01FF", "unk_0"),
             ("plma::0x01FF", "unk_24_44"),
+            ("iama", "unk_27"),
+            ("itma", "extra_bytes"),
+            ("VideoInfo", "unk_40"),
+            ("lpma", "unk_48"),
             ("SmartPlaylistOptions", "unk_15"),
             ("SLst", "unk_4"),
             ("SmartPlaylistRule", "unk_8"),
@@ -499,5 +560,19 @@ mod tests {
                 "expected {expected:?} in nonzero_unknown_fields, got {keys:?}"
             );
         }
+
+        let slst_unk4 = report
+            .nonzero_unknown_fields
+            .iter()
+            .find(|f| f.section == "SLst" && f.field_name == "unk_4")
+            .expect("SLst.unk_4 summary");
+        assert_eq!(slst_unk4.nonzero_instances, 2);
+
+        let rule_unk8 = report
+            .nonzero_unknown_fields
+            .iter()
+            .find(|f| f.section == "SmartPlaylistRule" && f.field_name == "unk_8")
+            .expect("SmartPlaylistRule.unk_8 summary");
+        assert_eq!(rule_unk8.nonzero_instances, 2);
     }
 }
