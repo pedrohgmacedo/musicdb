@@ -287,7 +287,7 @@ impl HsmaSection {
 
         let expected_end = start_pos.saturating_add(total_size);
         let mut cur = Cursor::new(&child_bytes);
-        let Some(child) = Self::parse_known_child(subtype, &child_bytes, &mut cur)? else {
+        let Some(child) = Self::parse_known_child(kind, &child_bytes, &mut cur)? else {
             let mut sig = [0u8; 4];
             if let Some(prefix) = child_bytes.get(0..4) {
                 sig.copy_from_slice(prefix);
@@ -322,34 +322,34 @@ impl HsmaSection {
     }
 
     fn parse_known_child(
-        subtype: u32,
+        kind: SectionKind,
         child_bytes: &[u8],
         cur: &mut Cursor<&Vec<u8>>,
     ) -> BinResult<Option<HsmaChild>> {
         let first_four = child_bytes.get(0..4);
-        let parsed = match (subtype, first_four) {
-            (3, Some(b"hfma")) if child_bytes.len() >= 160 => {
+        let parsed = match (kind, first_four) {
+            (SectionKind::InnerHfma, Some(b"hfma")) if child_bytes.len() >= 160 => {
                 Some(HsmaChild::InnerHfma(HfmaHeader::read_le(cur)?))
             }
-            (6, Some(b"plma")) if child_bytes.len() >= 160 => Some(HsmaChild::LibraryMaster(
-                LibraryMasterSection::read_le(cur)?,
-            )),
-            (4, Some(b"lama")) if child_bytes.len() >= 12 => {
+            (SectionKind::LibraryMaster, Some(b"plma")) if child_bytes.len() >= 160 => Some(
+                HsmaChild::LibraryMaster(LibraryMasterSection::read_le(cur)?),
+            ),
+            (SectionKind::AlbumList, Some(b"lama")) if child_bytes.len() >= 12 => {
                 Some(HsmaChild::AlbumList(AlbumListSection::read_le(cur)?))
             }
-            (5, Some(b"lAma")) if child_bytes.len() >= 12 => {
+            (SectionKind::ArtistList, Some(b"lAma")) if child_bytes.len() >= 12 => {
                 Some(HsmaChild::ArtistList(ArtistListSection::read_le(cur)?))
             }
-            (1, Some(b"ltma")) if child_bytes.len() >= 12 => {
+            (SectionKind::TrackList, Some(b"ltma")) if child_bytes.len() >= 12 => {
                 Some(HsmaChild::TrackList(TrackListSection::read_le(cur)?))
             }
-            (2, Some(b"lPma")) if child_bytes.len() >= 12 => {
+            (SectionKind::PlaylistList, Some(b"lPma")) if child_bytes.len() >= 12 => {
                 Some(HsmaChild::PlaylistList(PlaylistListSection::read_le(cur)?))
             }
-            (15, Some(b"Lsma")) if child_bytes.len() >= 12 => Some(HsmaChild::SocialProfileList(
-                SocialProfileListSection::read_le(cur)?,
-            )),
-            (17, Some(b"LPma")) if child_bytes.len() >= 8 => {
+            (SectionKind::SocialProfileList, Some(b"Lsma")) if child_bytes.len() >= 12 => Some(
+                HsmaChild::SocialProfileList(SocialProfileListSection::read_le(cur)?),
+            ),
+            (SectionKind::Padding, Some(b"LPma")) if child_bytes.len() >= 8 => {
                 Some(HsmaChild::Padding(PaddingSection::read_le(cur)?))
             }
             _ => None,

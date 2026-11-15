@@ -310,8 +310,9 @@ fn print_hsma_sections(sections: &[HsmaSection], trailing_bytes: &[u8]) {
     for (i, sec) in sections.iter().enumerate() {
         let desc = describe_hsma_child(&sec.child);
         println!(
-            "  [{i}] subtype={:<2} total_size={:<10} -> {desc}",
+            "  [{i}] subtype={:<2} ({}) total_size={:<10} -> {desc}",
             sec.header.subtype,
+            sec.header.kind(),
             sec.header.effective_total_size(),
         );
     }
