@@ -1,6 +1,6 @@
 [package]
 name = "musicdb"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99"
 authors = ["Pedro Macedo <pedro@pedromacedo.com>"]
