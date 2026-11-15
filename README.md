@@ -84,51 +84,51 @@ cargo build --release
 
 ```bash
 # Export the entire library (tracks, albums, artists, playlists, items, smart rules, views) to SQLite
-musicdb-rs export-sqlite "path/to/Apple Music Library.musiclibrary" apple_music.sqlite
+musicdb export-sqlite "path/to/Apple Music Library.musiclibrary" apple_music.sqlite
 
 # Export the entire library domain model to pretty-printed JSON
-musicdb-rs export-json "path/to/Apple Music Library.musiclibrary" -o apple_music.json
+musicdb export-json "path/to/Apple Music Library.musiclibrary" -o apple_music.json
 ```
 
 ### 2. Targeted High-Level Domain Queries
 
 ```bash
 # Inspect a playlist by name or 16-char hex Persistent ID (decodes Smart Playlist rules, view preferences, and tracks)
-musicdb-rs query-playlist "path/to/Apple Music Library.musiclibrary" "Most Played"
-musicdb-rs query-playlist "path/to/Apple Music Library.musiclibrary" BA3165933D277022 --json
+musicdb query-playlist "path/to/Apple Music Library.musiclibrary" "Most Played"
+musicdb query-playlist "path/to/Apple Music Library.musiclibrary" BA3165933D277022 --json
 
 # Search tracks by 16-char hex Persistent ID or case-insensitive title/artist/album substring
-musicdb-rs query-track "path/to/Apple Music Library.musiclibrary" "Working Man"
-musicdb-rs query-track "path/to/Apple Music Library.musiclibrary" 47A081DF30DA6FB2 --json
+musicdb query-track "path/to/Apple Music Library.musiclibrary" "Working Man"
+musicdb query-track "path/to/Apple Music Library.musiclibrary" 47A081DF30DA6FB2 --json
 ```
 
 ### 3. Forensics & Reverse-Engineering Commands
 
 ```bash
 # Summary of header metadata, hsma section layout, and 100% byte-identical round-trip verification
-musicdb-rs info "path/to/Apple Music Library.musiclibrary"
+musicdb info "path/to/Apple Music Library.musiclibrary"
 
 # Diff two .musicdb snapshots across header, plma, tracks, albums, artists, and playlists
-musicdb-rs diff path/to/before/Library.musicdb path/to/after/Library.musicdb
+musicdb diff path/to/before/Library.musicdb path/to/after/Library.musicdb
 
 # Scan unknown byte regions, boma subtype frequencies, and structural invariants
-musicdb-rs unknowns "path/to/Apple Music Library.musiclibrary"
+musicdb unknowns "path/to/Apple Music Library.musiclibrary"
 
 # Cross-check a .musicdb file against an iTunes Music Library.xml file by Persistent ID
-musicdb-rs xml-check path/to/Library.musicdb "path/to/iTunes Music Library.xml"
+musicdb xml-check path/to/Library.musicdb "path/to/iTunes Music Library.xml"
 
 # Decrypt and decompress a .musicdb file into raw binary bytes
-musicdb-rs decrypt path/to/Library.musicdb /tmp/raw_library.bin
+musicdb decrypt path/to/Library.musicdb /tmp/raw_library.bin
 
 # Inspect a binary or XML .plist file (e.g. Preferences.plist or preferences/Songs.plist)
-musicdb-rs plist "path/to/Apple Music Library.musiclibrary/preferences/Songs.plist"
+musicdb plist "path/to/Apple Music Library.musiclibrary/preferences/Songs.plist"
 ```
 
 ---
 
 ## SQLite Database Schema
 
-`Library::export_sqlite` (`musicdb-rs export-sqlite`) generates the following tables and views:
+`Library::export_sqlite` (`musicdb export-sqlite`) generates the following tables and views:
 
 | Table / View | Description |
 | :--- | :--- |
