@@ -15,7 +15,7 @@ Verified with **100% byte-identical lossless round-tripping** across Apple Music
 
 1. **Layer 1 — Binary Envelope & Lossless Section AST (`musicdb::crypto`, `musicdb::sections`)**:
    - Decrypts the AES-128-ECB payload (`DEFAULT_MUSICDB_KEY = b"BHUILuilfghuila3"`) after the uncompressed 160-byte outer `hfma` header and inflates the zlib stream.
-   - Parses every `hsma` section (`InnerHfma`, `plma` LibraryMaster, `lama`/`iama` Albums, `lAma`/`iAma` Artists, `Lsma`/`isma` SocialProfiles, `ltma`/`itma` Tracks, `lPma`/`lpma` Playlists, `LPma` Padding) and every `boma` subtype into strongly-typed `binrw` structs while preserving unknown byte slices for 100% byte-for-byte re-serialization (`RawLibraryFile::to_raw_bytes`).
+   - Parses every `hsma` section (`InnerHfma`, `plma` `LibraryMaster`, `lama`/`iama` Albums, `lAma`/`iAma` Artists, `Lsma`/`isma` `SocialProfiles`, `ltma`/`itma` Tracks, `lPma`/`lpma` Playlists, `LPma` Padding) and every `boma` subtype into strongly-typed `binrw` structs while preserving unknown byte slices for 100% byte-for-byte re-serialization (`RawLibraryFile::to_raw_bytes`).
 2. **Layer 2 — Meaningful Domain Model (`musicdb::model`)**:
    - Exposes `Library`, `LibraryMetadata`, `Track`, `Album`, `Artist`, `Playlist`, and `SocialProfile`.
    - Translates binary bitmasks, magic strings, and big-endian rule trees into self-explanatory domain types:
@@ -34,7 +34,7 @@ Verified with **100% byte-identical lossless round-tripping** across Apple Music
 
 ## Rust Crate Usage
 
-```rust
+```rust,no_run
 use musicdb::Library;
 
 fn main() -> musicdb::Result<()> {
@@ -55,15 +55,16 @@ fn main() -> musicdb::Result<()> {
     if let Some(pl) = lib.playlist_by_name("Most Played") {
         println!("Playlist {:?} ({:?}):", pl.name, pl.kind);
         if let Some(smart) = &pl.smart_playlist {
-            println!("  Smart Config: {:?}", smart);
+            println!("  Smart Config: {smart:?}");
         }
-        for track in lib.playlist_tracks(&pl.persistent_id) {
+        for track in lib.playlist_tracks(pl) {
             println!("  - {:?} by {:?}", track.title, track.artist);
         }
     }
 
     // Export to a normalized, indexed SQLite database
-    lib.export_sqlite("/tmp/apple_music.sqlite")?;
+    #[cfg(feature = "sqlite")]
+    lib.export_sqlite("apple_music.sqlite")?;
 
     Ok(())
 }

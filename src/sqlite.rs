@@ -367,9 +367,9 @@ fn insert_library_metadata(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
         )",
         params![
-            m.persistent_id,
-            m.itunes_persistent_id,
-            m.revision_hash,
+            m.persistent_id.to_string(),
+            m.itunes_persistent_id.map(|id| id.to_string()),
+            m.revision_hash.to_string(),
             m.file_size_mirror,
             m.app_version,
             m.format_major_version,
@@ -410,9 +410,9 @@ fn insert_albums(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
     )?;
     for a in &lib.albums {
         stmt.execute(params![
-            a.persistent_id,
-            a.itunes_persistent_id,
-            a.first_track_persistent_id,
+            a.persistent_id.to_string(),
+            a.itunes_persistent_id.map(|id| id.to_string()),
+            a.first_track_persistent_id.map(|id| id.to_string()),
             a.title,
             a.artist,
             a.album_artist,
@@ -420,7 +420,7 @@ fn insert_albums(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             a.editorial_notes,
             i32::from(a.is_compilation),
             a.star_rating,
-            a.stars,
+            a.stars(),
             i32::from(a.star_rating_is_computed),
             a.suggestion_flag.to_string(),
             i32::from(a.suggestion_locally_modified),
@@ -445,8 +445,8 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
     )?;
     for a in &lib.artists {
         stmt.execute(params![
-            a.persistent_id,
-            a.itunes_persistent_id,
+            a.persistent_id.to_string(),
+            a.itunes_persistent_id.map(|id| id.to_string()),
             a.name,
             a.sort_name,
             a.cloud_artist_id,
@@ -512,7 +512,7 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             Some(serde_json::to_string(&t.extra_strings)?)
         };
         stmt.execute(params![
-            t.persistent_id,
+            t.persistent_id.to_string(),
             t.title,
             t.album,
             t.artist,
@@ -560,7 +560,7 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             t.equalizer_preset.as_ref().and_then(|e| e.preset_id),
             t.equalizer_preset.as_ref().map(|e| e.name.as_str()),
             t.star_rating,
-            t.stars,
+            t.stars(),
             t.suggestion_flag.to_string(),
             i32::from(t.disabled),
             i32::from(t.skip_when_shuffling),
@@ -585,17 +585,17 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             t.storefront_id,
             t.purchaser_email,
             t.purchaser_name,
-            t.downloaded_status,
+            t.downloaded_state.raw(),
             t.downloaded_state.to_string(),
             t.cloud_status.to_string(),
-            t.cloud_status_raw,
+            t.cloud_status.raw(),
             t.cloud_album_id,
             t.cloud_artist_id,
             t.cloud_artwork_token,
             t.cloud_lyrics_token,
-            t.content_rating,
+            t.content_advisory.raw(),
             t.content_advisory.to_string(),
-            t.media_kind,
+            t.media_type.raw(),
             t.media_type.to_string(),
             t.playback_start_ms,
             t.playback_stop_ms,
@@ -614,8 +614,8 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             t.file_url,
             t.legacy_file_path,
             t.book_path,
-            t.album_persistent_id,
-            t.artist_persistent_id,
+            t.album_persistent_id.map(|id| id.to_string()),
+            t.artist_persistent_id.map(|id| id.to_string()),
             t.artwork_uuid,
             t.artwork_count,
             t.has_embedded_artwork.map(i32::from),
@@ -679,9 +679,10 @@ fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
         let vp = p.view_preferences.as_ref();
         let vp_json = vp.map(serde_json::to_string).transpose()?;
 
+        let p_pid_str = p.persistent_id.to_string();
         pl_stmt.execute(params![
-            p.persistent_id,
-            p.parent_persistent_id,
+            &p_pid_str,
+            p.parent_persistent_id.map(|id| id.to_string()),
             p.name,
             p.description,
             p.kind.to_string(),
@@ -689,7 +690,7 @@ fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             i32::from(p.is_folder),
             i32::from(p.is_smart),
             i32::from(p.show_in_profile_and_search),
-            p.distinguished_kind,
+            p.system_kind.raw(),
             p.system_kind.to_string(),
             p.suggestion_flag.to_string(),
             p.date_created.map(|d| d.to_rfc3339()),
@@ -700,7 +701,7 @@ fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             p.play_count,
             p.true_play_count,
             p.refresh_interval_seconds,
-            p.cloud_share_mode,
+            p.share_mode.raw(),
             p.share_mode.to_string(),
             p.artwork_template_kind,
             p.cloud_saga_id.map(u64_to_sqlite_i64),
@@ -709,7 +710,8 @@ fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             p.subscribed_container_url,
             p.owner_name,
             p.owner_id,
-            p.author_social_profile_persistent_id,
+            p.author_social_profile_persistent_id
+                .map(|id| id.to_string()),
             p.cloud_artwork_url,
             p.cloud_artwork_token,
             p.artwork_uuid,
@@ -730,20 +732,14 @@ fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
 
         for (pos, tpid) in p.track_persistent_ids.iter().enumerate() {
             let pos_i64 = i64::try_from(pos).unwrap_or(i64::MAX);
-            item_stmt.execute(params![p.persistent_id, pos_i64, tpid])?;
+            item_stmt.execute(params![&p_pid_str, pos_i64, tpid.to_string()])?;
         }
 
         if let Some(smart) = sp
             && let Some(group) = &smart.rule_group
         {
             let mut rule_index = 0usize;
-            insert_smart_rules_recursive(
-                &mut rule_stmt,
-                &p.persistent_id,
-                group,
-                0,
-                &mut rule_index,
-            )?;
+            insert_smart_rules_recursive(&mut rule_stmt, &p_pid_str, group, 0, &mut rule_index)?;
         }
     }
     Ok(())
@@ -757,7 +753,7 @@ fn insert_social_profiles(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
     )?;
     for s in &lib.social_profiles {
         stmt.execute(params![
-            s.persistent_id,
+            s.persistent_id.to_string(),
             s.profile_id,
             s.name,
             s.handle,

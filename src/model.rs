@@ -1,37 +1,43 @@
+//! High-level domain model for Apple Music `.musicdb` libraries (`Library`, `Track`, `Album`, `Artist`, `Playlist`, `SocialProfile`).
+
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use bitflags::bitflags;
 use chrono::{DateTime, TimeZone, Utc};
 
-use crate::error::Result;
+use crate::error::{MusicDbError, Result};
 use crate::sections::{
-    AlbumItem, ArtistItem, BomaPayload, HsmaChild, LibraryMasterSection, PlaylistItem,
+    AlbumItem, ArtistItem, BomaPayload, BomaSection, HsmaChild, LibraryMasterSection, PlaylistItem,
     RawLibraryFile, SlstSection, SmartPlaylistOptions, SmartPlaylistRule, SmartRuleChild,
-    SocialProfileItem, TrackItem,
+    SocialProfileItem, TrackItem, TrackNumerics,
 };
 
-/// Seconds between 1904-01-01 00:00:00 UTC (Apple/Mac epoch) and 1970-01-01 00:00:00 UTC (Unix epoch).
+/// Seconds between 1904-01-01 00:00:00 UTC (Apple/Mac HFS+ epoch) and 1970-01-01 00:00:00 UTC (Unix epoch).
 pub const APPLE_TO_UNIX_EPOCH_OFFSET: i64 = 2_082_844_800;
 
-/// Converts an Apple 32-bit timestamp (seconds since 1904-01-01 UTC/local) to a `DateTime<Utc>`.
+/// Converts an Apple 32-bit timestamp (seconds since 1904-01-01 UTC/local) to a [`DateTime<Utc>`].
 /// Returns `None` if `apple_ts < 86_400` (0 or small non-timestamp sentinel values such as `2` on local `TrackNumerics[0].date_cloud_synced`).
+#[must_use]
 pub fn apple_timestamp_to_utc(apple_ts: u32) -> Option<DateTime<Utc>> {
     if apple_ts < 86_400 {
         return None;
     }
-    let unix_secs = (apple_ts as i64) - APPLE_TO_UNIX_EPOCH_OFFSET;
+    let unix_secs = i64::from(apple_ts) - APPLE_TO_UNIX_EPOCH_OFFSET;
     Utc.timestamp_opt(unix_secs, 0).single()
 }
 
 /// Formats a 64-bit Persistent ID as a 16-character uppercase hexadecimal string (matching `iTunes Music Library.xml`).
+#[must_use]
 pub fn format_persistent_id(id: u64) -> String {
-    format!("{:016X}", id)
+    format!("{id:016X}")
 }
 
-/// Formats a 16-byte artwork UUID as standard `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` uppercase string.
+/// Formats a 16-byte artwork UUID as a standard `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` uppercase string.
 /// Returns `None` if all 16 bytes are zero.
+#[must_use]
 pub fn format_artwork_uuid(bytes: &[u8; 16]) -> Option<String> {
     if bytes.iter().all(|&b| b == 0) {
         return None;
@@ -57,9 +63,185 @@ pub fn format_artwork_uuid(bytes: &[u8; 16]) -> Option<String> {
     ))
 }
 
+/// 64-bit Apple Music Persistent ID, formatted as 16 uppercase hexadecimal digits (`{:016X}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct PersistentId(pub u64);
+
+impl PersistentId {
+    /// Zero Persistent ID (`0x0000_0000_0000_0000`).
+    pub const ZERO: Self = Self(0);
+
+    /// Creates a [`PersistentId`] from its raw `u64` value.
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    /// Returns the underlying `u64` value.
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    /// Returns `true` if the underlying `u64` is `0`.
+    #[must_use]
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Wraps `id` in `Some(PersistentId(id))` if `id != 0`, or `None` if `id == 0`.
+    #[must_use]
+    pub const fn from_non_zero(id: u64) -> Option<Self> {
+        if id == 0 { None } else { Some(Self(id)) }
+    }
+}
+
+impl fmt::Display for PersistentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:016X}", self.0)
+    }
+}
+
+impl fmt::UpperHex for PersistentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:016X}", self.0)
+    }
+}
+
+impl fmt::LowerHex for PersistentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:016x}", self.0)
+    }
+}
+
+impl From<u64> for PersistentId {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PersistentId> for u64 {
+    fn from(value: PersistentId) -> Self {
+        value.0
+    }
+}
+
+impl AsRef<u64> for PersistentId {
+    fn as_ref(&self) -> &u64 {
+        &self.0
+    }
+}
+
+/// Error returned when parsing a [`PersistentId`] from a hexadecimal string fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsePersistentIdError(pub std::num::ParseIntError);
+
+impl fmt::Display for ParsePersistentIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid hexadecimal persistent ID: {}", self.0)
+    }
+}
+
+impl std::error::Error for ParsePersistentIdError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+impl FromStr for PersistentId {
+    type Err = ParsePersistentIdError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let trimmed = s
+            .trim()
+            .strip_prefix("0x")
+            .or_else(|| s.trim().strip_prefix("0X"))
+            .unwrap_or_else(|| s.trim());
+        u64::from_str_radix(trimmed, 16)
+            .map(Self)
+            .map_err(ParsePersistentIdError)
+    }
+}
+
+impl PartialEq<str> for PersistentId {
+    fn eq(&self, other: &str) -> bool {
+        other.parse::<Self>().ok() == Some(*self)
+    }
+}
+
+impl PartialEq<&str> for PersistentId {
+    fn eq(&self, other: &&str) -> bool {
+        (*other).parse::<Self>().ok() == Some(*self)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for PersistentId {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for PersistentId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse::<Self>().map_err(serde::de::Error::custom)
+    }
+}
+
+/// Conversion helper trait allowing [`Library`] lookup methods (`track_by_id`, `album_by_id`, etc.)
+/// to accept a [`PersistentId`], `&PersistentId`, `u64`, or hexadecimal `&str`/`&String`.
+pub trait IntoPersistentId {
+    /// Converts `self` into a [`PersistentId`] if valid.
+    fn into_persistent_id(self) -> Option<PersistentId>;
+}
+
+impl IntoPersistentId for PersistentId {
+    fn into_persistent_id(self) -> Option<PersistentId> {
+        Some(self)
+    }
+}
+
+impl IntoPersistentId for &PersistentId {
+    fn into_persistent_id(self) -> Option<PersistentId> {
+        Some(*self)
+    }
+}
+
+impl IntoPersistentId for u64 {
+    fn into_persistent_id(self) -> Option<PersistentId> {
+        Some(PersistentId(self))
+    }
+}
+
+impl IntoPersistentId for &str {
+    fn into_persistent_id(self) -> Option<PersistentId> {
+        self.parse::<PersistentId>().ok()
+    }
+}
+
+impl IntoPersistentId for &String {
+    fn into_persistent_id(self) -> Option<PersistentId> {
+        self.as_str().parse::<PersistentId>().ok()
+    }
+}
+
+impl IntoPersistentId for String {
+    fn into_persistent_id(self) -> Option<PersistentId> {
+        self.as_str().parse::<PersistentId>().ok()
+    }
+}
+
 bitflags! {
-    /// Raw bitflags for `suggestion_flag` (`itma` offset 126..128, `iama` offset 34..36, `iAma` offset 34..36, `lpma` offset 62..64).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// Raw bitflags for `suggestion_flag` (`itma` offset 62..64, `iama` offset 42..44, `iAma` offset 101..103, `lpma` offset 223..225).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     pub struct SuggestionFlags: u16 {
         /// Bit 0 (`0x0001`): Set on Removed (`0x0001`), SuggestLess (`0x0003`), and locally modified SuggestLess (`0x0101`).
@@ -73,14 +255,21 @@ bitflags! {
     }
 }
 
+/// User recommendation / favorite state (`Neutral`, `Favorite`, `SuggestLess`, `Removed`).
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SuggestionFlag {
+    /// `0`: Default / unrated state.
+    #[default]
     Neutral,
+    /// `1`: Removed from library.
     Removed,
+    /// `2` (`0x0002` or `0x0102`): Favorited / loved by the user.
     Favorite,
+    /// `3` (`0x0003` or `0x0101` / `0x0103`): Marked "Suggest Less" / disliked by the user.
     SuggestLess,
+    /// Unrecognized raw `u16` value.
     Unknown(u16),
 }
 
@@ -106,15 +295,27 @@ impl From<u16> for SuggestionFlag {
 }
 
 impl SuggestionFlag {
-    /// Returns the `SuggestionFlags` bitmask representation of a raw `suggestion_flag` value.
+    /// Returns the canonical raw `u16` code for this [`SuggestionFlag`].
     #[must_use]
-    pub fn flags(raw: u16) -> SuggestionFlags {
+    pub const fn raw(self) -> u16 {
+        match self {
+            Self::Neutral => 0,
+            Self::Removed => 1,
+            Self::Favorite => 2,
+            Self::SuggestLess => 3,
+            Self::Unknown(v) => v,
+        }
+    }
+
+    /// Returns the [`SuggestionFlags`] bitmask representation of a raw `suggestion_flag` value.
+    #[must_use]
+    pub const fn flags(raw: u16) -> SuggestionFlags {
         SuggestionFlags::from_bits_retain(raw)
     }
 
     /// Returns `true` if the `0x0100` local user-modified bit is set (e.g. `0x0102` when favorited offline, `0x0101` when marked Suggest Less offline).
     #[must_use]
-    pub fn is_locally_modified(raw: u16) -> bool {
+    pub const fn is_locally_modified(raw: u16) -> bool {
         SuggestionFlags::from_bits_retain(raw).contains(SuggestionFlags::LOCALLY_MODIFIED)
     }
 }
@@ -133,10 +334,11 @@ impl fmt::Display for SuggestionFlag {
 
 /// iCloud Music Library status (`itma` offset 58, Smart Playlist field `0x86` = 134).
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CloudStatus {
     /// `0`: Local track when iCloud Music Library is disabled or not applicable (`LocalOnly`).
+    #[default]
     LocalOnly,
     /// `1`: Purchased from the iTunes Store (`Purchased`).
     Purchased,
@@ -160,6 +362,27 @@ pub enum CloudStatus {
     NotUploaded,
     /// Any other status value.
     Unknown(u8),
+}
+
+impl CloudStatus {
+    /// Returns the raw `u8` status code stored at `itma` offset 58.
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        match self {
+            Self::LocalOnly => 0,
+            Self::Purchased => 1,
+            Self::Matched => 2,
+            Self::Uploaded => 3,
+            Self::Ineligible => 4,
+            Self::Error => 5,
+            Self::SyncError => 6,
+            Self::Duplicate => 7,
+            Self::AppleMusic => 8,
+            Self::NoLongerAvailable => 9,
+            Self::NotUploaded => 10,
+            Self::Unknown(v) => v,
+        }
+    }
 }
 
 impl From<u8> for CloudStatus {
@@ -202,14 +425,34 @@ impl fmt::Display for CloudStatus {
 
 /// Content advisory rating (`itma` offset 59).
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ContentRating {
+    /// `0`: No content advisory rating.
+    #[default]
     None,
+    /// `1`: Explicit content.
     Explicit,
+    /// `2`: Clean version.
     Clean,
+    /// `4`: Parental guidance suggested.
     ParentalGuidance,
+    /// Unrecognized raw `u8` content rating value.
     Unknown(u8),
+}
+
+impl ContentRating {
+    /// Returns the raw `u8` rating code stored at `itma` offset 59.
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Explicit => 1,
+            Self::Clean => 2,
+            Self::ParentalGuidance => 4,
+            Self::Unknown(v) => v,
+        }
+    }
 }
 
 impl From<u8> for ContentRating {
@@ -238,12 +481,28 @@ impl fmt::Display for ContentRating {
 
 /// Local download vs. cloud-only status (`itma` offset 57).
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DownloadedStatus {
+    /// `1`: Downloaded locally on disk.
+    #[default]
     DownloadedLocal,
+    /// `3`: Stored in cloud / not downloaded locally.
     CloudOnly,
+    /// Unrecognized raw `u8` value.
     Unknown(u8),
+}
+
+impl DownloadedStatus {
+    /// Returns the raw `u8` status code stored at `itma` offset 57.
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        match self {
+            Self::DownloadedLocal => 1,
+            Self::CloudOnly => 3,
+            Self::Unknown(v) => v,
+        }
+    }
 }
 
 impl From<u8> for DownloadedStatus {
@@ -268,23 +527,38 @@ impl fmt::Display for DownloadedStatus {
 
 bitflags! {
     /// Raw bitflags for a track's media kind (`itma` offset 108..112, Smart Playlist field `0x3C` = 60).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     pub struct MediaKindFlags: u32 {
+        /// `0x0000_0001`: Music audio track.
         const MUSIC         = 0x0000_0001;
+        /// `0x0000_0002`: Movie video track.
         const MOVIE         = 0x0000_0002;
+        /// `0x0000_0004`: Podcast episode.
         const PODCAST       = 0x0000_0004;
+        /// `0x0000_0008`: Audiobook track.
         const AUDIOBOOK     = 0x0000_0008;
+        /// `0x0000_0010`: Digital PDF booklet.
         const BOOKLET_PDF   = 0x0000_0010;
+        /// `0x0000_0020`: Music video track.
         const MUSIC_VIDEO   = 0x0000_0020;
+        /// `0x0000_0040`: TV show episode.
         const TV_SHOW       = 0x0000_0040;
+        /// `0x0000_0080`: Stage play.
         const STAGE_PLAY    = 0x0000_0080;
+        /// `0x0000_0100`: Interactive digital book.
         const DIGITAL_BOOK  = 0x0000_0100;
+        /// `0x0000_0400`: Home video.
         const HOME_VIDEO    = 0x0000_0400;
+        /// `0x0000_4000`: Ringtone / alert tone.
         const RINGTONE      = 0x0000_4000;
+        /// `0x0000_8000`: Digital audio item.
         const DIGITAL_AUDIO = 0x0000_8000;
+        /// `0x0001_0000`: iTunes Extras package.
         const ITUNES_EXTRAS = 0x0001_0000;
+        /// `0x0010_0000`: Voice memo recording.
         const VOICE_MEMO    = 0x0010_0000;
+        /// `0x0020_0000`: iTunes U educational media.
         const ITUNES_U      = 0x0020_0000;
 
         /// Composite mask (`0x0000_0005`): Music + Podcast.
@@ -302,30 +576,73 @@ bitflags! {
 
 /// Media kind (`itma` offset 108..112, Smart Playlist field `0x3C` = 60).
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MediaKind {
+    /// Standard music track (`0x01`).
+    #[default]
     Music,
+    /// Feature film / movie (`0x02`).
     Movie,
+    /// Podcast episode (`0x04` or `0x05`).
     Podcast,
+    /// Audiobook (`0x08`).
     Audiobook,
+    /// Digital booklet PDF (`0x10`).
     BookletPdf,
+    /// Music video (`0x20`).
     MusicVideo,
+    /// TV show episode (`0x40`).
     TvShow,
+    /// Movie or TV show composite (`0x42`).
     MovieOrTvShow,
+    /// Home video (`0x400`).
     HomeVideo,
+    /// Ringtone (`0x4000`).
     Ringtone,
+    /// iTunes Extras (`0x10000`).
     ItunesExtras,
+    /// Voice Memo (`0x100000`).
     VoiceMemo,
+    /// Smart playlist mask matching all music and audio (`0x0010_21B1`).
     AllMusicAndAudio,
+    /// Smart playlist mask matching podcasts and voice memos (`0x0020_8004`).
     PodcastOrVoiceMemo,
+    /// Smart playlist mask matching podcasts, iTunes U, and voice memos (`0x0021_8004`).
     PodcastItunesUOrVoiceMemo,
+    /// Any other raw bitmask value.
     Other(u32),
 }
 
 impl MediaKind {
-    /// Returns the `MediaKindFlags` bitmask representation of a raw `media_kind` value.
-    pub fn flags(raw: u32) -> MediaKindFlags {
+    /// Returns the raw `u32` media kind bitmask stored at `itma` offset 108..112.
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        match self {
+            Self::Music => MediaKindFlags::MUSIC.bits(),
+            Self::Movie => MediaKindFlags::MOVIE.bits(),
+            Self::Podcast => MediaKindFlags::PODCAST.bits(),
+            Self::Audiobook => MediaKindFlags::AUDIOBOOK.bits(),
+            Self::BookletPdf => MediaKindFlags::BOOKLET_PDF.bits(),
+            Self::MusicVideo => MediaKindFlags::MUSIC_VIDEO.bits(),
+            Self::TvShow => MediaKindFlags::TV_SHOW.bits(),
+            Self::MovieOrTvShow => MediaKindFlags::MOVIE_OR_TV_SHOW.bits(),
+            Self::HomeVideo => MediaKindFlags::HOME_VIDEO.bits(),
+            Self::Ringtone => MediaKindFlags::RINGTONE.bits(),
+            Self::ItunesExtras => MediaKindFlags::ITUNES_EXTRAS.bits(),
+            Self::VoiceMemo => MediaKindFlags::VOICE_MEMO.bits(),
+            Self::AllMusicAndAudio => MediaKindFlags::ALL_MUSIC_AND_AUDIO.bits(),
+            Self::PodcastOrVoiceMemo => MediaKindFlags::PODCAST_OR_VOICE_MEMO.bits(),
+            Self::PodcastItunesUOrVoiceMemo => {
+                MediaKindFlags::PODCAST_ITUNES_U_OR_VOICE_MEMO.bits()
+            }
+            Self::Other(v) => v,
+        }
+    }
+
+    /// Returns the [`MediaKindFlags`] bitmask representation of a raw `media_kind` value.
+    #[must_use]
+    pub const fn flags(raw: u32) -> MediaKindFlags {
         MediaKindFlags::from_bits_retain(raw)
     }
 }
@@ -378,7 +695,7 @@ impl fmt::Display for MediaKind {
 
 bitflags! {
     /// Raw bitflags for a sortable text field's sort mode (`itma` offset 66..72).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     pub struct SortModeFlags: u8 {
         /// Bit 0 (`0x01`): A sort string (`boma` `0x001E..0x0022`) is populated on the track.
@@ -392,18 +709,35 @@ bitflags! {
 
 /// Sort string generation mode (`itma` offset 66..72).
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SortMode {
+    /// `0x00`: No sort string override is present.
+    #[default]
     None,
+    /// `0x80` / `0x81`: Auto-generated sort string (e.g. stripping leading `"The "`).
     AutoGenerated,
+    /// `0x01` / `0x03`: User-specified custom sort string override.
     CustomUserOverride,
+    /// Any other raw sort mode byte.
     Unknown(u8),
 }
 
 impl SortMode {
-    /// Returns the `SortModeFlags` bitmask representation of a raw sort mode byte.
-    pub fn flags(raw: u8) -> SortModeFlags {
+    /// Returns the raw byte representation of this [`SortMode`].
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        match self {
+            Self::None => 0x00,
+            Self::AutoGenerated => 0x80,
+            Self::CustomUserOverride => 0x01,
+            Self::Unknown(v) => v,
+        }
+    }
+
+    /// Returns the [`SortModeFlags`] bitmask representation of a raw sort mode byte.
+    #[must_use]
+    pub const fn flags(raw: u8) -> SortModeFlags {
         SortModeFlags::from_bits_retain(raw)
     }
 }
@@ -442,13 +776,18 @@ impl fmt::Display for SortMode {
 
 /// Decoded sort modes for a track's 5 sortable text fields (`itma` offset 66..71).
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TrackSortModes {
+    /// Sort mode for `sort_title`.
     pub title: SortMode,
+    /// Sort mode for `sort_album`.
     pub album: SortMode,
+    /// Sort mode for `sort_artist`.
     pub artist: SortMode,
+    /// Sort mode for `sort_album_artist`.
     pub album_artist: SortMode,
+    /// Sort mode for `sort_composer`.
     pub composer: SortMode,
 }
 
@@ -466,15 +805,26 @@ impl From<[u8; 6]> for TrackSortModes {
 
 /// Decoded Equalizer preset (`boma 0x0007`, e.g. `"#!#116#!#"` -> `preset_id: Some(116), name: "Rock"`).
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EqualizerPreset {
+    /// Raw string stored in `boma 0x0007` (e.g. `"#!#116#!#"` or custom preset name).
     pub raw: String,
+    /// Numeric built-in preset ID (`100..=121`) if `raw` uses the `#!#<id>#!#` encoding.
     pub preset_id: Option<u32>,
+    /// Human-readable equalizer preset name (e.g. `"Rock"`, `"Acoustic"`).
     pub name: String,
 }
 
+impl From<&str> for EqualizerPreset {
+    fn from(raw: &str) -> Self {
+        Self::parse(raw)
+    }
+}
+
 impl EqualizerPreset {
+    /// Parses a raw `boma 0x0007` equalizer string into an [`EqualizerPreset`].
+    #[must_use]
     pub fn parse(raw: &str) -> Self {
         if let Some(inner) = raw.strip_prefix("#!#").and_then(|s| s.strip_suffix("#!#"))
             && let Ok(id) = inner.parse::<u32>()
@@ -520,13 +870,31 @@ impl EqualizerPreset {
 
 /// Cloud visibility / sharing mode of a playlist (`lpma` offset 308..312).
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PlaylistShareMode {
+    /// `0`: Private user playlist.
+    #[default]
     Private,
+    /// `2`: Subscribed Apple Music catalog playlist.
     SubscribedCatalog,
+    /// `4`: Publicly shared user playlist shown on profile.
     PublicShared,
+    /// Unrecognized raw `u32` share mode value.
     Unknown(u32),
+}
+
+impl PlaylistShareMode {
+    /// Returns the raw `u32` share mode code stored at `lpma` offset 308..312.
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        match self {
+            Self::Private => 0,
+            Self::SubscribedCatalog => 2,
+            Self::PublicShared => 4,
+            Self::Unknown(v) => v,
+        }
+    }
 }
 
 impl From<u32> for PlaylistShareMode {
@@ -553,29 +921,79 @@ impl fmt::Display for PlaylistShareMode {
 
 /// Built-in Apple Music system playlist kind (`lpma` offset 78..80).
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DistinguishedPlaylistKind {
+    /// `0`: Regular user playlist or folder (not a distinguished system playlist).
+    #[default]
     None,
+    /// `2`: Movies system playlist.
     Movies,
+    /// `3`: TV Shows system playlist.
     TvShows,
+    /// `4`: Music system playlist.
     Music,
+    /// `5`: Audiobooks system playlist.
     Audiobooks,
+    /// `10`: Podcasts system playlist.
     Podcasts,
+    /// `14`: Voice Memos system playlist.
     VoiceMemos,
+    /// `19`: Purchased music playlist.
     Purchased,
+    /// `22`: Legacy iTunes DJ playlist.
     ITunesDj,
+    /// `26`: Genius playlist.
     Genius,
+    /// `42`: My Top Rated smart playlist.
     MyTopRated,
+    /// `43`: Recently Played smart playlist.
     RecentlyPlayed,
+    /// `44`: Recently Added smart playlist.
     RecentlyAdded,
+    /// `47`: Music Videos system playlist.
     MusicVideos,
+    /// `48`: Classical Music system playlist.
     ClassicalMusic,
+    /// `49` / `61`: Favourite Songs system playlist.
     FavoriteSongs,
+    /// `63`: Internal `Hidden Cloud PlaylistOnly Tracks` container.
     HiddenCloudPlaylistOnlyTracks,
+    /// `64`: TV & Movies system playlist.
     TvAndMovies,
+    /// `65` / `66`: Downloaded music system playlist.
     Downloaded,
+    /// Any other raw distinguished kind value.
     Other(u16),
+}
+
+impl DistinguishedPlaylistKind {
+    /// Returns the raw `u16` distinguished kind code stored at `lpma` offset 79..81.
+    #[must_use]
+    pub const fn raw(self) -> u16 {
+        match self {
+            Self::None => 0,
+            Self::Movies => 2,
+            Self::TvShows => 3,
+            Self::Music => 4,
+            Self::Audiobooks => 5,
+            Self::Podcasts => 10,
+            Self::VoiceMemos => 14,
+            Self::Purchased => 19,
+            Self::ITunesDj => 22,
+            Self::Genius => 26,
+            Self::MyTopRated => 42,
+            Self::RecentlyPlayed => 43,
+            Self::RecentlyAdded => 44,
+            Self::MusicVideos => 47,
+            Self::ClassicalMusic => 48,
+            Self::FavoriteSongs => 49,
+            Self::HiddenCloudPlaylistOnlyTracks => 63,
+            Self::TvAndMovies => 64,
+            Self::Downloaded => 65,
+            Self::Other(v) => v,
+        }
+    }
 }
 
 impl From<u16> for DistinguishedPlaylistKind {
@@ -634,14 +1052,21 @@ impl fmt::Display for DistinguishedPlaylistKind {
 
 /// High-level semantic classification of a playlist.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PlaylistKind {
+    /// Internal master library playlist (`####!####`).
     Master,
+    /// Built-in Apple Music system playlist (`Favourite Songs`, `Music Videos`, etc.).
     Distinguished,
+    /// Playlist folder containing child playlists/folders.
     Folder,
+    /// User-created or system Smart Playlist evaluated via `SLst` rules.
     Smart,
+    /// Subscribed Apple Music catalog playlist.
     SubscribedCatalog,
+    /// Standard user-curated track playlist.
+    #[default]
     Standard,
 }
 
@@ -660,34 +1085,51 @@ impl fmt::Display for PlaylistKind {
 
 /// Smart Playlist configuration (`boma 0x00CA` options + `boma 0x00C9` `SLst` rule tree).
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SmartPlaylistConfig {
+    /// Whether "Live updating" is enabled.
     pub live_updating: bool,
+    /// Whether rule matching is enabled.
     pub match_rules: bool,
+    /// Whether "Match only checked items" is enabled.
     pub match_only_checked_items: bool,
+    /// Optional maximum item/duration/size limit (`Limit to ...`).
     pub limit: Option<SmartPlaylistLimit>,
+    /// Root `SLst` rule group tree.
     pub rule_group: Option<SmartRuleGroup>,
 }
 
+/// Maximum item, duration, or storage size limit on a [`SmartPlaylistConfig`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SmartPlaylistLimit {
+    /// Maximum count in units of [`Self::unit`].
     pub count: u32,
+    /// Unit for [`Self::count`] (`Items`, `Minutes`, `Hours`, `Megabytes`, `Gigabytes`).
     pub unit: SmartLimitUnit,
+    /// Selection ordering when truncating to the limit (`Random`, `MostRecentlyAdded`, etc.).
     pub selection: SmartSelectionMethod,
 }
 
+/// Unit for a [`SmartPlaylistLimit`].
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SmartLimitUnit {
+    /// `1`: Limit by duration in minutes.
     Minutes,
+    /// `2`: Limit by size in megabytes (MB).
     Megabytes,
+    /// `3`: Limit by number of items/tracks.
+    #[default]
     Items,
+    /// `4`: Limit by duration in hours.
     Hours,
+    /// `5`: Limit by size in gigabytes (GB).
     Gigabytes,
+    /// Unrecognized raw `u8` limit unit.
     Unknown(u8),
 }
 
@@ -717,28 +1159,49 @@ impl fmt::Display for SmartLimitUnit {
     }
 }
 
+/// Selection ordering method for a [`SmartPlaylistLimit`].
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SmartSelectionMethod {
+    /// `0x02`: Random selection.
+    #[default]
     Random,
+    /// `0x05`: Alphabetical by title.
     Title,
+    /// `0x06`: Alphabetical by album.
     Album,
+    /// `0x07`: Alphabetical by artist.
     Artist,
+    /// `0x09`: Alphabetical by genre.
     Genre,
+    /// `0x15` (`negate = 0`): Most recently added.
     MostRecentlyAdded,
+    /// `0x15` (`negate = 1`): Least recently added.
     LeastRecentlyAdded,
+    /// `0x19` (`negate = 0`): Most often played.
     MostOftenPlayed,
+    /// `0x19` (`negate = 1`): Least often played.
     LeastOftenPlayed,
+    /// `0x1A` (`negate = 0`): Most recently played.
     MostRecentlyPlayed,
+    /// `0x1A` (`negate = 1`): Least recently played.
     LeastRecentlyPlayed,
+    /// `0x1C` (`negate = 0`): Highest star rating.
     HighestRating,
+    /// `0x1C` (`negate = 1`): Lowest star rating.
     LowestRating,
-    Unknown { method: u8, negate: u8 },
+    /// Unrecognized raw `(method, negate)` pair.
+    Unknown {
+        /// Raw `limit_selection_method` byte.
+        method: u8,
+        /// Raw `negate_limit_selection_method` byte.
+        negate: u8,
+    },
 }
 
-impl SmartSelectionMethod {
-    pub fn from_raw(method: u8, negate: u8) -> Self {
+impl From<(u8, u8)> for SmartSelectionMethod {
+    fn from((method, negate): (u8, u8)) -> Self {
         match (method, negate) {
             (0x02, _) => Self::Random,
             (0x05, _) => Self::Title,
@@ -784,11 +1247,15 @@ impl fmt::Display for SmartSelectionMethod {
     }
 }
 
+/// Logical conjunction (`All` = `AND`, `Any` = `OR`) of a [`SmartRuleGroup`].
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SmartConjunction {
+    /// `0`: Match ALL of the child rules (`AND`).
+    #[default]
     All,
+    /// `1`: Match ANY of the child rules (`OR`).
     Any,
 }
 
@@ -801,75 +1268,131 @@ impl fmt::Display for SmartConjunction {
     }
 }
 
+/// A group of Smart Playlist rules joined by a [`SmartConjunction`].
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SmartRuleGroup {
+    /// Logical conjunction (`All` or `Any`) combining `rules`.
     pub conjunction: SmartConjunction,
+    /// Ordered child rules or nested rule groups.
     pub rules: Vec<SmartRuleNode>,
 }
 
+/// A node in a [`SmartRuleGroup`] tree (either a nested group or a leaf condition).
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "node_type"))]
 pub enum SmartRuleNode {
+    /// Nested `SLst` rule group (`AND` / `OR` sub-tree).
     Group(SmartRuleGroup),
+    /// Single leaf comparison rule.
     Condition(SmartCondition),
 }
 
+/// Target metadata field of a [`SmartCondition`].
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SmartField {
+    /// `0x02`: Track title.
     Title,
+    /// `0x03`: Album title.
     Album,
+    /// `0x04`: Artist name.
     Artist,
+    /// `0x05`: Audio bit rate in kbps.
     BitRate,
+    /// `0x06`: Audio sample rate in Hz.
     SampleRate,
+    /// `0x07`: Release year.
     Year,
+    /// `0x08`: Genre name.
     Genre,
+    /// `0x09`: File kind description string.
     Kind,
+    /// `0x0A`: Date modified.
     DateModified,
+    /// `0x0B`: Track number on disc.
     TrackNumber,
+    /// `0x0C` / `0x1C`: File size.
     Size,
+    /// `0x0D`: Track duration.
     Time,
+    /// `0x0E`: Comments text.
     Comments,
+    /// `0x10`: Date added to library.
     DateAdded,
+    /// `0x12`: Composer name.
     Composer,
+    /// `0x16`: Play count.
     Plays,
+    /// `0x17`: Date last played.
     LastPlayed,
+    /// `0x18`: Disc number.
     DiscNumber,
+    /// `0x19`: User star rating.
     Rating,
+    /// `0x1D`: Track checkbox state (`Checked`).
     Checked,
+    /// `0x1F`: Compilation flag.
     Compilation,
+    /// `0x23`: Beats per minute (BPM).
     Bpm,
+    /// `0x25`: Has album artwork boolean.
     AlbumArtwork,
+    /// `0x27`: Grouping text.
     Grouping,
+    /// `0x28`: Membership in another playlist (`Playlist is / is not ...`).
     Playlist,
+    /// `0x29`: Purchased flag.
     Purchased,
+    /// `0x36`: Description text.
     Description,
+    /// `0x37`: Category text.
     Category,
+    /// `0x39` / `0x5A`: Album star rating.
     AlbumRating,
+    /// `0x3C`: Media kind bitmask.
     MediaKind,
+    /// `0x44`: Skip count.
     Skips,
+    /// `0x45`: Date last skipped.
     LastSkipped,
+    /// `0x47`: Album artist name.
     AlbumArtist,
+    /// `0x4E`: Sort title.
     SortTitle,
+    /// `0x4F`: Sort album.
     SortAlbum,
+    /// `0x50`: Sort artist.
     SortArtist,
+    /// `0x51`: Sort album artist.
     SortAlbumArtist,
+    /// `0x52`: Sort composer.
     SortComposer,
+    /// `0x53`: Sort show.
     SortShow,
+    /// `0x59`: Video rating.
     VideoRating,
+    /// `0x85`: Track storage location (`Computer`, `iCloud`).
     Location,
+    /// `0x86`: iCloud Music Library status (`Matched`, `Uploaded`, `Apple Music`, etc.).
     CloudStatus,
+    /// `0x9A`: Track favorite / suggest-less flag.
     Favorite,
+    /// `0x9C`: Album favorite / suggest-less flag.
     AlbumFavorite,
+    /// `0x9E` / `0x9F`: Classical work name.
     Work,
+    /// `0xA0`: Classical movement name.
     MovementName,
+    /// `0xA1`: Classical movement number.
     MovementNumber,
+    /// `0xA4`: Has video boolean.
     HasVideo,
+    /// Unrecognized `SLst` field ID.
     Unknown(u32),
 }
 
@@ -987,48 +1510,77 @@ impl fmt::Display for SmartField {
 
 bitflags! {
     /// Raw bitflags for a Smart Playlist comparison operator (`SLst` rule offset 4..8, Big-Endian).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     pub struct SmartOperatorFlags: u32 {
+        /// `0x0000_0001`: Equality (`is`).
         const IS            = 0x0000_0001;
+        /// `0x0000_0002`: Substring match (`contains`).
         const CONTAINS      = 0x0000_0002;
+        /// `0x0000_0004`: Prefix match (`starts with`).
         const STARTS_WITH   = 0x0000_0004;
+        /// `0x0000_0008`: Suffix match (`ends with`).
         const ENDS_WITH     = 0x0000_0008;
+        /// `0x0000_0010`: Strictly greater than (`is greater than`).
         const GREATER_THAN  = 0x0000_0010;
+        /// `0x0000_0020`: Greater than or equal to.
         const GREATER_OR_EQ = 0x0000_0020;
+        /// `0x0000_0040`: Strictly less than (`is less than`).
         const LESS_THAN     = 0x0000_0040;
+        /// `0x0000_0080`: Less than or equal to.
         const LESS_OR_EQ    = 0x0000_0080;
+        /// `0x0000_0100`: Inclusive range (`is in the range`).
         const IN_RANGE      = 0x0000_0100;
+        /// `0x0000_0200`: Relative time window (`is in the last`).
         const IN_THE_LAST   = 0x0000_0200;
+        /// `0x0000_0400`: Bitmask intersection (`MediaKind`).
         const BITWISE_SET   = 0x0000_0400;
+        /// `0x0100_0000`: UTF-16BE string comparison mode.
         const STRING_MODE   = 0x0100_0000;
+        /// `0x0200_0000`: Logical negation (`not`).
         const NEGATE        = 0x0200_0000;
+        /// `0x0400_0000`: Sign modifier on relative date comparisons.
         const SIGN_MODIFIER = 0x0400_0000;
     }
 }
 
+/// Comparison operator of a [`SmartCondition`].
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SmartOperator {
+    /// Exact match (`is`).
     Is,
+    /// Negated exact match (`is not`).
     IsNot,
+    /// Substring match (`contains`).
     Contains,
+    /// Negated substring match (`does not contain`).
     DoesNotContain,
+    /// Prefix match (`starts with`).
     StartsWith,
+    /// Suffix match (`ends with`).
     EndsWith,
+    /// Strictly greater than (`is greater than`).
     GreaterThan,
+    /// Strictly less than (`is less than`).
     LessThan,
+    /// Inclusive range (`is in the range`).
     InRange,
+    /// Negated inclusive range (`is not in the range`).
     NotInRange,
+    /// Relative rolling time window (`is in the last`).
     InTheLast,
+    /// Negated relative rolling time window (`is not in the last`).
     NotInTheLast,
+    /// Unrecognized raw `u32` operator bitmask.
     Unknown(u32),
 }
 
 impl SmartOperator {
-    /// Returns the `SmartOperatorFlags` bitmask representation of a raw `SLst` operator value.
-    pub fn flags(raw: u32) -> SmartOperatorFlags {
+    /// Returns the [`SmartOperatorFlags`] bitmask representation of a raw `SLst` operator value.
+    #[must_use]
+    pub const fn flags(raw: u32) -> SmartOperatorFlags {
         SmartOperatorFlags::from_bits_retain(raw)
     }
 }
@@ -1080,13 +1632,18 @@ impl fmt::Display for SmartOperator {
     }
 }
 
+/// Time unit for `InTheLast` / `NotInTheLast` Smart Playlist rules.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RelativeTimeUnit {
+    /// Days (`86_400` seconds).
     Days,
+    /// Weeks (`604_800` seconds).
     Weeks,
+    /// Months (`2_628_000` seconds).
     Months,
+    /// Unrecognized raw unit value.
     Unknown(i64),
 }
 
@@ -1101,357 +1658,639 @@ impl fmt::Display for RelativeTimeUnit {
     }
 }
 
+/// Typed comparison argument value of a [`SmartCondition`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "value_type"))]
 pub enum SmartRuleValue {
+    /// UTF-16BE string comparison operand.
     Text {
+        /// Decoded text string.
         text: String,
     },
+    /// Boolean comparison operand (`Checked`, `Compilation`, `Purchased`, `AlbumArtwork`, `HasVideo`).
     Boolean {
+        /// Decoded boolean value.
         value: bool,
     },
+    /// Single 64-bit signed integer operand.
     Integer {
+        /// Integer value.
         value: i64,
     },
+    /// Inclusive integer range (`min..=max`).
     IntegerRange {
+        /// Lower bound (inclusive).
         min: i64,
+        /// Upper bound (inclusive).
         max: i64,
     },
+    /// Single star rating operand (`0..=5` stars, stored as `0..=100` in steps of 20).
     StarRating {
+        /// Number of stars (`0..=5`).
         stars: u8,
+        /// Raw `0..=100` rating value.
         raw_0_100: i64,
     },
+    /// Star rating range (`min_stars..=max_stars`).
     StarRatingRange {
+        /// Minimum stars (`0..=5`).
         min_stars: u8,
+        /// Maximum stars (`0..=5`).
         max_stars: u8,
+        /// Minimum raw `0..=100` value.
         min_raw: i64,
+        /// Maximum raw `0..=100` value.
         max_raw: i64,
     },
+    /// Relative rolling time window (`in the last N days/weeks/months`).
     RelativeTime {
+        /// Number of units.
         amount: u64,
+        /// Time unit (`Days`, `Weeks`, `Months`).
         unit: RelativeTimeUnit,
+        /// Raw seconds per unit from `arg_2`.
         seconds_per_unit: i64,
     },
+    /// Absolute timestamp comparison operand.
     Date {
+        /// Raw Apple HFS+ timestamp (seconds since 1904-01-01).
         apple_timestamp: i64,
+        /// Converted UTC timestamp if valid.
         utc: Option<DateTime<Utc>>,
     },
+    /// Inclusive date range comparison operand.
     DateRange {
+        /// Start Apple HFS+ timestamp.
         start_apple: i64,
+        /// End Apple HFS+ timestamp.
         end_apple: i64,
+        /// Converted start UTC timestamp.
         start_utc: Option<DateTime<Utc>>,
+        /// Converted end UTC timestamp.
         end_utc: Option<DateTime<Utc>>,
     },
+    /// Reference to another playlist by [`PersistentId`].
     PlaylistRef {
-        playlist_persistent_id: String,
+        /// Target playlist Persistent ID.
+        playlist_persistent_id: PersistentId,
+        /// Resolved name of the target playlist if present in the library.
         playlist_name: Option<String>,
     },
+    /// [`CloudStatus`] comparison operand.
     CloudStatus {
+        /// Target cloud status.
         status: CloudStatus,
     },
+    /// [`SuggestionFlag`] comparison operand (`Favorite`, `AlbumFavorite`).
     SuggestionFlag {
+        /// Target suggestion flag.
         flag: SuggestionFlag,
     },
+    /// [`MediaKind`] comparison operand.
     MediaKind {
+        /// Target media kind.
         kind: MediaKind,
     },
+    /// Track storage location comparison operand (`Computer`, `iCloud`, `On This Computer`).
     LocationKind {
+        /// Raw location code.
         code: i64,
+        /// Human-readable location name.
         name: String,
     },
+    /// Unparsed raw rule child bytes encoded as hex.
     Raw {
+        /// Lowercase hexadecimal string of the raw payload bytes.
         hex: String,
     },
 }
 
+/// A single decoded Smart Playlist condition inside a [`SmartRuleGroup`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SmartCondition {
+    /// Raw `SLst` field ID.
     pub field_id: u32,
+    /// Decoded target [`SmartField`].
     pub field: SmartField,
+    /// Decoded [`SmartOperator`].
     pub operator: SmartOperator,
+    /// Raw 32-bit comparison method bitflags.
     pub comparison_raw: u32,
+    /// Decoded comparison operand value.
     pub value: SmartRuleValue,
+    /// Human-readable summary of the condition (e.g. `"Rating is greater than 3 stars"`).
     pub description: String,
 }
 
 /// View & sorting preferences loaded from `.musiclibrary/preferences/Playlist_<ID>.plist` or `Songs.plist`.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlaylistViewPreferences {
+    /// View mode (e.g. `"List"`, `"Songs"`, `"Albums"`, `"Playlist"`).
     pub view_as: Option<String>,
+    /// Primary sort column name (e.g. `"CloudOrArtist"`, `"Album"`, `"Title"`).
     pub sort_field: Option<String>,
+    /// Whether the primary sort order is ascending (`true`) or descending (`false`).
     pub sort_ascending: Option<bool>,
+    /// Ordered list of visible column names in List/Songs view.
     pub visible_columns: Vec<String>,
 }
 
 /// High-level Domain Model of a parsed `.musicdb` library.
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Library {
+    /// Library-wide metadata from `hfma`, `plma`, and `Preferences.plist`.
     pub metadata: LibraryMetadata,
+    /// All album records (`iama`) in the library.
     pub albums: Vec<Album>,
+    /// All artist records (`iAma`) in the library.
     pub artists: Vec<Artist>,
+    /// All track records (`itma`) in the library.
     pub tracks: Vec<Track>,
+    /// All playlist records (`lpma`) in the library.
     pub playlists: Vec<Playlist>,
+    /// All Apple Music social profile records (`isma`) in the library.
     pub social_profiles: Vec<SocialProfile>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    track_index: HashMap<PersistentId, usize>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    album_index: HashMap<PersistentId, usize>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    artist_index: HashMap<PersistentId, usize>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    playlist_index: HashMap<PersistentId, usize>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    social_profile_index: HashMap<PersistentId, usize>,
 }
 
+/// Apple Music social profile record (`isma`, `hsma` subtype 15).
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SocialProfile {
-    pub persistent_id: String,
-    pub persistent_id_u64: u64,
+    /// Social Profile Persistent ID (referenced by [`Playlist::author_social_profile_persistent_id`]).
+    pub persistent_id: PersistentId,
+    /// Public Apple Music profile ID (`boma 0x0320`, e.g. `"p.7J6g4W8v0R"`).
     pub profile_id: Option<String>,
+    /// Display name (`boma 0x0321`).
     pub name: Option<String>,
+    /// User handle without `@` (`boma 0x0322`).
     pub handle: Option<String>,
+    /// Avatar identifier (`boma 0x0323`).
     pub avatar_id: Option<String>,
+    /// Avatar image URL (`boma 0x0324`).
     pub avatar_url: Option<String>,
 }
 
+/// Library-level metadata combined from `hfma`, `plma`, `Preferences.plist`, and `preferences/Songs.plist`.
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LibraryMetadata {
-    pub persistent_id: String,
-    pub persistent_id_u64: u64,
-    pub itunes_persistent_id: Option<String>,
-    pub revision_hash: String,
+    /// Primary 64-bit Library Persistent ID.
+    pub persistent_id: PersistentId,
+    /// Original iTunes Library Persistent ID if migrated from `.itl`.
+    pub itunes_persistent_id: Option<PersistentId>,
+    /// Revision hash updated on every save (shared with `Library Preferences.musicdb`).
+    pub revision_hash: PersistentId,
+    /// Secondary file size mirror in format >= 23.1.
     pub file_size_mirror: u32,
+    /// Apple Music / iTunes application version string (e.g. `"1.6.0.151"`).
     pub app_version: String,
+    /// Binary format major version (e.g. `20`, `21`, `23`).
     pub format_major_version: u16,
+    /// Binary format minor version (e.g. `2`, `20`, `40`, `1`).
     pub format_minor_version: u16,
+    /// `.musicdb` file type code (`6` or `7` for `Library.musicdb`, `2` for `Library Preferences.musicdb`).
     pub file_type: u32,
+    /// Declared track count in `hfma`.
     pub declared_track_count: u32,
+    /// Declared album count in `hfma`.
     pub declared_album_count: u32,
+    /// Declared artist count in `hfma`.
     pub declared_artist_count: u32,
+    /// Declared playlist count in `hfma`.
     pub declared_playlist_count: u32,
+    /// Local timezone offset from UTC in seconds (e.g. `-10800` for UTC-3).
     pub timezone_offset_seconds: i32,
+    /// Signed-in Apple Store account `dsid` (`0` if signed out).
     pub apple_store_account_id: u64,
+    /// Library modification timestamp from `hfma`.
     pub date_modified: Option<DateTime<Utc>>,
+    /// "Settings -> General -> Show -> Songs list checkboxes" setting from `plma`.
     pub show_song_list_checkboxes: Option<bool>,
+    /// "Settings -> Files -> Keep Music Media folder organized" setting from `plma`.
     pub keep_media_folder_organized: Option<bool>,
+    /// "Settings -> Files -> Copy files to Music Media folder when adding to library" from `Preferences.plist`.
     pub copy_files_to_media_folder: Option<bool>,
+    /// Media folder `file://` URI from `plma` `boma 0x01F8`.
     pub media_folder_uri: Option<String>,
+    /// Media folder filesystem path from `plma` `boma 0x01FD` / `0x0200`.
     pub media_folder_path: Option<String>,
+    /// Legacy `.itl` file path from `plma` `boma 0x01FC`.
     pub imported_itl_path: Option<String>,
+    /// Global Songs view preferences loaded from `preferences/Songs.plist`.
     pub songs_view_preferences: Option<PlaylistViewPreferences>,
 }
 
+/// Decoded Album record (`iama`).
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Album {
-    pub persistent_id: String,
-    pub persistent_id_u64: u64,
-    pub itunes_persistent_id: Option<String>,
-    pub first_track_persistent_id: Option<String>,
+    /// Album Persistent ID (`iama` offset 16..24).
+    pub persistent_id: PersistentId,
+    /// Secondary / iTunes Album Persistent ID (`iama` offset 64..72).
+    pub itunes_persistent_id: Option<PersistentId>,
+    /// Persistent ID of the first track in the album (`iama` offset 32..40).
+    pub first_track_persistent_id: Option<PersistentId>,
+    /// Album title (`boma 0x012C`).
     pub title: Option<String>,
+    /// Primary artist name (`boma 0x012D`).
     pub artist: Option<String>,
+    /// Album artist name (`boma 0x012E`).
     pub album_artist: Option<String>,
+    /// iCloud Music Library album ID (`boma 0x0133`).
     pub cloud_album_id: Option<String>,
+    /// Album editorial notes (`boma 0x0134`).
     pub editorial_notes: Option<String>,
+    /// Compilation album flag (`iama` offset 25).
     pub is_compilation: bool,
+    /// Raw star rating (`0..=100` in steps of 20).
     pub star_rating: u8,
-    pub stars: u8,
+    /// Whether `star_rating` is computed from track ratings (`0x20`) rather than set directly (`0x01`).
     pub star_rating_is_computed: bool,
+    /// User suggestion / favorite flag (`iama` offset 42..44).
     pub suggestion_flag: SuggestionFlag,
+    /// Whether `suggestion_flag` has the `0x0100` locally-modified bit set.
     pub suggestion_locally_modified: bool,
+    /// Timestamp when `suggestion_flag` was last modified (`iama` offset 96..100).
     pub date_suggestion_flag_modified: Option<DateTime<Utc>>,
+    /// Most recent last-played timestamp across tracks on this album (`iama` offset 100..104).
     pub date_last_played: Option<DateTime<Utc>>,
+    /// iCloud sync timestamp (`iama` offset 120..124).
     pub date_cloud_synced: Option<DateTime<Utc>>,
+    /// Album release date (`iama` offset 124..128).
     pub date_released: Option<DateTime<Utc>>,
+    /// 64-bit Apple Music Store Album ID (`plID`, `iama` offset 104..112).
     pub apple_music_store_album_id: Option<u64>,
 }
 
+impl Album {
+    /// Returns the star rating on a `0..=5` star scale (`star_rating / 20`).
+    #[must_use]
+    pub const fn stars(&self) -> u8 {
+        self.star_rating / 20
+    }
+}
+
+/// Decoded Artist record (`iAma`).
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Artist {
-    pub persistent_id: String,
-    pub persistent_id_u64: u64,
-    pub itunes_persistent_id: Option<String>,
+    /// Artist Persistent ID (`iAma` offset 16..24).
+    pub persistent_id: PersistentId,
+    /// Secondary / iTunes Artist Persistent ID (`iAma` offset 80..88).
+    pub itunes_persistent_id: Option<PersistentId>,
+    /// Artist name (`boma 0x0190`).
     pub name: Option<String>,
+    /// Sort artist name (`boma 0x0191`).
     pub sort_name: Option<String>,
+    /// iCloud Music Library artist ID (`boma 0x0193`).
     pub cloud_artist_id: Option<String>,
+    /// User suggestion / favorite flag (`iAma` offset 101..103).
     pub suggestion_flag: SuggestionFlag,
+    /// Whether `suggestion_flag` has the `0x0100` locally-modified bit set.
     pub suggestion_locally_modified: bool,
+    /// Timestamp when `suggestion_flag` was last modified (`iAma` offset 60..64).
     pub date_suggestion_flag_modified: Option<DateTime<Utc>>,
+    /// iCloud sync timestamp (`iAma` offset 120..124).
     pub date_cloud_synced: Option<DateTime<Utc>>,
+    /// 64-bit Apple Music Store Artist ID (`atID`, `iAma` offset 52..60).
     pub apple_music_store_artist_id: u64,
+    /// Artwork UUID in `artwork.sqlite` (`iAma` offset 64..80).
     pub artwork_uuid: Option<String>,
+    /// Raw XML plist containing artist artwork URLs (`boma 0x0192`).
     pub artwork_url_plist: Option<String>,
 }
 
+/// Decoded Track record (`itma` + `boma` children).
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Apple Music tracks store 12 independent boolean metadata checkboxes in itma"
+)]
+#[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Track {
-    pub persistent_id: String,
-    pub persistent_id_u64: u64,
+    /// Track Persistent ID (`itma` offset 16..24).
+    pub persistent_id: PersistentId,
+    /// Track title (`boma 0x0002`).
     pub title: Option<String>,
+    /// Album title (`boma 0x0003`).
     pub album: Option<String>,
+    /// Track artist name (`boma 0x0004`).
     pub artist: Option<String>,
+    /// Album artist name (`boma 0x001B`).
     pub album_artist: Option<String>,
+    /// Composer name (`boma 0x000C`).
     pub composer: Option<String>,
+    /// Genre name (`boma 0x0005`).
     pub genre: Option<String>,
+    /// Apple Store Genre ID (`geID`, `TrackNumerics` offset 264..268).
     pub store_genre_id: Option<u32>,
+    /// Localized file kind description (`boma 0x0006`).
     pub kind: Option<String>,
+    /// User comments (`boma 0x0008`).
     pub comments: Option<String>,
+    /// Grouping tag (`boma 0x000E`).
     pub grouping: Option<String>,
+    /// Classical work name (`boma 0x003F`).
     pub work_name: Option<String>,
+    /// Classical movement name (`boma 0x0040`).
     pub movement_name: Option<String>,
+    /// Classical movement number (`itma` offset 88..90).
     pub movement_number: u16,
+    /// Classical total movements (`itma` offset 86..88).
     pub movement_total: u16,
+    /// Sort title (`boma 0x001E`).
     pub sort_title: Option<String>,
+    /// Sort album (`boma 0x001F`).
     pub sort_album: Option<String>,
+    /// Sort artist (`boma 0x0020`).
     pub sort_artist: Option<String>,
+    /// Sort album artist (`boma 0x0021`).
     pub sort_album_artist: Option<String>,
+    /// Sort composer (`boma 0x0022`).
     pub sort_composer: Option<String>,
+    /// Sort string generation modes (`itma` offset 66..71).
     pub sort_modes: TrackSortModes,
-    pub auto_sort_flags: [u8; 6],
+    /// Track number on disc (`itma` offset 160..162).
     pub track_number: u16,
+    /// Total tracks on disc (`itma` offset 116..118).
     pub track_total: u16,
+    /// Disc number (`itma` offset 84..86).
     pub disc_number: u16,
+    /// Total discs (`itma` offset 90..92).
     pub disc_total: u16,
+    /// Release year (`itma` offset 168..172).
     pub year: u32,
+    /// Beats per minute (`itma` offset 82..84).
     pub bpm: u16,
+    /// Duration in milliseconds (`TrackNumerics` offset 156..160).
     pub duration_ms: Option<u32>,
+    /// File size in bytes (`TrackNumerics` offset 296..300).
     pub file_size: Option<u32>,
+    /// Audio bit rate in kbps (`TrackNumerics` offset 88..92).
     pub bit_rate: Option<u32>,
+    /// Whether the audio file uses Variable Bit Rate (`TrackNumerics` offset 27).
     pub is_vbr: Option<bool>,
+    /// Audio sample rate in Hz (`TrackNumerics` offset 60..64).
     pub sample_rate: Option<f32>,
+    /// 4-character file type code (e.g. `"M4A "`, `"MP3 "`).
     pub file_type_fourcc: Option<String>,
+    /// 4-character audio codec code (e.g. `"mp4a"`, `"mpeg"`).
     pub codec_fourcc: Option<String>,
+    /// Volume adjustment in `-255..=255` (`itma` offset 92..96).
     pub volume_adjustment: i32,
+    /// Sound Check volume normalization (`iTunNORM`, `TrackNumerics` offset 132..136).
     pub normalization: Option<u32>,
+    /// Gapless playback encoder delay in samples (`TrackNumerics` offset 108..112).
     pub gapless_encoder_delay: Option<u32>,
+    /// Gapless playback encoder padding in samples (`TrackNumerics` offset 112..116).
     pub gapless_encoder_padding: Option<u32>,
+    /// Gapless playback total sample count (`TrackNumerics` offset 256..264).
     pub gapless_total_samples: Option<u64>,
+    /// Gapless playback byte offset to the 8th-from-last MPEG frame (`TrackNumerics` offset 272..280).
     pub gapless_last_eight_frames_offset: Option<u64>,
+    /// Raw equalizer string (`boma 0x0007`).
     pub equalizer: Option<String>,
+    /// Decoded equalizer preset (`boma 0x0007`).
     pub equalizer_preset: Option<EqualizerPreset>,
+    /// Raw star rating (`0..=100` in steps of 20, `itma` offset 65).
     pub star_rating: u8,
-    pub stars: u8,
+    /// User suggestion / favorite flag (`itma` offset 62..64).
     pub suggestion_flag: SuggestionFlag,
+    /// Whether the track is unchecked/disabled (`itma` offset 42).
     pub disabled: bool,
+    /// "Skip when shuffling" checkbox (`itma` offset 30).
     pub skip_when_shuffling: bool,
+    /// "Remember playback position" checkbox (`itma` offset 50).
     pub remember_playback_position: bool,
+    /// "Show composer in all views" checkbox (`itma` offset 51).
     pub show_composer_in_all_views: bool,
+    /// "Use work and movement" checkbox (`itma` offset 52).
     pub use_work_and_movement: bool,
+    /// "Album is a compilation of songs by various artists" checkbox (`itma` offset 38).
     pub album_is_compilation: bool,
+    /// "Part of a gapless album" checkbox (`itma` offset 49).
     pub part_of_gapless_album: bool,
+    /// Whether the track exists only inside a subscribed/shared playlist and not in the main library (`itma` offset 39).
     pub playlist_only: bool,
+    /// Whether the track was purchased from the iTunes Store.
     pub purchased: bool,
+    /// Whether custom lyrics exist for this track (`itma` offset 255).
     pub has_custom_lyrics: bool,
+    /// Whether custom lyrics were set locally (`itma` offset 44).
     pub has_local_custom_lyrics: bool,
+    /// Whether local metadata edits are pending iCloud sync (`itma` offset 46).
     pub has_unsynced_local_changes: bool,
+    /// Checksum/hash of custom lyrics (`TrackNumerics` offset 124..128).
     pub custom_lyrics_hash: Option<u32>,
+    /// Whether the track is matched via iTunes Match (`TrackNumerics` offset 32..34).
     pub is_itunes_matched: Option<bool>,
+    /// Whether the track is an Apple Music subscription catalog item (`TrackNumerics` offset 34).
     pub is_apple_music_catalog: Option<bool>,
+    /// iCloud Music Library `sagaId` (`itma` offset 236..244).
     pub cloud_saga_id: Option<u64>,
+    /// 64-bit Apple Music / iTunes Store track `adamId` (`TrackNumerics` offset 304..312).
     pub store_track_adam_id: Option<u64>,
+    /// 64-bit Apple Music Store Album ID (`plID`, `TrackNumerics` offset 160..168).
     pub apple_music_store_album_id: Option<u64>,
+    /// 64-bit Apple Music Store Artist ID (`atID`, `TrackNumerics` offset 168..176).
     pub apple_music_store_artist_id: Option<u64>,
+    /// 64-bit Apple Music Store Album Artist ID (`TrackNumerics` offset 208..216).
     pub apple_music_store_album_artist_id: Option<u64>,
+    /// Apple iTunes Storefront / Country ID (`sfID`, `TrackNumerics` offset 312..316).
     pub storefront_id: Option<u32>,
+    /// Apple ID email of the purchaser (`boma 0x003B`).
     pub purchaser_email: Option<String>,
+    /// Full name of the purchaser (`boma 0x003C`).
     pub purchaser_name: Option<String>,
-    pub downloaded_status: u8,
+    /// Local vs. cloud download state (`itma` offset 57).
     pub downloaded_state: DownloadedStatus,
+    /// iCloud Music Library status (`itma` offset 58).
     pub cloud_status: CloudStatus,
-    pub cloud_status_raw: u8,
+    /// Cloud album identifier from `boma 0x0036` plist.
     pub cloud_album_id: Option<String>,
+    /// Cloud artist identifier from `boma 0x0036` plist.
     pub cloud_artist_id: Option<String>,
+    /// Cloud artwork token from `boma 0x0036` plist.
     pub cloud_artwork_token: Option<String>,
+    /// Cloud lyrics token from `boma 0x0036` plist.
     pub cloud_lyrics_token: Option<String>,
-    pub content_rating: u8,
+    /// Content advisory rating (`itma` offset 59).
     pub content_advisory: ContentRating,
-    pub media_kind: u32,
+    /// Media kind (`itma` offset 108..112).
     pub media_type: MediaKind,
+    /// Custom playback start offset in milliseconds (`itma` offset 148..152).
     pub playback_start_ms: u32,
+    /// Custom playback stop offset in milliseconds (`itma` offset 152..156).
     pub playback_stop_ms: u32,
+    /// User-visible play count (`TrackPlaysSkips` offset 12..16).
     pub play_count: Option<u32>,
+    /// Cumulative play count unaffected by GUI resets (`TrackPlaysSkips` offset 16..20).
     pub true_play_count: Option<u32>,
+    /// User-visible skip count (`TrackPlaysSkips` offset 32..36).
     pub skip_count: Option<u32>,
+    /// Cumulative skip count (`TrackPlaysSkips` offset 36..40).
     pub true_skip_count: Option<u32>,
+    /// Date added to library (`TrackNumerics` offset 92..96).
     pub date_added: Option<DateTime<Utc>>,
+    /// Date modified (`TrackNumerics` offset 128..132).
     pub date_modified: Option<DateTime<Utc>>,
+    /// Date last played (`TrackPlaysSkips` offset 8..12).
     pub date_last_played: Option<DateTime<Utc>>,
+    /// Date first played in UTC (`TrackPlaysSkips` offset 20..24).
     pub date_first_played_utc: Option<DateTime<Utc>>,
+    /// Date last skipped (`TrackPlaysSkips` offset 28..32).
     pub date_last_skipped: Option<DateTime<Utc>>,
+    /// Release date (`TrackNumerics` offset 140..144).
     pub date_released: Option<DateTime<Utc>>,
+    /// Purchase date (`TrackNumerics` offset 136..140).
     pub date_purchased: Option<DateTime<Utc>>,
+    /// Cloud sync timestamp (`TrackNumerics` offset 356..360).
     pub date_cloud_synced: Option<DateTime<Utc>>,
+    /// Local relative or `file://` URL (`boma 0x000B`).
     pub file_url: Option<String>,
+    /// Legacy colon/slash file path (`boma 0x0043`).
     pub legacy_file_path: Option<String>,
+    /// Extracted path from macOS `book` bookmark (`boma 0x0042`).
     pub book_path: Option<String>,
-    pub album_persistent_id: Option<String>,
-    pub artist_persistent_id: Option<String>,
+    /// Foreign key to [`Album::persistent_id`] (`itma` offset 172..180).
+    pub album_persistent_id: Option<PersistentId>,
+    /// Foreign key to [`Artist::persistent_id`] (`itma` offset 180..188).
+    pub artist_persistent_id: Option<PersistentId>,
+    /// Artwork UUID in `artwork.sqlite` (`itma` offset 256..272).
     pub artwork_uuid: Option<String>,
+    /// Number of attached artworks (`TrackNumerics` offset 76..78).
     pub artwork_count: Option<u16>,
+    /// Whether embedded artwork was scanned in the local audio file (`TrackNumerics` offset 80..82 == `-1`).
     pub has_embedded_artwork: Option<bool>,
+    /// Total byte size of attached artworks (`TrackNumerics` offset 84..88).
     pub artwork_total_size_bytes: Option<u32>,
+    /// File folder count (`TrackNumerics` offset 72..74).
     pub file_folder_count: Option<u16>,
+    /// Library folder count (`TrackNumerics` offset 74..76).
     pub library_folder_count: Option<u16>,
+    /// International Standard Recording Code (`boma 0x002B`).
     pub isrc: Option<String>,
+    /// Copyright notice (`boma 0x002E`).
     pub copyright: Option<String>,
+    /// Additional string `boma` subtypes preserved by key `"0xXXXX_name"`.
     pub extra_strings: BTreeMap<String, String>,
 }
 
+impl Track {
+    /// Returns the star rating on a `0..=5` star scale (`star_rating / 20`).
+    #[must_use]
+    pub const fn stars(&self) -> u8 {
+        self.star_rating / 20
+    }
+}
+
+/// Decoded Playlist record (`lpma` + `boma` children + sidecar `Playlist_<ID>.plist`).
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Playlists have 4 orthogonal boolean flags (is_master, is_folder, is_smart, show_in_profile_and_search)"
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Playlist {
-    pub persistent_id: String,
-    pub persistent_id_u64: u64,
-    pub parent_persistent_id: Option<String>,
+    /// Playlist Persistent ID (`lpma` offset 30..38).
+    pub persistent_id: PersistentId,
+    /// Parent Folder Playlist Persistent ID (`lpma` offset 50..58).
+    pub parent_persistent_id: Option<PersistentId>,
+    /// Playlist title (`boma 0x00C8`).
     pub name: Option<String>,
+    /// Playlist description from `boma 0x00CD` plist.
     pub description: Option<String>,
+    /// Semantic playlist kind (`Master`, `Distinguished`, `Folder`, `Smart`, `SubscribedCatalog`, `Standard`).
     pub kind: PlaylistKind,
+    /// Whether this is the internal Master playlist (`####!####`, `lpma` offset 44).
     pub is_master: bool,
+    /// Whether this playlist is a Folder (`lpma` offset 49).
     pub is_folder: bool,
+    /// Whether this playlist is a user/system Smart Playlist (`boma 0x00C9` / `0x00CA`).
     pub is_smart: bool,
+    /// "Show in My Profile and in Search" checkbox (`lpma` offset 262).
     pub show_in_profile_and_search: bool,
-    pub distinguished_kind: u16,
+    /// Distinguished system playlist kind (`lpma` offset 79..81).
     pub system_kind: DistinguishedPlaylistKind,
+    /// User suggestion / favorite flag (`lpma` offset 223..225).
     pub suggestion_flag: SuggestionFlag,
+    /// Creation timestamp (`lpma` offset 22..26).
     pub date_created: Option<DateTime<Utc>>,
+    /// Modification timestamp (`lpma` offset 138..142).
     pub date_modified: Option<DateTime<Utc>>,
+    /// Last played timestamp (`lpma` offset 182..186).
     pub date_last_played: Option<DateTime<Utc>>,
+    /// Cloud publish / artwork generation timestamp (`lpma` offset 304..308).
     pub date_cloud_published: Option<DateTime<Utc>>,
+    /// Cloud sync timestamp (`lpma` offset 324..328 / 356..360).
     pub date_cloud_synced: Option<DateTime<Utc>>,
+    /// User-visible play count (`lpma` offset 174..178).
     pub play_count: u32,
+    /// Cumulative play count (`lpma` offset 178..182).
     pub true_play_count: u32,
+    /// Cloud refresh interval in seconds (`lpma` offset 256..260).
     pub refresh_interval_seconds: u32,
-    pub cloud_share_mode: u32,
+    /// Cloud share / visibility mode (`lpma` offset 308..312).
     pub share_mode: PlaylistShareMode,
+    /// Cover artwork template kind (`lpma` offset 300..304).
     pub artwork_template_kind: u32,
+    /// iCloud Music Library playlist `sagaId` (`lpma` offset 70..78).
     pub cloud_saga_id: Option<u64>,
+    /// Universal library playlist ID (`pl.u-...`) from `boma 0x00CD`.
     pub universal_library_id: Option<String>,
+    /// Cloud playlist UUID from `boma 0x00CD`.
     pub cloud_uuid: Option<String>,
+    /// Subscribed container URL from `boma 0x00CD`.
     pub subscribed_container_url: Option<String>,
+    /// Curator / owner display name from `boma 0x00CD`.
     pub owner_name: Option<String>,
+    /// Curator / owner identifier from `boma 0x00CD`.
     pub owner_id: Option<String>,
-    pub author_social_profile_persistent_id: Option<String>,
+    /// Foreign key to [`SocialProfile::persistent_id`] (`lpma` offset 340..348).
+    pub author_social_profile_persistent_id: Option<PersistentId>,
+    /// Cloud artwork URL from `boma 0x00CD`.
     pub cloud_artwork_url: Option<String>,
+    /// Cloud artwork token from `boma 0x00CD`.
     pub cloud_artwork_token: Option<String>,
+    /// Artwork UUID in `artwork.sqlite` (`lpma` offset 263..279).
     pub artwork_uuid: Option<String>,
+    /// Declared track count in `lpma` header (`lpma` offset 16..20).
     pub declared_track_count: u32,
-    pub track_persistent_ids: Vec<String>,
-    pub child_playlist_persistent_ids: Vec<String>,
+    /// Ordered list of track [`PersistentId`]s (`ipfa` / `IPfa` items).
+    pub track_persistent_ids: Vec<PersistentId>,
+    /// Direct child playlist [`PersistentId`]s when this playlist is a folder.
+    pub child_playlist_persistent_ids: Vec<PersistentId>,
+    /// Decoded Smart Playlist configuration (`boma 0x00CA` + `0x00C9` `SLst`).
     pub smart_playlist: Option<SmartPlaylistConfig>,
+    /// View and sorting preferences loaded from `preferences/Playlist_<ID>.plist`.
     pub view_preferences: Option<PlaylistViewPreferences>,
 }
 
-/// Searches the OS user Music directory for a default Apple Music `.musiclibrary` bundle
-/// (`Apple Music/Apple Music Library.musiclibrary` on Windows, `Music/Music Library.musiclibrary` on macOS).
+/// Discovers the default Apple Music `.musiclibrary` bundle path in the user's Music directory if present.
 #[must_use]
 pub fn discover_default_library_path() -> Option<PathBuf> {
     let music_dir = default_user_music_dir()?;
@@ -1481,44 +2320,281 @@ fn default_user_music_dir() -> Option<PathBuf> {
 }
 
 impl Library {
-    /// Opens an Apple Music library from the user's default OS Music directory if found.
+    /// Opens the user's default Apple Music `.musiclibrary` bundle on the current system.
     ///
     /// # Errors
-    /// Returns [`crate::error::MusicDbError::LibraryNotFound`] if no default library exists,
-    /// or a parsing/I/O error if opening fails.
+    ///
+    /// Returns [`MusicDbError::LibraryNotFound`] if no default library is found, or [`MusicDbError`] if parsing fails.
     pub fn open_default() -> Result<Self> {
-        let path =
-            discover_default_library_path().ok_or(crate::error::MusicDbError::LibraryNotFound)?;
+        let path = discover_default_library_path().ok_or(MusicDbError::LibraryNotFound)?;
         Self::open(path)
     }
 
-    /// Opens an Apple Music library from either a `.musiclibrary` bundle directory
-    /// or a `Library.musicdb` file path, automatically enriching with `.plist` sidecar preferences
-    /// (`Preferences.plist`, `preferences/Songs.plist`, `preferences/Playlist_<ID>.plist`) when present.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+    /// Opens a `.musicdb` file or `.musiclibrary` bundle directory and converts it to a high-level [`Library`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MusicDbError`] if reading, decrypting, or parsing the `.musicdb` file fails.
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let p = path.as_ref();
         let raw = RawLibraryFile::open(p)?;
-        let mut lib = Self::from_raw(&raw);
+        let mut lib = Self::from(&raw);
+
         let bundle_dir = if p.is_dir() {
-            Some(p.to_path_buf())
+            Some(p)
         } else {
-            p.parent().map(Path::to_path_buf)
+            p.parent().filter(|parent| {
+                parent.extension().and_then(|e| e.to_str()) == Some("musiclibrary")
+                    || parent.join("Preferences.plist").exists()
+                    || parent.join("preferences").is_dir()
+            })
         };
+
         if let Some(dir) = bundle_dir {
-            lib.load_sidecar_preferences(&dir);
+            lib.load_sidecar_preferences(dir);
         }
+
         Ok(lib)
     }
 
-    /// Builds the high-level `Library` domain model from a parsed `RawLibraryFile`.
-    pub fn from_raw(raw: &RawLibraryFile) -> Self {
+    /// Rebuilds the internal $O(1)$ [`PersistentId`] lookup indexes.
+    pub fn rebuild_indexes(&mut self) {
+        self.track_index = self
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(idx, t)| (t.persistent_id, idx))
+            .collect();
+        self.album_index = self
+            .albums
+            .iter()
+            .enumerate()
+            .map(|(idx, a)| (a.persistent_id, idx))
+            .collect();
+        self.artist_index = self
+            .artists
+            .iter()
+            .enumerate()
+            .map(|(idx, a)| (a.persistent_id, idx))
+            .collect();
+        self.playlist_index = self
+            .playlists
+            .iter()
+            .enumerate()
+            .map(|(idx, p)| (p.persistent_id, idx))
+            .collect();
+        self.social_profile_index = self
+            .social_profiles
+            .iter()
+            .enumerate()
+            .map(|(idx, sp)| (sp.persistent_id, idx))
+            .collect();
+    }
+
+    /// Loads optional sidecar `.plist` files from a `.musiclibrary` bundle directory (`Preferences.plist` and `preferences/*.plist`).
+    pub fn load_sidecar_preferences<P: AsRef<Path>>(&mut self, bundle_dir: P) {
+        let dir = bundle_dir.as_ref();
+
+        let prefs_plist = dir.join("Preferences.plist");
+        if prefs_plist.is_file()
+            && let Ok(plist::Value::Dictionary(root)) = plist::Value::from_file(&prefs_plist)
+            && let Some(copy_flag) = root
+                .get("com.apple.Music")
+                .and_then(plist::Value::as_dictionary)
+                .and_then(|d| {
+                    d.get(" CopyFilesToMediaFolder")
+                        .or_else(|| d.get("CopyFilesToMediaFolder"))
+                })
+                .or_else(|| root.get("Copy files to Music Media folder when adding to library"))
+                .and_then(plist::Value::as_boolean)
+        {
+            self.metadata.copy_files_to_media_folder = Some(copy_flag);
+        }
+
+        let prefs_subdir = if dir.join("preferences").is_dir() {
+            dir.join("preferences")
+        } else {
+            dir.join("Preferences")
+        };
+        if !prefs_subdir.is_dir() {
+            return;
+        }
+
+        let songs_plist = prefs_subdir.join("Songs.plist");
+        if songs_plist.is_file() {
+            self.metadata.songs_view_preferences = parse_playlist_view_plist(&songs_plist);
+        }
+
+        for pl in &mut self.playlists {
+            let pid_str = pl.persistent_id.to_string();
+            let candidate_upper = prefs_subdir.join(format!("Playlist_{pid_str}.plist"));
+            let candidate_lower =
+                prefs_subdir.join(format!("Playlist_{}.plist", pid_str.to_lowercase()));
+            if candidate_upper.is_file() {
+                pl.view_preferences = parse_playlist_view_plist(&candidate_upper);
+            } else if candidate_lower.is_file() {
+                pl.view_preferences = parse_playlist_view_plist(&candidate_lower);
+            }
+        }
+    }
+
+    /// Looks up a track by [`PersistentId`] (or 16-char hex string) in $O(1)$ time.
+    #[must_use]
+    pub fn track_by_id(&self, id: impl IntoPersistentId) -> Option<&Track> {
+        let pid = id.into_persistent_id()?;
+        if let Some(&idx) = self.track_index.get(&pid) {
+            self.tracks.get(idx)
+        } else if self.track_index.is_empty() {
+            self.tracks.iter().find(|t| t.persistent_id == pid)
+        } else {
+            None
+        }
+    }
+
+    /// Looks up an album by [`PersistentId`] (or 16-char hex string) in $O(1)$ time.
+    #[must_use]
+    pub fn album_by_id(&self, id: impl IntoPersistentId) -> Option<&Album> {
+        let pid = id.into_persistent_id()?;
+        if let Some(&idx) = self.album_index.get(&pid) {
+            self.albums.get(idx)
+        } else if self.album_index.is_empty() {
+            self.albums.iter().find(|a| a.persistent_id == pid)
+        } else {
+            None
+        }
+    }
+
+    /// Looks up an artist by [`PersistentId`] (or 16-char hex string) in $O(1)$ time.
+    #[must_use]
+    pub fn artist_by_id(&self, id: impl IntoPersistentId) -> Option<&Artist> {
+        let pid = id.into_persistent_id()?;
+        if let Some(&idx) = self.artist_index.get(&pid) {
+            self.artists.get(idx)
+        } else if self.artist_index.is_empty() {
+            self.artists.iter().find(|a| a.persistent_id == pid)
+        } else {
+            None
+        }
+    }
+
+    /// Looks up a playlist by [`PersistentId`] (or 16-char hex string) in $O(1)$ time.
+    #[must_use]
+    pub fn playlist_by_id(&self, id: impl IntoPersistentId) -> Option<&Playlist> {
+        let pid = id.into_persistent_id()?;
+        if let Some(&idx) = self.playlist_index.get(&pid) {
+            self.playlists.get(idx)
+        } else if self.playlist_index.is_empty() {
+            self.playlists.iter().find(|p| p.persistent_id == pid)
+        } else {
+            None
+        }
+    }
+
+    /// Looks up an Apple Music social profile by [`PersistentId`] (or 16-char hex string) in $O(1)$ time.
+    #[must_use]
+    pub fn social_profile_by_id(&self, id: impl IntoPersistentId) -> Option<&SocialProfile> {
+        let pid = id.into_persistent_id()?;
+        if let Some(&idx) = self.social_profile_index.get(&pid) {
+            self.social_profiles.get(idx)
+        } else if self.social_profile_index.is_empty() {
+            self.social_profiles
+                .iter()
+                .find(|sp| sp.persistent_id == pid)
+        } else {
+            None
+        }
+    }
+
+    /// Looks up a playlist by exact name (with case-insensitive exact and substring fallback).
+    #[must_use]
+    pub fn playlist_by_name(&self, name: &str) -> Option<&Playlist> {
+        let q = name.to_lowercase();
+        self.playlists
+            .iter()
+            .find(|p| p.name.as_deref() == Some(name))
+            .or_else(|| {
+                self.playlists.iter().find(|p| {
+                    p.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(name))
+                })
+            })
+            .or_else(|| {
+                self.playlists.iter().find(|p| {
+                    p.name
+                        .as_deref()
+                        .is_some_and(|n| n.to_lowercase().contains(&q))
+                })
+            })
+    }
+
+    /// Returns an iterator over all resolved [`Track`] records in the given [`Playlist`] in playlist order.
+    pub fn playlist_tracks<'a>(
+        &'a self,
+        playlist: &'a Playlist,
+    ) -> impl Iterator<Item = &'a Track> + 'a {
+        playlist
+            .track_persistent_ids
+            .iter()
+            .filter_map(|id| self.track_by_id(*id))
+    }
+
+    /// Returns an iterator over the direct child [`Playlist`] records of a folder playlist.
+    pub fn playlist_children<'a>(
+        &'a self,
+        folder: &'a Playlist,
+    ) -> impl Iterator<Item = &'a Playlist> + 'a {
+        folder
+            .child_playlist_persistent_ids
+            .iter()
+            .filter_map(|id| self.playlist_by_id(*id))
+    }
+
+    /// Returns an iterator over all [`Track`] records belonging to an [`Album`] by [`PersistentId`], sorted by disc and track number.
+    pub fn album_tracks(
+        &self,
+        album_id: impl IntoPersistentId,
+    ) -> impl Iterator<Item = &Track> + '_ {
+        let pid = album_id.into_persistent_id();
+        let mut out: Vec<&Track> = self
+            .tracks
+            .iter()
+            .filter(move |t| pid.is_some() && t.album_persistent_id == pid)
+            .collect();
+        out.sort_by_key(|t| (t.disc_number, t.track_number));
+        out.into_iter()
+    }
+
+    /// Returns an iterator over all [`Track`] records belonging to an [`Artist`] by [`PersistentId`].
+    pub fn artist_tracks(
+        &self,
+        artist_id: impl IntoPersistentId,
+    ) -> impl Iterator<Item = &Track> + '_ {
+        let pid = artist_id.into_persistent_id();
+        self.tracks
+            .iter()
+            .filter(move |t| pid.is_some() && t.artist_persistent_id == pid)
+    }
+
+    /// Serializes the library to a pretty-printed JSON string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MusicDbError::Json`] if JSON serialization fails.
+    #[cfg(any(feature = "sqlite", feature = "cli"))]
+    pub fn to_json_pretty(&self) -> Result<String> {
+        Ok(serde_json::to_string_pretty(self)?)
+    }
+}
+
+impl From<&RawLibraryFile> for Library {
+    fn from(raw: &RawLibraryFile) -> Self {
         let h = &raw.outer_header;
         let mut metadata = LibraryMetadata {
-            persistent_id: format_persistent_id(h.library_persistent_id),
-            persistent_id_u64: h.library_persistent_id,
+            persistent_id: PersistentId::new(h.library_persistent_id),
             itunes_persistent_id: (h.itunes_library_persistent_id != 0)
-                .then(|| format_persistent_id(h.itunes_library_persistent_id)),
-            revision_hash: format_persistent_id(h.revision_hash),
+                .then_some(PersistentId::new(h.itunes_library_persistent_id)),
+            revision_hash: PersistentId::new(h.revision_hash),
             file_size_mirror: h.file_size_mirror,
             app_version: h.version_string(),
             format_major_version: h.major_version,
@@ -1552,19 +2628,19 @@ impl Library {
                     populate_plma_metadata(plma, &mut metadata);
                 }
                 HsmaChild::AlbumList(lama) => {
-                    albums.extend(lama.albums.iter().map(Album::from_raw));
+                    albums.extend(lama.albums.iter().map(Album::from));
                 }
                 HsmaChild::ArtistList(l_ama) => {
-                    artists.extend(l_ama.artists.iter().map(Artist::from_raw));
+                    artists.extend(l_ama.artists.iter().map(Artist::from));
                 }
                 HsmaChild::TrackList(ltma) => {
-                    tracks.extend(ltma.tracks.iter().map(Track::from_raw));
+                    tracks.extend(ltma.tracks.iter().map(Track::from));
                 }
                 HsmaChild::PlaylistList(l_pma) => {
-                    playlists.extend(l_pma.playlists.iter().map(Playlist::from_raw));
+                    playlists.extend(l_pma.playlists.iter().map(Playlist::from));
                 }
                 HsmaChild::SocialProfileList(lsma) => {
-                    social_profiles.extend(lsma.profiles.iter().map(SocialProfile::from_raw));
+                    social_profiles.extend(lsma.profiles.iter().map(SocialProfile::from));
                 }
                 HsmaChild::InnerHfma(_)
                 | HsmaChild::Padding(_)
@@ -1573,237 +2649,19 @@ impl Library {
             }
         }
 
-        // Resolve cross-playlist references (folder children & target playlist names in Smart Playlist rules).
-        let playlist_names: HashMap<String, String> = playlists
-            .iter()
-            .filter_map(|pl| {
-                pl.name
-                    .as_ref()
-                    .map(|n| (pl.persistent_id.clone(), n.clone()))
-            })
-            .collect();
-        let mut children_by_parent: HashMap<String, Vec<String>> = HashMap::new();
-        for pl in &playlists {
-            if let Some(parent_id) = &pl.parent_persistent_id {
-                children_by_parent
-                    .entry(parent_id.clone())
-                    .or_default()
-                    .push(pl.persistent_id.clone());
-            }
-        }
-        for pl in &mut playlists {
-            if let Some(children) = children_by_parent.remove(&pl.persistent_id) {
-                pl.child_playlist_persistent_ids = children;
-            }
-            if let Some(smart) = &mut pl.smart_playlist
-                && let Some(group) = &mut smart.rule_group
-            {
-                resolve_playlist_names_in_group(group, &playlist_names);
-            }
-        }
+        link_playlist_hierarchy_and_refs(&mut playlists);
 
-        Self {
+        let mut lib = Self {
             metadata,
             albums,
             artists,
             tracks,
             playlists,
             social_profiles,
-        }
-    }
-
-    /// Loads `.musiclibrary` sidecar `.plist` files (`Preferences.plist`, `preferences/Songs.plist`,
-    /// and `preferences/Playlist_<PersistentID>.plist`) into the domain model if they exist in `bundle_dir`.
-    pub fn load_sidecar_preferences(&mut self, bundle_dir: &Path) {
-        let prefs_plist = bundle_dir.join("Preferences.plist");
-        if prefs_plist.is_file()
-            && let Ok(plist::Value::Dictionary(root)) = plist::Value::from_file(&prefs_plist)
-            && let Some(copy_flag) = root
-                .get("com.apple.Music")
-                .and_then(|v| v.as_dictionary())
-                .and_then(|d| d.get(" CopyFilesToMediaFolder"))
-                .or_else(|| {
-                    root.get("com.apple.Music")
-                        .and_then(|v| v.as_dictionary())
-                        .and_then(|d| d.get("CopyFilesToMediaFolder"))
-                })
-                .and_then(|v| v.as_boolean())
-        {
-            self.metadata.copy_files_to_media_folder = Some(copy_flag);
-        }
-
-        let prefs_subdir = if bundle_dir.join("preferences").is_dir() {
-            bundle_dir.join("preferences")
-        } else {
-            bundle_dir.join("Preferences")
+            ..Self::default()
         };
-        let songs_plist = prefs_subdir.join("Songs.plist");
-        if songs_plist.is_file()
-            && let Some(vp) = parse_playlist_view_plist(&songs_plist)
-        {
-            self.metadata.songs_view_preferences = Some(vp);
-        }
-
-        if prefs_subdir.is_dir() {
-            for pl in &mut self.playlists {
-                let candidate_upper =
-                    prefs_subdir.join(format!("Playlist_{}.plist", pl.persistent_id));
-                let candidate_lower = prefs_subdir.join(format!(
-                    "Playlist_{}.plist",
-                    pl.persistent_id.to_lowercase()
-                ));
-                if candidate_upper.is_file() {
-                    pl.view_preferences = parse_playlist_view_plist(&candidate_upper);
-                } else if candidate_lower.is_file() {
-                    pl.view_preferences = parse_playlist_view_plist(&candidate_lower);
-                }
-            }
-        }
-    }
-
-    /// Finds a track by its 16-char hex Persistent ID (case-insensitive).
-    pub fn track_by_id(&self, persistent_id: &str) -> Option<&Track> {
-        self.tracks
-            .iter()
-            .find(|t| t.persistent_id.eq_ignore_ascii_case(persistent_id))
-    }
-
-    /// Finds an album by its 16-char hex Persistent ID (case-insensitive).
-    pub fn album_by_id(&self, persistent_id: &str) -> Option<&Album> {
-        self.albums
-            .iter()
-            .find(|a| a.persistent_id.eq_ignore_ascii_case(persistent_id))
-    }
-
-    /// Finds an artist by its 16-char hex Persistent ID (case-insensitive).
-    pub fn artist_by_id(&self, persistent_id: &str) -> Option<&Artist> {
-        self.artists
-            .iter()
-            .find(|a| a.persistent_id.eq_ignore_ascii_case(persistent_id))
-    }
-
-    /// Finds a playlist by its 16-char hex Persistent ID (case-insensitive).
-    pub fn playlist_by_id(&self, persistent_id: &str) -> Option<&Playlist> {
-        self.playlists
-            .iter()
-            .find(|p| p.persistent_id.eq_ignore_ascii_case(persistent_id))
-    }
-
-    /// Finds a playlist by exact name (or case-insensitive exact/substring fallback).
-    pub fn playlist_by_name(&self, name: &str) -> Option<&Playlist> {
-        let q = name.to_lowercase();
-        self.playlists
-            .iter()
-            .find(|p| p.name.as_deref() == Some(name))
-            .or_else(|| {
-                self.playlists.iter().find(|p| {
-                    p.name
-                        .as_deref()
-                        .is_some_and(|n| n.eq_ignore_ascii_case(name))
-                })
-            })
-            .or_else(|| {
-                self.playlists.iter().find(|p| {
-                    p.name
-                        .as_deref()
-                        .is_some_and(|n| n.to_lowercase().contains(&q))
-                })
-            })
-    }
-
-    /// Resolves the ordered list of `&Track` items belonging to `playlist`.
-    pub fn playlist_tracks(&self, playlist: &Playlist) -> Vec<&Track> {
-        let track_map: HashMap<&str, &Track> = self
-            .tracks
-            .iter()
-            .map(|t| (t.persistent_id.as_str(), t))
-            .collect();
-        playlist
-            .track_persistent_ids
-            .iter()
-            .filter_map(|pid| track_map.get(pid.as_str()).copied())
-            .collect()
-    }
-
-    /// Returns the direct child playlists of a folder playlist.
-    pub fn playlist_children(&self, folder: &Playlist) -> Vec<&Playlist> {
-        self.playlists
-            .iter()
-            .filter(|p| {
-                p.parent_persistent_id
-                    .as_deref()
-                    .is_some_and(|parent| parent.eq_ignore_ascii_case(&folder.persistent_id))
-            })
-            .collect()
-    }
-
-    /// Returns all tracks belonging to `album_persistent_id`, sorted by disc and track number.
-    pub fn album_tracks(&self, album_persistent_id: &str) -> Vec<&Track> {
-        let mut out: Vec<&Track> = self
-            .tracks
-            .iter()
-            .filter(|t| {
-                t.album_persistent_id
-                    .as_deref()
-                    .is_some_and(|id| id.eq_ignore_ascii_case(album_persistent_id))
-            })
-            .collect();
-        out.sort_by_key(|t| (t.disc_number, t.track_number));
-        out
-    }
-
-    /// Returns all tracks belonging to `artist_persistent_id`.
-    pub fn artist_tracks(&self, artist_persistent_id: &str) -> Vec<&Track> {
-        self.tracks
-            .iter()
-            .filter(|t| {
-                t.artist_persistent_id
-                    .as_deref()
-                    .is_some_and(|id| id.eq_ignore_ascii_case(artist_persistent_id))
-            })
-            .collect()
-    }
-
-    /// Serializes the entire `Library` domain model as pretty-printed JSON.
-    ///
-    /// # Errors
-    /// Returns [`crate::error::MusicDbError::Json`] if JSON serialization fails.
-    #[cfg(any(feature = "sqlite", feature = "cli"))]
-    pub fn to_json_pretty(&self) -> Result<String> {
-        Ok(serde_json::to_string_pretty(self)?)
-    }
-}
-
-impl SocialProfile {
-    pub fn from_raw(isma: &SocialProfileItem) -> Self {
-        let mut profile_id = None;
-        let mut name = None;
-        let mut handle = None;
-        let mut avatar_id = None;
-        let mut avatar_url = None;
-
-        for boma in &isma.bomas {
-            if let Some(s) = boma.as_str() {
-                match boma.subtype {
-                    0x0320 => profile_id = Some(s.to_string()),
-                    0x0321 => name = Some(s.to_string()),
-                    0x0322 => handle = Some(s.to_string()),
-                    0x0323 => avatar_id = Some(s.to_string()),
-                    0x0324 => avatar_url = Some(s.to_string()),
-                    _ => {}
-                }
-            }
-        }
-
-        Self {
-            persistent_id: format_persistent_id(isma.header.profile_persistent_id),
-            persistent_id_u64: isma.header.profile_persistent_id,
-            profile_id,
-            name,
-            handle,
-            avatar_id,
-            avatar_url,
-        }
+        lib.rebuild_indexes();
+        lib
     }
 }
 
@@ -1813,17 +2671,75 @@ fn populate_plma_metadata(plma: &LibraryMasterSection, meta: &mut LibraryMetadat
     for boma in &plma.bomas {
         if let Some(s) = boma.as_str() {
             match boma.subtype {
-                0x01F8 => meta.media_folder_uri = Some(s.to_string()),
-                0x01FC => meta.imported_itl_path = Some(s.to_string()),
-                0x01FD | 0x0200 => meta.media_folder_path = Some(s.to_string()),
+                0x01F8 => meta.media_folder_uri = Some(s.to_owned()),
+                0x01FC => meta.imported_itl_path = Some(s.to_owned()),
+                0x01FD | 0x0200 => meta.media_folder_path = Some(s.to_owned()),
                 _ => {}
             }
         }
     }
 }
 
-impl Album {
-    pub fn from_raw(iama: &AlbumItem) -> Self {
+fn link_playlist_hierarchy_and_refs(playlists: &mut [Playlist]) {
+    let mut parent_to_children: HashMap<PersistentId, Vec<PersistentId>> = HashMap::new();
+    let mut playlist_names: HashMap<PersistentId, String> = HashMap::new();
+    for pl in playlists.iter() {
+        if let Some(parent_id) = pl.parent_persistent_id {
+            parent_to_children
+                .entry(parent_id)
+                .or_default()
+                .push(pl.persistent_id);
+        }
+        if let Some(name) = &pl.name {
+            playlist_names.insert(pl.persistent_id, name.clone());
+        }
+    }
+    for pl in playlists.iter_mut() {
+        if let Some(children) = parent_to_children.remove(&pl.persistent_id) {
+            pl.child_playlist_persistent_ids = children;
+        }
+        if let Some(smart) = &mut pl.smart_playlist
+            && let Some(group) = &mut smart.rule_group
+        {
+            resolve_playlist_refs_in_group(group, &playlist_names);
+        }
+    }
+}
+
+impl From<&SocialProfileItem> for SocialProfile {
+    fn from(isma: &SocialProfileItem) -> Self {
+        let mut profile_id = None;
+        let mut name = None;
+        let mut handle = None;
+        let mut avatar_id = None;
+        let mut avatar_url = None;
+
+        for boma in &isma.bomas {
+            if let Some(s) = boma.as_str() {
+                match boma.subtype {
+                    0x0320 => profile_id = Some(s.to_owned()),
+                    0x0321 => name = Some(s.to_owned()),
+                    0x0322 => handle = Some(s.to_owned()),
+                    0x0323 => avatar_id = Some(s.to_owned()),
+                    0x0324 => avatar_url = Some(s.to_owned()),
+                    _ => {}
+                }
+            }
+        }
+
+        Self {
+            persistent_id: PersistentId::new(isma.header.profile_persistent_id),
+            profile_id,
+            name,
+            handle,
+            avatar_id,
+            avatar_url,
+        }
+    }
+}
+
+impl From<&AlbumItem> for Album {
+    fn from(iama: &AlbumItem) -> Self {
         let h = &iama.header;
         let mut title = None;
         let mut artist = None;
@@ -1834,23 +2750,22 @@ impl Album {
         for boma in &iama.bomas {
             if let Some(s) = boma.as_str() {
                 match boma.subtype {
-                    0x012C => title = Some(s.to_string()),
-                    0x012D => artist = Some(s.to_string()),
-                    0x012E => album_artist = Some(s.to_string()),
-                    0x0133 => cloud_album_id = Some(s.to_string()),
-                    0x0134 => editorial_notes = Some(s.to_string()),
+                    0x012C => title = Some(s.to_owned()),
+                    0x012D => artist = Some(s.to_owned()),
+                    0x012E => album_artist = Some(s.to_owned()),
+                    0x0133 => cloud_album_id = Some(s.to_owned()),
+                    0x0134 => editorial_notes = Some(s.to_owned()),
                     _ => {}
                 }
             }
         }
 
         Self {
-            persistent_id: format_persistent_id(h.album_persistent_id),
-            persistent_id_u64: h.album_persistent_id,
+            persistent_id: PersistentId::new(h.album_persistent_id),
             itunes_persistent_id: (h.album_persistent_id_2 != 0)
-                .then(|| format_persistent_id(h.album_persistent_id_2)),
+                .then_some(PersistentId::new(h.album_persistent_id_2)),
             first_track_persistent_id: (h.first_track_persistent_id != 0)
-                .then(|| format_persistent_id(h.first_track_persistent_id)),
+                .then_some(PersistentId::new(h.first_track_persistent_id)),
             title,
             artist,
             album_artist,
@@ -1858,7 +2773,6 @@ impl Album {
             editorial_notes,
             is_compilation: h.is_compilation != 0,
             star_rating: h.star_rating,
-            stars: h.star_rating / 20,
             star_rating_is_computed: h.star_rating_inheritance == 0x20,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
             suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
@@ -1871,8 +2785,8 @@ impl Album {
     }
 }
 
-impl Artist {
-    pub fn from_raw(i_ama: &ArtistItem) -> Self {
+impl From<&ArtistItem> for Artist {
+    fn from(i_ama: &ArtistItem) -> Self {
         let h = &i_ama.header;
         let mut name = None;
         let mut sort_name = None;
@@ -1882,20 +2796,19 @@ impl Artist {
         for boma in &i_ama.bomas {
             if let Some(s) = boma.as_str() {
                 match boma.subtype {
-                    0x0190 | 0x0004 => name = Some(s.to_string()),
-                    0x0191 => sort_name = Some(s.to_string()),
-                    0x0192 => artwork_url_plist = Some(s.to_string()),
-                    0x0193 => cloud_artist_id = Some(s.to_string()),
+                    0x0190 | 0x0004 => name = Some(s.to_owned()),
+                    0x0191 => sort_name = Some(s.to_owned()),
+                    0x0192 => artwork_url_plist = Some(s.to_owned()),
+                    0x0193 => cloud_artist_id = Some(s.to_owned()),
                     _ => {}
                 }
             }
         }
 
         Self {
-            persistent_id: format_persistent_id(h.artist_persistent_id),
-            persistent_id_u64: h.artist_persistent_id,
+            persistent_id: PersistentId::new(h.artist_persistent_id),
             itunes_persistent_id: (h.artist_persistent_id_2 != 0)
-                .then(|| format_persistent_id(h.artist_persistent_id_2)),
+                .then_some(PersistentId::new(h.artist_persistent_id_2)),
             name,
             sort_name,
             cloud_artist_id,
@@ -1914,60 +2827,25 @@ impl Artist {
     }
 }
 
-impl Track {
-    pub fn from_raw(itma: &TrackItem) -> Self {
+impl From<&TrackItem> for Track {
+    fn from(itma: &TrackItem) -> Self {
         let h = &itma.header;
-
         let cloud_saga_id = (h.cloud_saga_id != 0 && h.cloud_saga_id != 0xFFFF_FFFF_FFFF_FFFD)
             .then_some(h.cloud_saga_id);
 
         let mut track = Self {
-            persistent_id: format_persistent_id(h.track_persistent_id),
-            persistent_id_u64: h.track_persistent_id,
-            title: None,
-            album: None,
-            artist: None,
-            album_artist: None,
-            composer: None,
-            genre: None,
-            store_genre_id: None,
-            kind: None,
-            comments: None,
-            grouping: None,
-            work_name: None,
-            movement_name: None,
+            persistent_id: PersistentId::new(h.track_persistent_id),
             movement_number: h.movement_number,
             movement_total: h.movement_total,
-            sort_title: None,
-            sort_album: None,
-            sort_artist: None,
-            sort_album_artist: None,
-            sort_composer: None,
             sort_modes: TrackSortModes::from(h.auto_sort_flags),
-            auto_sort_flags: h.auto_sort_flags,
             track_number: h.track_number,
             track_total: h.track_total,
             disc_number: h.disc_number,
             disc_total: h.disc_total,
             year: h.year,
             bpm: h.bpm,
-            duration_ms: None,
-            file_size: None,
-            bit_rate: None,
-            is_vbr: None,
-            sample_rate: None,
-            file_type_fourcc: None,
-            codec_fourcc: None,
             volume_adjustment: h.volume_adjustment,
-            normalization: None,
-            gapless_encoder_delay: None,
-            gapless_encoder_padding: None,
-            gapless_total_samples: None,
-            gapless_last_eight_frames_offset: None,
-            equalizer: None,
-            equalizer_preset: None,
             star_rating: h.star_rating,
-            stars: h.star_rating / 20,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
             disabled: h.checkbox_disabled != 0,
             skip_when_shuffling: h.checkbox_skip_when_shuffling != 0,
@@ -1981,418 +2859,262 @@ impl Track {
             has_custom_lyrics: h.has_custom_lyrics != 0 || h.has_local_custom_lyrics != 0,
             has_local_custom_lyrics: h.has_local_custom_lyrics != 0,
             has_unsynced_local_changes: h.has_unsynced_local_changes != 0,
-            custom_lyrics_hash: None,
-            is_itunes_matched: None,
-            is_apple_music_catalog: None,
             cloud_saga_id,
-            store_track_adam_id: None,
-            apple_music_store_album_id: None,
             apple_music_store_artist_id: (h.apple_music_store_artist_id != 0)
-                .then_some(h.apple_music_store_artist_id as u64),
-            apple_music_store_album_artist_id: None,
-            storefront_id: None,
-            purchaser_email: None,
-            purchaser_name: None,
-            downloaded_status: h.downloaded_status,
+                .then_some(u64::from(h.apple_music_store_artist_id)),
             downloaded_state: DownloadedStatus::from(h.downloaded_status),
             cloud_status: CloudStatus::from(h.cloud_status),
-            cloud_status_raw: h.cloud_status,
-            cloud_album_id: None,
-            cloud_artist_id: None,
-            cloud_artwork_token: None,
-            cloud_lyrics_token: None,
-            content_rating: h.content_rating,
             content_advisory: ContentRating::from(h.content_rating),
-            media_kind: h.media_kind,
             media_type: MediaKind::from(h.media_kind),
             playback_start_ms: h.playback_start_ms,
             playback_stop_ms: h.playback_stop_ms,
-            play_count: None,
-            true_play_count: None,
-            skip_count: None,
-            true_skip_count: None,
-            date_added: None,
-            date_modified: None,
-            date_last_played: None,
-            date_first_played_utc: None,
-            date_last_skipped: None,
-            date_released: None,
-            date_purchased: None,
-            date_cloud_synced: None,
-            file_url: None,
-            legacy_file_path: None,
-            book_path: None,
             album_persistent_id: (h.album_persistent_id != 0)
-                .then(|| format_persistent_id(h.album_persistent_id)),
+                .then_some(PersistentId::new(h.album_persistent_id)),
             artist_persistent_id: (h.artist_persistent_id != 0)
-                .then(|| format_persistent_id(h.artist_persistent_id)),
+                .then_some(PersistentId::new(h.artist_persistent_id)),
             artwork_uuid: format_artwork_uuid(&h.artwork_uuid),
-            artwork_count: None,
-            has_embedded_artwork: None,
-            artwork_total_size_bytes: None,
-            file_folder_count: None,
-            library_folder_count: None,
-            isrc: None,
-            copyright: None,
-            extra_strings: BTreeMap::new(),
+            ..Self::default()
         };
 
-        // Note: As documented in Apple-Music-Editor, if duplicate boma subtypes appear on a track,
-        // only the first occurrence is active in Apple Music.
         for boma in &itma.bomas {
-            match &boma.payload {
-                BomaPayload::TrackNumerics(num) => {
-                    if track.duration_ms.is_none() {
-                        track.duration_ms = Some(num.duration_ms);
-                        track.file_size = Some(num.file_size);
-                        track.bit_rate = Some(num.bit_rate);
-                        track.is_vbr = Some(num.is_vbr != 0);
-                        track.sample_rate = Some(num.sample_rate);
-                        track.file_type_fourcc = num.file_type_fourcc_str();
-                        track.codec_fourcc = num.codec_fourcc_str();
-                        track.normalization = (num.normalization != 0).then_some(num.normalization);
-                        track.gapless_encoder_delay =
-                            (num.gapless_encoder_delay != 0).then_some(num.gapless_encoder_delay);
-                        track.gapless_encoder_padding = (num.gapless_encoder_padding != 0)
-                            .then_some(num.gapless_encoder_padding);
-                        track.gapless_total_samples =
-                            (num.gapless_total_samples != 0).then_some(num.gapless_total_samples);
-                        track.gapless_last_eight_frames_offset =
-                            (num.gapless_last_eight_frames_offset != 0)
-                                .then_some(num.gapless_last_eight_frames_offset);
-                        track.store_genre_id =
-                            (num.store_genre_id != 0).then_some(num.store_genre_id);
-                        track.custom_lyrics_hash =
-                            (num.custom_lyrics_hash != 0).then_some(num.custom_lyrics_hash);
-                        track.date_added = apple_timestamp_to_utc(num.date_added);
-                        track.date_modified = apple_timestamp_to_utc(num.date_modified);
-                        track.date_purchased = apple_timestamp_to_utc(num.date_purchased);
-                        if num.date_purchased != 0
-                            || (num.subrecord_kind == 1
-                                && (num.store_track_adam_id != 0 || num.storefront_id != 0)
-                                && num.is_itunes_matched == [0, 0]
-                                && num.is_apple_music_catalog == 0)
-                        {
-                            track.purchased = true;
-                        }
-                        track.date_released = apple_timestamp_to_utc(num.date_released);
-                        track.date_cloud_synced = apple_timestamp_to_utc(num.date_cloud_synced);
-                        track.is_itunes_matched = Some(num.is_itunes_matched != [0, 0]);
-                        track.is_apple_music_catalog = Some(num.is_apple_music_catalog != 0);
-                        if num.store_track_adam_id != 0 {
-                            track.store_track_adam_id = Some(num.store_track_adam_id);
-                        }
-                        if num.apple_music_store_album_id != 0 {
-                            track.apple_music_store_album_id = Some(num.apple_music_store_album_id);
-                        }
-                        if num.apple_music_store_artist_id != 0 {
-                            track.apple_music_store_artist_id =
-                                Some(num.apple_music_store_artist_id);
-                        }
-                        if num.apple_music_store_album_artist_id != 0 {
-                            track.apple_music_store_album_artist_id =
-                                Some(num.apple_music_store_album_artist_id);
-                        }
-                        if num.storefront_id != 0 {
-                            track.storefront_id = Some(num.storefront_id);
-                        }
-                        track.artwork_count = Some(num.artwork_count);
-                        track.has_embedded_artwork = Some(num.has_embedded_artwork == -1);
-                        track.artwork_total_size_bytes = Some(num.artwork_total_size_bytes);
-                        track.file_folder_count = Some(num.file_folder_count);
-                        track.library_folder_count = Some(num.library_folder_count);
-                    } else {
-                        // Downloaded local tracks have two `TrackNumerics` records:
-                        // `TrackNumerics[0]` holds local file properties (`date_cloud_synced = 2`),
-                        // while `TrackNumerics[1]` holds the iCloud Music Library catalog/sync record.
-                        if track.date_cloud_synced.is_none() {
-                            track.date_cloud_synced = apple_timestamp_to_utc(num.date_cloud_synced);
-                        }
-                        if track.date_released.is_none() {
-                            track.date_released = apple_timestamp_to_utc(num.date_released);
-                        }
-                        if track.date_purchased.is_none() && num.date_purchased != 0 {
-                            track.date_purchased = apple_timestamp_to_utc(num.date_purchased);
-                            track.purchased = true;
-                        }
-                        if track.artwork_count.unwrap_or(0) == 0 && num.artwork_count != 0 {
-                            track.artwork_count = Some(num.artwork_count);
-                        }
-                        if track.has_embedded_artwork != Some(true)
-                            && num.has_embedded_artwork == -1
-                        {
-                            track.has_embedded_artwork = Some(true);
-                        }
-                        if track.artwork_total_size_bytes.unwrap_or(0) == 0
-                            && num.artwork_total_size_bytes != 0
-                        {
-                            track.artwork_total_size_bytes = Some(num.artwork_total_size_bytes);
-                        }
-                        if track.store_track_adam_id.is_none() && num.store_track_adam_id != 0 {
-                            track.store_track_adam_id = Some(num.store_track_adam_id);
-                        }
-                        if track.apple_music_store_album_id.is_none()
-                            && num.apple_music_store_album_id != 0
-                        {
-                            track.apple_music_store_album_id = Some(num.apple_music_store_album_id);
-                        }
-                        if (track.apple_music_store_artist_id.is_none()
-                            || track.apple_music_store_artist_id
-                                == Some(num.apple_music_store_artist_id & 0xFFFF_FFFF))
-                            && num.apple_music_store_artist_id != 0
-                        {
-                            track.apple_music_store_artist_id =
-                                Some(num.apple_music_store_artist_id);
-                        }
-                        if track.apple_music_store_album_artist_id.is_none()
-                            && num.apple_music_store_album_artist_id != 0
-                        {
-                            track.apple_music_store_album_artist_id =
-                                Some(num.apple_music_store_album_artist_id);
-                        }
-                        if track.storefront_id.is_none() && num.storefront_id != 0 {
-                            track.storefront_id = Some(num.storefront_id);
-                        }
-                        if track.store_genre_id.is_none() && num.store_genre_id != 0 {
-                            track.store_genre_id = Some(num.store_genre_id);
-                        }
-                        if num.is_itunes_matched != [0, 0] {
-                            track.is_itunes_matched = Some(true);
-                        }
-                        if num.is_apple_music_catalog != 0 {
-                            track.is_apple_music_catalog = Some(true);
-                        }
-                        if track.codec_fourcc.is_none() {
-                            track.codec_fourcc = num.codec_fourcc_str();
-                        }
-                    }
-                }
-                BomaPayload::TrackPlaysSkips(ps) => {
-                    if track.play_count.is_none() {
-                        track.play_count = Some(ps.play_count);
-                        track.true_play_count = Some(ps.true_play_count);
-                        track.skip_count = Some(ps.skip_count);
-                        track.true_skip_count = Some(ps.true_skip_count);
-                        track.date_last_played = apple_timestamp_to_utc(ps.date_last_played);
-                        track.date_first_played_utc =
-                            apple_timestamp_to_utc(ps.date_first_played_utc);
-                        track.date_last_skipped = apple_timestamp_to_utc(ps.date_last_skipped);
-                    }
-                }
-                BomaPayload::Book { extracted_path, .. } => {
-                    if track.book_path.is_none() {
-                        track.book_path = extracted_path.clone();
-                    }
-                }
-                _ => {
-                    if let Some(s) = boma.as_str() {
-                        let val = s.to_string();
-                        match boma.subtype {
-                            0x0002 => {
-                                track.title.get_or_insert(val);
-                            }
-                            0x0003 => {
-                                track.album.get_or_insert(val);
-                            }
-                            0x0004 => {
-                                track.artist.get_or_insert(val);
-                            }
-                            0x0005 => {
-                                track.genre.get_or_insert(val);
-                            }
-                            0x0006 => {
-                                track.kind.get_or_insert(val);
-                            }
-                            0x0007 => {
-                                if track.equalizer.is_none() {
-                                    track.equalizer_preset = Some(EqualizerPreset::parse(&val));
-                                    track.equalizer = Some(val);
-                                }
-                            }
-                            0x0008 => {
-                                track.comments.get_or_insert(val);
-                            }
-                            0x000B => {
-                                track.file_url.get_or_insert(val);
-                            }
-                            0x000C => {
-                                track.composer.get_or_insert(val);
-                            }
-                            0x000E => {
-                                track.grouping.get_or_insert(val);
-                            }
-                            0x001B => {
-                                track.album_artist.get_or_insert(val);
-                            }
-                            0x001E => {
-                                track.sort_title.get_or_insert(val);
-                            }
-                            0x001F => {
-                                track.sort_album.get_or_insert(val);
-                            }
-                            0x0020 => {
-                                track.sort_artist.get_or_insert(val);
-                            }
-                            0x0021 => {
-                                track.sort_album_artist.get_or_insert(val);
-                            }
-                            0x0022 => {
-                                track.sort_composer.get_or_insert(val);
-                            }
-                            0x002B => {
-                                track.isrc.get_or_insert(val);
-                            }
-                            0x002E => {
-                                track.copyright.get_or_insert(val);
-                            }
-                            0x003B => {
-                                track.purchaser_email.get_or_insert(val);
-                            }
-                            0x003C => {
-                                track.purchaser_name.get_or_insert(val);
-                            }
-                            0x003F => {
-                                track.work_name.get_or_insert(val);
-                            }
-                            0x0040 => {
-                                track.movement_name.get_or_insert(val);
-                            }
-                            0x0043 => {
-                                track.legacy_file_path.get_or_insert(val);
-                            }
-                            0x0036 => {
-                                if let BomaPayload::RawStringUtf8 { raw_bytes, .. } = &boma.payload
-                                    && let Ok(plist::Value::Dictionary(dict)) =
-                                        plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
-                                {
-                                    if let Some(v) =
-                                        dict.get("cloud-album-id").and_then(|v| v.as_string())
-                                    {
-                                        track.cloud_album_id.get_or_insert_with(|| v.to_string());
-                                    }
-                                    if let Some(v) =
-                                        dict.get("cloud-artist-id").and_then(|v| v.as_string())
-                                    {
-                                        track.cloud_artist_id.get_or_insert_with(|| v.to_string());
-                                    }
-                                    if let Some(v) =
-                                        dict.get("cloud-artwork-token").and_then(|v| v.as_string())
-                                    {
-                                        track
-                                            .cloud_artwork_token
-                                            .get_or_insert_with(|| v.to_string());
-                                    }
-                                    if let Some(v) = dict
-                                        .get("cloud-lyrics")
-                                        .or_else(|| dict.get("cloud-lyrics-token"))
-                                        .and_then(|v| v.as_string())
-                                    {
-                                        track
-                                            .cloud_lyrics_token
-                                            .get_or_insert_with(|| v.to_string());
-                                    }
-                                }
-                                track
-                                    .extra_strings
-                                    .entry(format!(
-                                        "0x{:04X}_{}",
-                                        boma.subtype,
-                                        boma.subtype_name()
-                                    ))
-                                    .or_insert(val);
-                            }
-                            other => {
-                                track
-                                    .extra_strings
-                                    .entry(format!("0x{:04X}_{}", other, boma.subtype_name()))
-                                    .or_insert(val);
-                            }
-                        }
-                    }
-                }
-            }
+            apply_track_boma(&mut track, boma);
         }
 
         track
     }
 }
 
-impl Playlist {
-    pub fn from_raw(lpma: &PlaylistItem) -> Self {
+fn apply_track_boma(track: &mut Track, boma: &BomaSection) {
+    match &boma.payload {
+        BomaPayload::TrackNumerics(num) => {
+            if track.duration_ms.is_none() {
+                apply_primary_track_numerics(track, num);
+            } else {
+                apply_secondary_track_numerics(track, num);
+            }
+        }
+        BomaPayload::TrackPlaysSkips(ps) => {
+            if track.play_count.is_none() {
+                track.play_count = Some(ps.play_count);
+                track.true_play_count = Some(ps.true_play_count);
+                track.skip_count = Some(ps.skip_count);
+                track.true_skip_count = Some(ps.true_skip_count);
+                track.date_last_played = apple_timestamp_to_utc(ps.date_last_played);
+                track.date_first_played_utc = apple_timestamp_to_utc(ps.date_first_played_utc);
+                track.date_last_skipped = apple_timestamp_to_utc(ps.date_last_skipped);
+            }
+        }
+        BomaPayload::Book { extracted_path, .. } => {
+            if track.book_path.is_none() {
+                track.book_path.clone_from(extracted_path);
+            }
+        }
+        _ => {
+            if let Some(s) = boma.as_str() {
+                apply_track_string_boma(track, boma, s.to_owned());
+            }
+        }
+    }
+}
+
+fn apply_primary_track_numerics(track: &mut Track, num: &TrackNumerics) {
+    track.duration_ms = Some(num.duration_ms);
+    track.file_size = Some(num.file_size);
+    track.bit_rate = Some(num.bit_rate);
+    track.is_vbr = Some(num.is_vbr != 0);
+    track.sample_rate = Some(num.sample_rate);
+    track.file_type_fourcc = num.file_type_fourcc_str();
+    track.codec_fourcc = num.codec_fourcc_str();
+    track.normalization = (num.normalization != 0).then_some(num.normalization);
+    track.gapless_encoder_delay =
+        (num.gapless_encoder_delay != 0).then_some(num.gapless_encoder_delay);
+    track.gapless_encoder_padding =
+        (num.gapless_encoder_padding != 0).then_some(num.gapless_encoder_padding);
+    track.gapless_total_samples =
+        (num.gapless_total_samples != 0).then_some(num.gapless_total_samples);
+    track.gapless_last_eight_frames_offset =
+        (num.gapless_last_eight_frames_offset != 0).then_some(num.gapless_last_eight_frames_offset);
+    track.store_genre_id = (num.store_genre_id != 0).then_some(num.store_genre_id);
+    track.custom_lyrics_hash = (num.custom_lyrics_hash != 0).then_some(num.custom_lyrics_hash);
+    track.date_added = apple_timestamp_to_utc(num.date_added);
+    track.date_modified = apple_timestamp_to_utc(num.date_modified);
+    track.date_purchased = apple_timestamp_to_utc(num.date_purchased);
+    if num.date_purchased != 0
+        || (num.subrecord_kind == 1
+            && (num.store_track_adam_id != 0 || num.storefront_id != 0)
+            && num.is_itunes_matched == [0, 0]
+            && num.is_apple_music_catalog == 0)
+    {
+        track.purchased = true;
+    }
+    track.date_released = apple_timestamp_to_utc(num.date_released);
+    track.date_cloud_synced = apple_timestamp_to_utc(num.date_cloud_synced);
+    track.is_itunes_matched = Some(num.is_itunes_matched != [0, 0]);
+    track.is_apple_music_catalog = Some(num.is_apple_music_catalog != 0);
+    if num.store_track_adam_id != 0 {
+        track.store_track_adam_id = Some(num.store_track_adam_id);
+    }
+    if num.apple_music_store_album_id != 0 {
+        track.apple_music_store_album_id = Some(num.apple_music_store_album_id);
+    }
+    if num.apple_music_store_artist_id != 0 {
+        track.apple_music_store_artist_id = Some(num.apple_music_store_artist_id);
+    }
+    if num.apple_music_store_album_artist_id != 0 {
+        track.apple_music_store_album_artist_id = Some(num.apple_music_store_album_artist_id);
+    }
+    if num.storefront_id != 0 {
+        track.storefront_id = Some(num.storefront_id);
+    }
+    track.artwork_count = Some(num.artwork_count);
+    track.has_embedded_artwork = Some(num.has_embedded_artwork == -1);
+    track.artwork_total_size_bytes = Some(num.artwork_total_size_bytes);
+    track.file_folder_count = Some(num.file_folder_count);
+    track.library_folder_count = Some(num.library_folder_count);
+}
+
+fn apply_secondary_track_numerics(track: &mut Track, num: &TrackNumerics) {
+    if track.date_cloud_synced.is_none() {
+        track.date_cloud_synced = apple_timestamp_to_utc(num.date_cloud_synced);
+    }
+    if track.date_released.is_none() {
+        track.date_released = apple_timestamp_to_utc(num.date_released);
+    }
+    if track.date_purchased.is_none() && num.date_purchased != 0 {
+        track.date_purchased = apple_timestamp_to_utc(num.date_purchased);
+        track.purchased = true;
+    }
+    if track.artwork_count.unwrap_or(0) == 0 && num.artwork_count != 0 {
+        track.artwork_count = Some(num.artwork_count);
+    }
+    if track.has_embedded_artwork != Some(true) && num.has_embedded_artwork == -1 {
+        track.has_embedded_artwork = Some(true);
+    }
+    if track.artwork_total_size_bytes.unwrap_or(0) == 0 && num.artwork_total_size_bytes != 0 {
+        track.artwork_total_size_bytes = Some(num.artwork_total_size_bytes);
+    }
+    if track.store_track_adam_id.is_none() && num.store_track_adam_id != 0 {
+        track.store_track_adam_id = Some(num.store_track_adam_id);
+    }
+    if track.apple_music_store_album_id.is_none() && num.apple_music_store_album_id != 0 {
+        track.apple_music_store_album_id = Some(num.apple_music_store_album_id);
+    }
+    if (track.apple_music_store_artist_id.is_none()
+        || track.apple_music_store_artist_id == Some(num.apple_music_store_artist_id & 0xFFFF_FFFF))
+        && num.apple_music_store_artist_id != 0
+    {
+        track.apple_music_store_artist_id = Some(num.apple_music_store_artist_id);
+    }
+    if track.apple_music_store_album_artist_id.is_none()
+        && num.apple_music_store_album_artist_id != 0
+    {
+        track.apple_music_store_album_artist_id = Some(num.apple_music_store_album_artist_id);
+    }
+    if track.storefront_id.is_none() && num.storefront_id != 0 {
+        track.storefront_id = Some(num.storefront_id);
+    }
+    if track.store_genre_id.is_none() && num.store_genre_id != 0 {
+        track.store_genre_id = Some(num.store_genre_id);
+    }
+    if num.is_itunes_matched != [0, 0] {
+        track.is_itunes_matched = Some(true);
+    }
+    if num.is_apple_music_catalog != 0 {
+        track.is_apple_music_catalog = Some(true);
+    }
+    if track.codec_fourcc.is_none() {
+        track.codec_fourcc = num.codec_fourcc_str();
+    }
+}
+
+fn apply_track_string_boma(track: &mut Track, boma: &BomaSection, val: String) {
+    let target = match boma.subtype {
+        0x0002 => &mut track.title,
+        0x0003 => &mut track.album,
+        0x0004 => &mut track.artist,
+        0x0005 => &mut track.genre,
+        0x0006 => &mut track.kind,
+        0x0007 => {
+            if track.equalizer.is_none() {
+                track.equalizer_preset = Some(EqualizerPreset::from(val.as_str()));
+                track.equalizer = Some(val);
+            }
+            return;
+        }
+        0x0008 => &mut track.comments,
+        0x000B => &mut track.file_url,
+        0x000C => &mut track.composer,
+        0x000E => &mut track.grouping,
+        0x001B => &mut track.album_artist,
+        0x001E => &mut track.sort_title,
+        0x001F => &mut track.sort_album,
+        0x0020 => &mut track.sort_artist,
+        0x0021 => &mut track.sort_album_artist,
+        0x0022 => &mut track.sort_composer,
+        0x002B => &mut track.isrc,
+        0x002E => &mut track.copyright,
+        0x003B => &mut track.purchaser_email,
+        0x003C => &mut track.purchaser_name,
+        0x003F => &mut track.work_name,
+        0x0040 => &mut track.movement_name,
+        0x0043 => &mut track.legacy_file_path,
+        0x0036 => {
+            apply_track_cloud_plist(track, boma, val);
+            return;
+        }
+        other => {
+            track
+                .extra_strings
+                .entry(format!("0x{other:04X}_{}", boma.subtype_name()))
+                .or_insert(val);
+            return;
+        }
+    };
+    target.get_or_insert(val);
+}
+
+fn apply_track_cloud_plist(track: &mut Track, boma: &BomaSection, val: String) {
+    if let BomaPayload::RawStringUtf8 { raw_bytes, .. } = &boma.payload
+        && let Ok(plist::Value::Dictionary(dict)) =
+            plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
+    {
+        if let Some(v) = dict.get("cloud-album-id").and_then(plist::Value::as_string) {
+            track.cloud_album_id.get_or_insert_with(|| v.to_owned());
+        }
+        if let Some(v) = dict
+            .get("cloud-artist-id")
+            .and_then(plist::Value::as_string)
+        {
+            track.cloud_artist_id.get_or_insert_with(|| v.to_owned());
+        }
+        if let Some(v) = dict
+            .get("cloud-artwork-token")
+            .and_then(plist::Value::as_string)
+        {
+            track
+                .cloud_artwork_token
+                .get_or_insert_with(|| v.to_owned());
+        }
+        if let Some(v) = dict
+            .get("cloud-lyrics")
+            .or_else(|| dict.get("cloud-lyrics-token"))
+            .and_then(plist::Value::as_string)
+        {
+            track.cloud_lyrics_token.get_or_insert_with(|| v.to_owned());
+        }
+    }
+    track
+        .extra_strings
+        .entry(format!("0x{:04X}_{}", boma.subtype, boma.subtype_name()))
+        .or_insert(val);
+}
+
+impl From<&PlaylistItem> for Playlist {
+    fn from(lpma: &PlaylistItem) -> Self {
         let h = &lpma.header;
-        let mut name = None;
-        let mut description = None;
-        let mut universal_library_id = None;
-        let mut cloud_uuid = None;
-        let mut subscribed_container_url = None;
-        let mut owner_name = None;
-        let mut owner_id = None;
-        let mut cloud_artwork_url = None;
-        let mut cloud_artwork_token = None;
         let mut raw_smart_rules: Option<&SlstSection> = None;
         let mut raw_smart_options: Option<&SmartPlaylistOptions> = None;
         let mut track_persistent_ids = Vec::new();
-
-        for boma in &lpma.bomas {
-            match &boma.payload {
-                BomaPayload::PlaylistItem(ipfa) => {
-                    track_persistent_ids.push(format_persistent_id(ipfa.track_persistent_id));
-                }
-                BomaPayload::PlaylistItemCompact(ipfa) => {
-                    track_persistent_ids.push(format_persistent_id(ipfa.track_persistent_id));
-                }
-                BomaPayload::SmartPlaylistRules(slst) => {
-                    raw_smart_rules = Some(slst.as_ref());
-                }
-                BomaPayload::SmartPlaylistOptions(opts) => {
-                    raw_smart_options = Some(opts.as_ref());
-                }
-                _ => {
-                    if boma.subtype == 0x00C8
-                        && let Some(s) = boma.as_str()
-                    {
-                        name = Some(s.to_string());
-                    } else if boma.subtype == 0x00CD
-                        && let BomaPayload::RawStringUtf8 { raw_bytes, .. } = &boma.payload
-                        && let Ok(plist::Value::Dictionary(dict)) =
-                            plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
-                    {
-                        universal_library_id = dict
-                            .get("universal-library-id")
-                            .and_then(|v| v.as_string())
-                            .map(str::to_string);
-                        cloud_uuid = dict
-                            .get("uuid")
-                            .and_then(|v| v.as_string())
-                            .map(str::to_string);
-                        subscribed_container_url = dict
-                            .get("subscribed-container-url")
-                            .and_then(|v| v.as_string())
-                            .map(str::to_string);
-                        owner_name = dict
-                            .get("ownerName")
-                            .and_then(|v| v.as_string())
-                            .map(str::to_string);
-                        owner_id = dict
-                            .get("ownerID")
-                            .and_then(|v| v.as_string())
-                            .map(str::to_string);
-                        description = dict
-                            .get("description")
-                            .and_then(|v| v.as_string())
-                            .map(str::to_string);
-                        cloud_artwork_url = dict
-                            .get("cloud-artwork-url")
-                            .and_then(|v| v.as_string())
-                            .map(str::to_string);
-                        cloud_artwork_token = dict
-                            .get("cloud-artwork-token")
-                            .and_then(|v| v.as_string())
-                            .map(str::to_string);
-                    }
-                }
-            }
-        }
 
         let is_master = h.is_master_playlist != 0;
         let is_folder = h.unk_48_folder_flag[1] != 0;
@@ -2401,86 +3123,144 @@ impl Playlist {
         let system_kind = DistinguishedPlaylistKind::from(distinguished_kind);
         let share_mode = PlaylistShareMode::from(h.cloud_share_mode);
 
-        // Note: Apple Music internally attaches a hidden `SLst` rule list to Folder playlists
-        // (matching `ANY` child playlist IDs). Only non-folder playlists with `SLst` / `0x00CA`
-        // are true user/system Smart Playlists.
-        let has_smart_blocks = raw_smart_rules.is_some() || raw_smart_options.is_some();
-        let is_smart = !is_folder && has_smart_blocks;
-        let smart_playlist = if has_smart_blocks && !is_folder {
-            Some(decode_smart_playlist(raw_smart_options, raw_smart_rules))
-        } else {
-            None
-        };
-
-        let kind = if is_master {
-            PlaylistKind::Master
-        } else if is_folder {
-            PlaylistKind::Folder
-        } else if distinguished_kind != 0 {
-            PlaylistKind::Distinguished
-        } else if is_smart {
-            PlaylistKind::Smart
-        } else if share_mode == PlaylistShareMode::SubscribedCatalog
-            || subscribed_container_url.is_some()
-        {
-            PlaylistKind::SubscribedCatalog
-        } else {
-            PlaylistKind::Standard
-        };
-
-        let cloud_saga_id = (h.cloud_playlist_saga_id_1 != 0).then_some(h.cloud_playlist_saga_id_1);
-        let author_social_profile_persistent_id = h
-            .author_social_profile_persistent_id
-            .filter(|&id| id != 0)
-            .map(format_persistent_id);
-        let date_cloud_synced = h
-            .date_suggestion_flag_modified
-            .or(h.date_cloud_synced_2)
-            .and_then(apple_timestamp_to_utc);
-
-        Self {
-            persistent_id: format_persistent_id(h.playlist_persistent_id),
-            persistent_id_u64: h.playlist_persistent_id,
+        let mut pl = Self {
+            persistent_id: PersistentId::new(h.playlist_persistent_id),
             parent_persistent_id: (h.parent_persistent_id != 0)
-                .then(|| format_persistent_id(h.parent_persistent_id)),
-            name,
-            description,
-            kind,
+                .then_some(PersistentId::new(h.parent_persistent_id)),
             is_master,
             is_folder,
-            is_smart,
             show_in_profile_and_search: h.checkbox_show_in_profile_and_search != 0,
-            distinguished_kind,
             system_kind,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
             date_created: apple_timestamp_to_utc(h.date_created),
             date_modified: apple_timestamp_to_utc(h.date_modified),
             date_last_played: apple_timestamp_to_utc(h.date_last_played),
             date_cloud_published: apple_timestamp_to_utc(h.date_cloud_published),
-            date_cloud_synced,
+            date_cloud_synced: h
+                .date_suggestion_flag_modified
+                .or(h.date_cloud_synced_2)
+                .and_then(apple_timestamp_to_utc),
             play_count: h.play_count,
             true_play_count: h.true_play_count,
             refresh_interval_seconds: h.refresh_interval_seconds,
-            cloud_share_mode: h.cloud_share_mode,
             share_mode,
             artwork_template_kind: h.artwork_template_kind,
-            cloud_saga_id,
-            universal_library_id,
-            cloud_uuid,
-            subscribed_container_url,
-            owner_name,
-            owner_id,
-            author_social_profile_persistent_id,
-            cloud_artwork_url,
-            cloud_artwork_token,
+            cloud_saga_id: (h.cloud_playlist_saga_id_1 != 0).then_some(h.cloud_playlist_saga_id_1),
+            author_social_profile_persistent_id: h
+                .author_social_profile_persistent_id
+                .filter(|&id| id != 0)
+                .map(PersistentId::new),
             artwork_uuid: format_artwork_uuid(&h.artwork_uuid),
             declared_track_count: h.track_count,
-            track_persistent_ids,
-            child_playlist_persistent_ids: Vec::new(),
-            smart_playlist,
-            view_preferences: None,
+            ..Self::default()
+        };
+
+        for boma in &lpma.bomas {
+            apply_playlist_boma(
+                &mut pl,
+                boma,
+                &mut track_persistent_ids,
+                &mut raw_smart_rules,
+                &mut raw_smart_options,
+            );
+        }
+
+        pl.track_persistent_ids = track_persistent_ids;
+        let has_smart_blocks = raw_smart_rules.is_some() || raw_smart_options.is_some();
+        pl.is_smart = !is_folder && has_smart_blocks;
+        pl.smart_playlist = pl
+            .is_smart
+            .then(|| decode_smart_playlist(raw_smart_options, raw_smart_rules));
+
+        pl.kind = if is_master {
+            PlaylistKind::Master
+        } else if is_folder {
+            PlaylistKind::Folder
+        } else if distinguished_kind != 0 {
+            PlaylistKind::Distinguished
+        } else if pl.is_smart {
+            PlaylistKind::Smart
+        } else if share_mode == PlaylistShareMode::SubscribedCatalog
+            || pl.subscribed_container_url.is_some()
+        {
+            PlaylistKind::SubscribedCatalog
+        } else {
+            PlaylistKind::Standard
+        };
+
+        pl
+    }
+}
+
+fn apply_playlist_boma<'a>(
+    pl: &mut Playlist,
+    boma: &'a BomaSection,
+    track_persistent_ids: &mut Vec<PersistentId>,
+    raw_smart_rules: &mut Option<&'a SlstSection>,
+    raw_smart_options: &mut Option<&'a SmartPlaylistOptions>,
+) {
+    match &boma.payload {
+        BomaPayload::PlaylistItem(ipfa) => {
+            track_persistent_ids.push(PersistentId::new(ipfa.track_persistent_id));
+        }
+        BomaPayload::PlaylistItemCompact(ipfa) => {
+            track_persistent_ids.push(PersistentId::new(ipfa.track_persistent_id));
+        }
+        BomaPayload::SmartPlaylistRules(slst) => {
+            *raw_smart_rules = Some(slst.as_ref());
+        }
+        BomaPayload::SmartPlaylistOptions(opts) => {
+            *raw_smart_options = Some(opts.as_ref());
+        }
+        _ => {
+            if boma.subtype == 0x00C8
+                && let Some(s) = boma.as_str()
+            {
+                pl.name = Some(s.to_owned());
+            } else if boma.subtype == 0x00CD
+                && let BomaPayload::RawStringUtf8 { raw_bytes, .. } = &boma.payload
+                && let Ok(plist::Value::Dictionary(dict)) =
+                    plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
+            {
+                apply_playlist_cloud_dict(pl, &dict);
+            }
         }
     }
+}
+
+fn apply_playlist_cloud_dict(pl: &mut Playlist, dict: &plist::Dictionary) {
+    pl.universal_library_id = dict
+        .get("universal-library-id")
+        .and_then(plist::Value::as_string)
+        .map(str::to_owned);
+    pl.cloud_uuid = dict
+        .get("uuid")
+        .and_then(plist::Value::as_string)
+        .map(str::to_owned);
+    pl.subscribed_container_url = dict
+        .get("subscribed-container-url")
+        .and_then(plist::Value::as_string)
+        .map(str::to_owned);
+    pl.owner_name = dict
+        .get("ownerName")
+        .and_then(plist::Value::as_string)
+        .map(str::to_owned);
+    pl.owner_id = dict
+        .get("ownerID")
+        .and_then(plist::Value::as_string)
+        .map(str::to_owned);
+    pl.description = dict
+        .get("description")
+        .and_then(plist::Value::as_string)
+        .map(str::to_owned);
+    pl.cloud_artwork_url = dict
+        .get("cloud-artwork-url")
+        .and_then(plist::Value::as_string)
+        .map(str::to_owned);
+    pl.cloud_artwork_token = dict
+        .get("cloud-artwork-token")
+        .and_then(plist::Value::as_string)
+        .map(str::to_owned);
 }
 
 fn decode_smart_playlist(
@@ -2491,10 +3271,10 @@ fn decode_smart_playlist(
         let lim = (o.checkbox_enable_limit != 0).then(|| SmartPlaylistLimit {
             count: o.limit_count,
             unit: SmartLimitUnit::from(o.limit_unit),
-            selection: SmartSelectionMethod::from_raw(
+            selection: SmartSelectionMethod::from((
                 o.limit_selection_method,
                 o.negate_limit_selection_method,
-            ),
+            )),
         });
         (
             o.checkbox_live_updating != 0,
@@ -2536,115 +3316,11 @@ fn decode_smart_rule(rule: &SmartPlaylistRule) -> SmartRuleNode {
     let operator = SmartOperator::from(rule.comparison_method);
     let value = match &rule.child {
         SmartRuleChild::StringUtf16Be { text, .. } => SmartRuleValue::Text { text: text.clone() },
-        SmartRuleChild::Arguments(args) => {
-            if matches!(
-                operator,
-                SmartOperator::InTheLast | SmartOperator::NotInTheLast
-            ) {
-                let amount = (-args.arg_1).max(0) as u64;
-                let unit = match args.arg_2 {
-                    86_400 | 1 => RelativeTimeUnit::Days,
-                    604_800 | 2 => RelativeTimeUnit::Weeks,
-                    2_628_000 | 3 => RelativeTimeUnit::Months,
-                    other => RelativeTimeUnit::Unknown(other),
-                };
-                SmartRuleValue::RelativeTime {
-                    amount,
-                    unit,
-                    seconds_per_unit: args.arg_2,
-                }
-            } else {
-                match field {
-                    SmartField::Compilation
-                    | SmartField::Checked
-                    | SmartField::AlbumArtwork
-                    | SmartField::Purchased
-                    | SmartField::HasVideo => SmartRuleValue::Boolean {
-                        value: rule.comparison_method == 0x0000_0001 && args.arg_0 != 0,
-                    },
-                    SmartField::Rating | SmartField::AlbumRating => {
-                        if matches!(operator, SmartOperator::InRange | SmartOperator::NotInRange) {
-                            SmartRuleValue::StarRatingRange {
-                                min_stars: (args.arg_0.clamp(0, 100) / 20) as u8,
-                                max_stars: (args.arg_3.clamp(0, 100) / 20) as u8,
-                                min_raw: args.arg_0,
-                                max_raw: args.arg_3,
-                            }
-                        } else {
-                            SmartRuleValue::StarRating {
-                                stars: (args.arg_0.clamp(0, 100) / 20) as u8,
-                                raw_0_100: args.arg_0,
-                            }
-                        }
-                    }
-                    SmartField::Playlist => SmartRuleValue::PlaylistRef {
-                        playlist_persistent_id: format_persistent_id(args.arg_0 as u64),
-                        playlist_name: None,
-                    },
-                    SmartField::CloudStatus => SmartRuleValue::CloudStatus {
-                        status: CloudStatus::from(args.arg_0 as u8),
-                    },
-                    SmartField::Favorite | SmartField::AlbumFavorite => {
-                        SmartRuleValue::SuggestionFlag {
-                            flag: SuggestionFlag::from(args.arg_0 as u16),
-                        }
-                    }
-                    SmartField::MediaKind => SmartRuleValue::MediaKind {
-                        kind: MediaKind::from(args.arg_0 as u32),
-                    },
-                    SmartField::Location => {
-                        let name = match args.arg_0 {
-                            1 => "Computer",
-                            2 => "iCloud",
-                            16 => "On This Computer",
-                            _ => "Unknown Location",
-                        };
-                        SmartRuleValue::LocationKind {
-                            code: args.arg_0,
-                            name: name.to_string(),
-                        }
-                    }
-                    SmartField::DateAdded
-                    | SmartField::DateModified
-                    | SmartField::LastPlayed
-                    | SmartField::LastSkipped => {
-                        if matches!(operator, SmartOperator::InRange | SmartOperator::NotInRange) {
-                            SmartRuleValue::DateRange {
-                                start_apple: args.arg_0,
-                                end_apple: args.arg_3,
-                                start_utc: u32::try_from(args.arg_0)
-                                    .ok()
-                                    .and_then(apple_timestamp_to_utc),
-                                end_utc: u32::try_from(args.arg_3)
-                                    .ok()
-                                    .and_then(apple_timestamp_to_utc),
-                            }
-                        } else {
-                            SmartRuleValue::Date {
-                                apple_timestamp: args.arg_0,
-                                utc: u32::try_from(args.arg_0)
-                                    .ok()
-                                    .and_then(apple_timestamp_to_utc),
-                            }
-                        }
-                    }
-                    _ => {
-                        if matches!(operator, SmartOperator::InRange | SmartOperator::NotInRange) {
-                            SmartRuleValue::IntegerRange {
-                                min: args.arg_0,
-                                max: args.arg_3,
-                            }
-                        } else {
-                            SmartRuleValue::Integer { value: args.arg_0 }
-                        }
-                    }
-                }
-            }
-        }
+        SmartRuleChild::Arguments(args) => decode_smart_rule_arguments(rule, field, operator, args),
         SmartRuleChild::Raw(bytes) => SmartRuleValue::Raw {
-            hex: hex::encode(bytes),
+            hex: bytes_to_lower_hex(bytes),
         },
-        SmartRuleChild::Nested(_) => unreachable!(),
+        SmartRuleChild::Nested(_) => SmartRuleValue::Raw { hex: String::new() },
     };
 
     let description = format_smart_condition_description(rule, &value);
@@ -2659,29 +3335,140 @@ fn decode_smart_rule(rule: &SmartPlaylistRule) -> SmartRuleNode {
     })
 }
 
+fn decode_smart_rule_arguments(
+    rule: &SmartPlaylistRule,
+    field: SmartField,
+    operator: SmartOperator,
+    args: &crate::sections::SmartPlaylistRuleArguments,
+) -> SmartRuleValue {
+    if matches!(
+        operator,
+        SmartOperator::InTheLast | SmartOperator::NotInTheLast
+    ) {
+        let amount = u64::try_from((-args.arg_1).max(0)).unwrap_or(0);
+        let unit = match args.arg_2 {
+            86_400 | 1 => RelativeTimeUnit::Days,
+            604_800 | 2 => RelativeTimeUnit::Weeks,
+            2_628_000 | 3 => RelativeTimeUnit::Months,
+            other => RelativeTimeUnit::Unknown(other),
+        };
+        return SmartRuleValue::RelativeTime {
+            amount,
+            unit,
+            seconds_per_unit: args.arg_2,
+        };
+    }
+
+    let is_range = matches!(operator, SmartOperator::InRange | SmartOperator::NotInRange);
+    match field {
+        SmartField::Compilation
+        | SmartField::Checked
+        | SmartField::AlbumArtwork
+        | SmartField::Purchased
+        | SmartField::HasVideo => SmartRuleValue::Boolean {
+            value: rule.comparison_method == 0x0000_0001 && args.arg_0 != 0,
+        },
+        SmartField::Rating | SmartField::AlbumRating => decode_smart_rating_arg(args, is_range),
+        SmartField::Playlist => SmartRuleValue::PlaylistRef {
+            playlist_persistent_id: PersistentId::new(args.arg_0.cast_unsigned()),
+            playlist_name: None,
+        },
+        SmartField::CloudStatus => SmartRuleValue::CloudStatus {
+            status: CloudStatus::from(u8::try_from(args.arg_0).unwrap_or(u8::MAX)),
+        },
+        SmartField::Favorite | SmartField::AlbumFavorite => SmartRuleValue::SuggestionFlag {
+            flag: SuggestionFlag::from(u16::try_from(args.arg_0).unwrap_or(u16::MAX)),
+        },
+        SmartField::MediaKind => SmartRuleValue::MediaKind {
+            kind: MediaKind::from(u32::try_from(args.arg_0).unwrap_or(u32::MAX)),
+        },
+        SmartField::Location => {
+            let name = match args.arg_0 {
+                1 => "Computer",
+                2 => "iCloud",
+                16 => "On This Computer",
+                _ => "Unknown Location",
+            };
+            SmartRuleValue::LocationKind {
+                code: args.arg_0,
+                name: name.to_owned(),
+            }
+        }
+        SmartField::DateAdded
+        | SmartField::DateModified
+        | SmartField::LastPlayed
+        | SmartField::LastSkipped => decode_smart_date_arg(args, is_range),
+        _ if is_range => SmartRuleValue::IntegerRange {
+            min: args.arg_0,
+            max: args.arg_3,
+        },
+        _ => SmartRuleValue::Integer { value: args.arg_0 },
+    }
+}
+
+fn decode_smart_rating_arg(
+    args: &crate::sections::SmartPlaylistRuleArguments,
+    is_range: bool,
+) -> SmartRuleValue {
+    if is_range {
+        SmartRuleValue::StarRatingRange {
+            min_stars: u8::try_from(args.arg_0.clamp(0, 100) / 20).unwrap_or(0),
+            max_stars: u8::try_from(args.arg_3.clamp(0, 100) / 20).unwrap_or(0),
+            min_raw: args.arg_0,
+            max_raw: args.arg_3,
+        }
+    } else {
+        SmartRuleValue::StarRating {
+            stars: u8::try_from(args.arg_0.clamp(0, 100) / 20).unwrap_or(0),
+            raw_0_100: args.arg_0,
+        }
+    }
+}
+
+fn decode_smart_date_arg(
+    args: &crate::sections::SmartPlaylistRuleArguments,
+    is_range: bool,
+) -> SmartRuleValue {
+    if is_range {
+        SmartRuleValue::DateRange {
+            start_apple: args.arg_0,
+            end_apple: args.arg_3,
+            start_utc: u32::try_from(args.arg_0)
+                .ok()
+                .and_then(apple_timestamp_to_utc),
+            end_utc: u32::try_from(args.arg_3)
+                .ok()
+                .and_then(apple_timestamp_to_utc),
+        }
+    } else {
+        SmartRuleValue::Date {
+            apple_timestamp: args.arg_0,
+            utc: u32::try_from(args.arg_0)
+                .ok()
+                .and_then(apple_timestamp_to_utc),
+        }
+    }
+}
+
 fn format_smart_condition_description(rule: &SmartPlaylistRule, value: &SmartRuleValue) -> String {
     let fname = rule.field_name();
     let cmp = rule.comparison_description();
     let val_str = match value {
-        SmartRuleValue::Text { text } => format!("{:?}", text),
-        SmartRuleValue::Boolean { value } => value.to_string(),
-        SmartRuleValue::Integer { value } => value.to_string(),
-        SmartRuleValue::IntegerRange { min, max } => format!("{} to {}", min, max),
-        SmartRuleValue::StarRating { stars, .. } => format!("{} stars", stars),
+        SmartRuleValue::Text { text } => format!("{text:?}"),
+        SmartRuleValue::Boolean { value: v } => v.to_string(),
+        SmartRuleValue::Integer { value: v } => v.to_string(),
+        SmartRuleValue::IntegerRange { min, max } => format!("{min} to {max}"),
+        SmartRuleValue::StarRating { stars, .. } => format!("{stars} stars"),
         SmartRuleValue::StarRatingRange {
             min_stars,
             max_stars,
             ..
-        } => format!("{} to {} stars", min_stars, max_stars),
-        SmartRuleValue::RelativeTime { amount, unit, .. } => {
-            format!("{} {:?}", amount, unit)
-        }
+        } => format!("{min_stars} to {max_stars} stars"),
+        SmartRuleValue::RelativeTime { amount, unit, .. } => format!("{amount} {unit}"),
         SmartRuleValue::Date {
             utc,
             apple_timestamp,
-        } => utc
-            .map(|d| d.to_rfc3339())
-            .unwrap_or_else(|| apple_timestamp.to_string()),
+        } => utc.map_or_else(|| apple_timestamp.to_string(), |d| d.to_rfc3339()),
         SmartRuleValue::DateRange {
             start_utc,
             end_utc,
@@ -2689,36 +3476,32 @@ fn format_smart_condition_description(rule: &SmartPlaylistRule, value: &SmartRul
             end_apple,
         } => format!(
             "{} to {}",
-            start_utc
-                .map(|d| d.to_rfc3339())
-                .unwrap_or_else(|| start_apple.to_string()),
-            end_utc
-                .map(|d| d.to_rfc3339())
-                .unwrap_or_else(|| end_apple.to_string())
+            start_utc.map_or_else(|| start_apple.to_string(), |d| d.to_rfc3339()),
+            end_utc.map_or_else(|| end_apple.to_string(), |d| d.to_rfc3339())
         ),
         SmartRuleValue::PlaylistRef {
             playlist_persistent_id,
             playlist_name,
         } => match playlist_name {
-            Some(n) => format!("{:?} ({})", n, playlist_persistent_id),
-            None => playlist_persistent_id.clone(),
+            Some(n) => format!("{n:?} ({playlist_persistent_id})"),
+            None => playlist_persistent_id.to_string(),
         },
-        SmartRuleValue::CloudStatus { status } => format!("{:?}", status),
-        SmartRuleValue::SuggestionFlag { flag } => format!("{:?}", flag),
-        SmartRuleValue::MediaKind { kind } => format!("{:?}", kind),
+        SmartRuleValue::CloudStatus { status } => status.to_string(),
+        SmartRuleValue::SuggestionFlag { flag } => flag.to_string(),
+        SmartRuleValue::MediaKind { kind } => kind.to_string(),
         SmartRuleValue::LocationKind { name, .. } => name.clone(),
-        SmartRuleValue::Raw { hex } => format!("0x{}", hex),
+        SmartRuleValue::Raw { hex } => format!("0x{hex}"),
     };
-    format!("{} {} {}", fname, cmp, val_str)
+    format!("{fname} {cmp} {val_str}")
 }
 
-fn resolve_playlist_names_in_group(
+fn resolve_playlist_refs_in_group(
     group: &mut SmartRuleGroup,
-    playlist_names: &HashMap<String, String>,
+    playlist_names: &HashMap<PersistentId, String>,
 ) {
     for node in &mut group.rules {
         match node {
-            SmartRuleNode::Group(g) => resolve_playlist_names_in_group(g, playlist_names),
+            SmartRuleNode::Group(sub) => resolve_playlist_refs_in_group(sub, playlist_names),
             SmartRuleNode::Condition(cond) => {
                 if let SmartRuleValue::PlaylistRef {
                     playlist_persistent_id,
@@ -2728,13 +3511,12 @@ fn resolve_playlist_names_in_group(
                 {
                     *playlist_name = Some(resolved.clone());
                     cond.description = format!(
-                        "Playlist {} {:?} ({})",
-                        match cond.operator {
-                            SmartOperator::IsNot => "is not",
-                            _ => "is",
+                        "Playlist {} {resolved:?} ({playlist_persistent_id})",
+                        if cond.operator == SmartOperator::IsNot {
+                            "is not"
+                        } else {
+                            "is"
                         },
-                        resolved,
-                        playlist_persistent_id
                     );
                 }
             }
@@ -2746,22 +3528,13 @@ fn parse_playlist_view_plist(path: &Path) -> Option<PlaylistViewPreferences> {
     let val = plist::Value::from_file(path).ok()?;
     let dict = val.as_dictionary()?;
 
-    let mut view_as = dict.get("LibraryPage_ViewAs").and_then(|v| {
-        if let Some(s) = v.as_string() {
-            Some(s.to_string())
-        } else {
-            v.as_signed_integer().map(|code| match code {
-                1 => "Songs".to_string(),
-                7 => "Albums".to_string(),
-                11 => "Playlist".to_string(),
-                other => format!("ViewAs({})", other),
-            })
-        }
-    });
+    let mut view_as = dict
+        .get("LibraryPage_ViewAs")
+        .and_then(decode_view_as_value);
 
     let view_dict = if let Some(views) = dict
         .get("LibraryPage_Views")
-        .and_then(|v| v.as_dictionary())
+        .and_then(plist::Value::as_dictionary)
     {
         if view_as.is_none() {
             view_as = views.keys().next().cloned();
@@ -2770,7 +3543,7 @@ fn parse_playlist_view_plist(path: &Path) -> Option<PlaylistViewPreferences> {
             .as_deref()
             .and_then(|k| views.get(k))
             .or_else(|| views.values().next())
-            .and_then(|v| v.as_dictionary())
+            .and_then(plist::Value::as_dictionary)
     } else {
         Some(dict)
     };
@@ -2780,71 +3553,14 @@ fn parse_playlist_view_plist(path: &Path) -> Option<PlaylistViewPreferences> {
     let mut visible_columns = Vec::new();
 
     if let Some(vd) = view_dict {
-        sort_field = vd.get("LibraryPage_View_SortingPrimary").and_then(|v| {
-            if let Some(s) = v.as_string() {
-                Some(s.to_string())
-            } else {
-                v.as_signed_integer().map(|code| match code {
-                    0 => "PlaylistOrder".to_string(),
-                    102 => "AlbumByArtist".to_string(),
-                    104 => "Artist".to_string(),
-                    106 => "Title".to_string(),
-                    117 => "Album".to_string(),
-                    1027 => "CloudOrArtist".to_string(),
-                    25001 => "Custom".to_string(),
-                    other => format!("SortField({})", other),
-                })
-            }
-        });
-
+        sort_field = vd
+            .get("LibraryPage_View_SortingPrimary")
+            .and_then(decode_sort_field_value);
         sort_ascending = vd
             .get("LibraryPage_View_SortingReverse")
-            .and_then(|v| v.as_boolean())
+            .and_then(plist::Value::as_boolean)
             .map(|rev| !rev);
-
-        if let Some(cols_arr) = vd
-            .get("LibraryPage_View_ListColumns")
-            .and_then(|v| v.as_array())
-        {
-            for col in cols_arr {
-                if let Some(cd) = col.as_dictionary() {
-                    if sort_ascending.is_none()
-                        && let Some(asc) = cd
-                            .get("LibraryPage_View_ListColumn_Ascending")
-                            .and_then(|v| v.as_boolean())
-                    {
-                        sort_ascending = Some(asc);
-                    }
-                    if let Some(kind) = cd
-                        .get("LibraryPage_View_ListColumn_Kind")
-                        .and_then(|v| v.as_signed_integer())
-                    {
-                        let col_name = match kind {
-                            0 => "CheckBox".to_string(),
-                            1 => "Position".to_string(),
-                            3 => "Title".to_string(),
-                            4 => "Artist".to_string(),
-                            7 => "Album".to_string(),
-                            10 => "Genre".to_string(),
-                            11 => "Rating".to_string(),
-                            22 => "Plays".to_string(),
-                            27 => "CloudStatus".to_string(),
-                            30 => "Duration".to_string(),
-                            46 => "Favorite".to_string(),
-                            other => format!("Column({})", other),
-                        };
-                        visible_columns.push(col_name);
-                    }
-                }
-            }
-        } else if let Some(cols_dict) = vd
-            .get("LibraryPage_View_ListColumns")
-            .and_then(|v| v.as_dictionary())
-        {
-            for k in cols_dict.keys() {
-                visible_columns.push(k.clone());
-            }
-        }
+        extract_visible_columns(vd, &mut sort_ascending, &mut visible_columns);
     }
 
     Some(PlaylistViewPreferences {
@@ -2853,4 +3569,93 @@ fn parse_playlist_view_plist(path: &Path) -> Option<PlaylistViewPreferences> {
         sort_ascending,
         visible_columns,
     })
+}
+
+fn decode_view_as_value(v: &plist::Value) -> Option<String> {
+    if let Some(s) = v.as_string() {
+        Some(s.to_owned())
+    } else {
+        v.as_signed_integer().map(|code| match code {
+            1 => "Songs".to_owned(),
+            7 => "Albums".to_owned(),
+            11 => "Playlist".to_owned(),
+            other => format!("ViewAs({other})"),
+        })
+    }
+}
+
+fn decode_sort_field_value(v: &plist::Value) -> Option<String> {
+    if let Some(s) = v.as_string() {
+        Some(s.to_owned())
+    } else {
+        v.as_signed_integer().map(|code| match code {
+            0 => "PlaylistOrder".to_owned(),
+            102 => "AlbumByArtist".to_owned(),
+            104 => "Artist".to_owned(),
+            106 => "Title".to_owned(),
+            117 => "Album".to_owned(),
+            1027 => "CloudOrArtist".to_owned(),
+            25_001 => "Custom".to_owned(),
+            other => format!("SortField({other})"),
+        })
+    }
+}
+
+fn extract_visible_columns(
+    vd: &plist::Dictionary,
+    sort_ascending: &mut Option<bool>,
+    visible_columns: &mut Vec<String>,
+) {
+    if let Some(cols_arr) = vd
+        .get("LibraryPage_View_ListColumns")
+        .and_then(plist::Value::as_array)
+    {
+        for col in cols_arr {
+            if let Some(cd) = col.as_dictionary() {
+                if sort_ascending.is_none()
+                    && let Some(asc) = cd
+                        .get("LibraryPage_View_ListColumn_Ascending")
+                        .and_then(plist::Value::as_boolean)
+                {
+                    *sort_ascending = Some(asc);
+                }
+                if let Some(kind) = cd
+                    .get("LibraryPage_View_ListColumn_Kind")
+                    .and_then(plist::Value::as_signed_integer)
+                {
+                    let col_name = match kind {
+                        0 => "CheckBox".to_owned(),
+                        1 => "Position".to_owned(),
+                        3 => "Title".to_owned(),
+                        4 => "Artist".to_owned(),
+                        7 => "Album".to_owned(),
+                        10 => "Genre".to_owned(),
+                        11 => "Rating".to_owned(),
+                        22 => "Plays".to_owned(),
+                        27 => "CloudStatus".to_owned(),
+                        30 => "Duration".to_owned(),
+                        46 => "Favorite".to_owned(),
+                        other => format!("Column({other})"),
+                    };
+                    visible_columns.push(col_name);
+                }
+            }
+        }
+    } else if let Some(cols_dict) = vd
+        .get("LibraryPage_View_ListColumns")
+        .and_then(plist::Value::as_dictionary)
+    {
+        for k in cols_dict.keys() {
+            visible_columns.push(k.clone());
+        }
+    }
+}
+
+fn bytes_to_lower_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }

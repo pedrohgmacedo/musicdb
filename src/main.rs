@@ -241,7 +241,7 @@ fn run_info(path: Option<PathBuf>) -> Result<()> {
     let raw = RawLibraryFile::from_raw_bytes(&raw_bytes)?;
     let reserialized = raw.to_raw_bytes()?;
     let roundtrip_exact = raw_bytes == reserialized;
-    let lib = Library::from_raw(&raw);
+    let lib = Library::from(&raw);
     let m = &lib.metadata;
 
     println!("=== MusicDB File Summary: {} ===", path.display());
@@ -264,7 +264,8 @@ fn run_info(path: Option<PathBuf>) -> Result<()> {
     println!("Library Persistent ID : {}", m.persistent_id);
     println!(
         "iTunes Persistent ID  : {}",
-        m.itunes_persistent_id.as_deref().unwrap_or("<none>")
+        m.itunes_persistent_id
+            .map_or_else(|| "<none>".to_string(), |id| id.to_string())
     );
     println!(
         "Date Modified         : {}",
@@ -696,11 +697,12 @@ fn run_query_playlist(input: &Path, query: Option<&str>, json: bool) -> Result<(
                     pl.persistent_id,
                     pl.kind,
                     pl.system_kind,
-                    pl.distinguished_kind,
+                    pl.system_kind.raw(),
                     pl.is_folder,
                     pl.is_smart,
                     pl.is_master,
-                    pl.parent_persistent_id.as_deref().unwrap_or("-"),
+                    pl.parent_persistent_id
+                        .map_or_else(|| "-".to_string(), |id| id.to_string()),
                     pl.declared_track_count,
                     pl.name.as_deref().unwrap_or("<unnamed>")
                 );
@@ -729,7 +731,8 @@ fn print_playlist_details(lib: &Library, pl: &Playlist) {
     println!("Kind                  : {:?}", pl.kind);
     println!(
         "Parent Persistent ID  : {}",
-        pl.parent_persistent_id.as_deref().unwrap_or("<root>")
+        pl.parent_persistent_id
+            .map_or_else(|| "<root>".to_string(), |id| id.to_string())
     );
     println!("Share Mode            : {:?}", pl.share_mode);
     println!("Show in Profile/Search: {}", pl.show_in_profile_and_search);
@@ -766,7 +769,7 @@ fn print_playlist_details(lib: &Library, pl: &Playlist) {
             print_smart_rule_group(group, 1);
         }
     }
-    let tracks = lib.playlist_tracks(pl);
+    let tracks: Vec<_> = lib.playlist_tracks(pl).collect();
     println!("\nTracks ({}):", tracks.len());
     for (i, t) in tracks.iter().take(50).enumerate() {
         println!(
@@ -815,7 +818,7 @@ fn run_query_track(input: &Path, query: &str, json: bool) -> Result<()> {
                 t.artist.as_deref().unwrap_or(""),
                 t.title.as_deref().unwrap_or(""),
                 t.album.as_deref().unwrap_or(""),
-                t.stars,
+                t.stars(),
                 t.cloud_status,
                 t.has_unsynced_local_changes
             );

@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 pub mod crypto;
 pub mod error;
 /// High-level domain model for Apple Music libraries (`Library`, `Track`, `Album`, `Artist`, `Playlist`).
@@ -12,11 +14,12 @@ pub use crypto::{
 pub use error::{MusicDbError, Result};
 pub use model::{
     Album, Artist, CloudStatus, ContentRating, DistinguishedPlaylistKind, DownloadedStatus,
-    EqualizerPreset, Library, LibraryMetadata, MediaKind, MediaKindFlags, Playlist, PlaylistKind,
-    PlaylistShareMode, PlaylistViewPreferences, RelativeTimeUnit, SmartCondition, SmartConjunction,
-    SmartField, SmartLimitUnit, SmartOperator, SmartOperatorFlags, SmartPlaylistConfig,
-    SmartPlaylistLimit, SmartRuleGroup, SmartRuleNode, SmartRuleValue, SmartSelectionMethod,
-    SocialProfile, SortMode, SortModeFlags, SuggestionFlag, SuggestionFlags, Track, TrackSortModes,
+    EqualizerPreset, IntoPersistentId, Library, LibraryMetadata, MediaKind, MediaKindFlags,
+    ParsePersistentIdError, PersistentId, Playlist, PlaylistKind, PlaylistShareMode,
+    PlaylistViewPreferences, RelativeTimeUnit, SmartCondition, SmartConjunction, SmartField,
+    SmartLimitUnit, SmartOperator, SmartOperatorFlags, SmartPlaylistConfig, SmartPlaylistLimit,
+    SmartRuleGroup, SmartRuleNode, SmartRuleValue, SmartSelectionMethod, SocialProfile, SortMode,
+    SortModeFlags, SuggestionFlag, SuggestionFlags, Track, TrackSortModes,
     discover_default_library_path,
 };
 pub use sections::RawLibraryFile;
@@ -31,20 +34,21 @@ mod tests {
     /// Resolves a path inside the local test corpus directory (`MUSICDB_CORPUS_DIR` if set,
     /// otherwise the parent workspace directory of `CARGO_MANIFEST_DIR`).
     fn corpus_path(rel: &str) -> PathBuf {
-        let base = std::env::var("MUSICDB_CORPUS_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
+        let base = std::env::var("MUSICDB_CORPUS_DIR").map_or_else(
+            |_| {
                 Path::new(env!("CARGO_MANIFEST_DIR"))
                     .parent()
                     .unwrap_or_else(|| Path::new("."))
                     .to_path_buf()
-            });
+            },
+            PathBuf::from,
+        );
         base.join(rel)
     }
 
     fn make_utf16le_boma(subtype: u32, text: &str) -> BomaSection {
-        let raw_string_bytes: Vec<u8> = text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
-        let string_byte_len = raw_string_bytes.len() as u32;
+        let raw_string_bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let string_byte_len = u32::try_from(raw_string_bytes.len()).unwrap();
         let total_size = 20 + 16 + string_byte_len;
         BomaSection {
             header_size: 20,
@@ -102,15 +106,15 @@ mod tests {
 
     #[test]
     fn test_equalizer_preset_decoding() {
-        let rock = EqualizerPreset::parse("#!#116#!#");
+        let rock = EqualizerPreset::from("#!#116#!#");
         assert_eq!(rock.preset_id, Some(116));
         assert_eq!(rock.name, "Rock");
 
-        let acoustic = EqualizerPreset::parse("#!#100#!#");
+        let acoustic = EqualizerPreset::from("#!#100#!#");
         assert_eq!(acoustic.preset_id, Some(100));
         assert_eq!(acoustic.name, "Acoustic");
 
-        let custom = EqualizerPreset::parse("My Custom EQ");
+        let custom = EqualizerPreset::from("My Custom EQ");
         assert_eq!(custom.preset_id, None);
         assert_eq!(custom.name, "My Custom EQ");
     }
@@ -150,6 +154,10 @@ mod tests {
         assert!(SortMode::flags(0x81).contains(SortModeFlags::HAS_SORT_STRING));
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "synthetic binary fixture builder covering all section types"
+    )]
     #[test]
     fn test_synthetic_musicdb_roundtrip_and_sqlite_export() {
         let mut version_bytes = [0u8; 32];
@@ -189,7 +197,7 @@ mod tests {
         inner_hfma.max_crypt_size = 0;
 
         let album_boma = make_utf16le_boma(0x012C, "Synthetic Album");
-        let iama = AlbumItem {
+        let album_item = AlbumItem {
             header: AlbumItemHeader {
                 header_size: 140,
                 total_size: 140 + album_boma.total_size,
@@ -216,17 +224,17 @@ mod tests {
             },
             bomas: vec![album_boma],
         };
-        let lama = AlbumListSection {
+        let album_list = AlbumListSection {
             header: AlbumListHeader {
                 header_size: 48,
                 album_count: 1,
                 unk_12_end: vec![0; 36],
             },
-            albums: vec![iama],
+            albums: vec![album_item],
         };
 
         let artist_boma = make_utf16le_boma(0x0190, "Synthetic Artist");
-        let i_ama = ArtistItem {
+        let artist_item = ArtistItem {
             header: ArtistItemHeader {
                 header_size: 132,
                 total_size: 132 + artist_boma.total_size,
@@ -252,13 +260,13 @@ mod tests {
             },
             bomas: vec![artist_boma],
         };
-        let l_ama = ArtistListSection {
+        let artist_list = ArtistListSection {
             header: ArtistListHeader {
                 header_size: 100,
                 artist_count: 1,
                 unk_12_end: vec![0; 88],
             },
-            artists: vec![i_ama],
+            artists: vec![artist_item],
         };
 
         let num_local = TrackNumerics {
@@ -378,11 +386,11 @@ mod tests {
             make_utf16le_boma(0x0007, "#!#116#!#"),
         ];
         let itma_boma_bytes: u32 = track_bomas.iter().map(|b| b.total_size).sum();
-        let itma = TrackItem {
+        let track_item = TrackItem {
             header: TrackItemHeader {
                 header_size: 376,
                 total_size: 376 + itma_boma_bytes,
-                boma_count: track_bomas.len() as u32,
+                boma_count: u32::try_from(track_bomas.len()).unwrap(),
                 track_persistent_id: 0xDD00_0000_0000_0004,
                 global_counter: 9,
                 unk_28_30: [0; 2],
@@ -469,22 +477,22 @@ mod tests {
             },
             bomas: track_bomas,
         };
-        let ltma = TrackListSection {
+        let track_list = TrackListSection {
             header: TrackListHeader {
                 header_size: 92,
                 track_count: 1,
                 unk_12_end: vec![0; 80],
             },
-            tracks: vec![itma],
+            tracks: vec![track_item],
         };
 
         let raw_file = RawLibraryFile {
             outer_header,
             sections: vec![
                 wrap_hsma(3, HsmaChild::InnerHfma(inner_hfma)),
-                wrap_hsma(4, HsmaChild::AlbumList(lama)),
-                wrap_hsma(5, HsmaChild::ArtistList(l_ama)),
-                wrap_hsma(1, HsmaChild::TrackList(ltma)),
+                wrap_hsma(4, HsmaChild::AlbumList(album_list)),
+                wrap_hsma(5, HsmaChild::ArtistList(artist_list)),
+                wrap_hsma(1, HsmaChild::TrackList(track_list)),
             ],
             trailing_bytes: Vec::new(),
         };
@@ -512,7 +520,7 @@ mod tests {
             encrypted_musicdb
         );
 
-        let lib = Library::from_raw(&parsed_raw);
+        let lib = Library::from(&parsed_raw);
         assert_eq!(lib.tracks.len(), 1);
         assert_eq!(lib.albums.len(), 1);
         assert_eq!(lib.artists.len(), 1);

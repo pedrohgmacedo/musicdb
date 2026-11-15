@@ -38,6 +38,7 @@ cli = [
   "serde",
   "sqlite",
 ]
+adhoc = ["cli"]
 
 [dependencies]
 aes = "0.9.3"
