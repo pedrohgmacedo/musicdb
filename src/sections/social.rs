@@ -2,18 +2,19 @@ use binrw::binrw;
 use serde::{Deserialize, Serialize};
 
 use super::boma::BomaSection;
+use super::{read_bounded_vec, read_header_tail};
 
 /// `Lsma` (Social Profiles List Master, `hsma` subtype 15) header (typically 92 bytes).
 #[binrw]
 #[brw(little, magic = b"Lsma")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LsmaHeader {
-    /// Offset 4: Header size in bytes (typically 92).
+    /// Offset 4: Header size in bytes (typically 92, minimum 12).
     pub header_size: u32,
     /// Offset 8: Number of `isma` social profile items that follow.
     pub profile_count: u32,
     /// Offset 12..92: Unknown / zero padding.
-    #[br(count = header_size.saturating_sub(12))]
+    #[br(parse_with = read_header_tail, args(header_size, 12, "Lsma"))]
     pub unk_12_end: Vec<u8>,
 }
 
@@ -22,8 +23,10 @@ pub struct LsmaHeader {
 #[brw(little)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LsmaSection {
+    /// The `Lsma` list header.
     pub header: LsmaHeader,
-    #[br(count = header.profile_count)]
+    /// All `isma` social profile records in the library.
+    #[br(parse_with = read_bounded_vec, args(header.profile_count, 64, "Lsma.profiles"))]
     pub profiles: Vec<IsmaSection>,
 }
 
@@ -52,8 +55,8 @@ pub struct IsmaHeader {
     pub artwork_size_kind: u32,
     /// Offset 60..64: Artwork cached image format in `artwork.sqlite` (`cache_items.extension`; 1 = `jpeg`, 2 = `png`, 0 = not cached).
     pub artwork_image_format: u32,
-    /// Offset 64..header_size: Remaining bytes (typically 72 bytes of zeros).
-    #[br(count = header_size.saturating_sub(64))]
+    /// Offset 64..`header_size`: Remaining bytes (typically 72 bytes of zeros).
+    #[br(parse_with = read_header_tail, args(header_size, 64, "isma"))]
     pub unk_64_end: Vec<u8>,
 }
 
@@ -62,7 +65,9 @@ pub struct IsmaHeader {
 #[brw(little)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IsmaSection {
+    /// The `isma` social profile header.
     pub header: IsmaHeader,
-    #[br(count = header.boma_count)]
+    /// Metadata `boma` children attached to this social profile.
+    #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "isma.bomas"))]
     pub bomas: Vec<BomaSection>,
 }

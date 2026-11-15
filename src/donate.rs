@@ -1,3 +1,5 @@
+//! Packaging utilities for donating `.musiclibrary` metadata bundles without audio or artwork files.
+
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -11,6 +13,9 @@ use crate::model::discover_default_library_path;
 
 /// Allowlisted files inside a `.musiclibrary` bundle to include when donating a library.
 /// Explicitly excludes `artwork/`, `artwork_originals/`, and any `Media/` audio files.
+///
+/// Note: `Library.musicdb` still contains account metadata such as Apple Store account IDs
+/// and purchaser names/emails on purchased tracks.
 pub const DONATED_BUNDLE_FILES: &[&str] = &[
     "artwork.sqlite",
     "Extras.itdb",
@@ -33,17 +38,31 @@ pub const DEFAULT_DONATED_LIBRARY_ARCHIVE: &str = "donated-music-library.tar";
 pub const DEFAULT_DONATED_PREVIOUS_LIBRARIES_ARCHIVE: &str = "donated-previous-libraries.tar";
 
 /// Summary of a completed `donate-library` or `donate-previous-libraries` archive operation.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct DonateReport {
+    /// Destination path of the written `.tar` or `.tar.gz` archive.
     pub output_path: PathBuf,
+    /// Final size of the written archive in bytes.
     pub archive_size_bytes: u64,
+    /// Number of `.musiclibrary` bundles included in the archive.
     pub bundle_count: usize,
+    /// Relative paths inside the archive for every packaged file.
     pub archived_paths: Vec<String>,
+}
+
+fn is_regular_file_no_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+}
+
+fn is_regular_dir_no_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_dir())
 }
 
 /// Locates an Apple Music `.musiclibrary` bundle directory starting from `path`
 /// (which may be the `.musiclibrary` bundle itself, a parent folder such as `Apple Music` or `Music`,
 /// or a direct path to `Library.musicdb`).
+#[must_use]
 pub fn find_musiclibrary_bundle(path: &Path) -> Option<PathBuf> {
     if path.is_file() {
         if path.file_name().and_then(|s| s.to_str()) == Some("Library.musicdb") {
@@ -75,12 +94,16 @@ pub fn find_musiclibrary_bundle(path: &Path) -> Option<PathBuf> {
     }
 
     // 3. Scan direct subdirectories for any `*.musiclibrary` or folder containing `Library.musicdb`
+    // Best-effort discovery: ignore unreadable directory entries during auto-discovery.
     if let Ok(entries) = fs::read_dir(path) {
-        let mut subdirs: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
+        let mut subdirs = Vec::new();
+        for entry_res in entries {
+            if let Ok(entry) = entry_res
+                && entry.file_type().is_ok_and(|ft| ft.is_dir())
+            {
+                subdirs.push(entry.path());
+            }
+        }
         subdirs.sort();
         for dir in subdirs {
             let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -97,6 +120,7 @@ pub fn find_musiclibrary_bundle(path: &Path) -> Option<PathBuf> {
 }
 
 /// Searches the user's default OS Music directory for a `Previous Libraries` folder.
+#[must_use]
 pub fn discover_default_previous_libraries_path() -> Option<PathBuf> {
     if let Some(bundle) = discover_default_library_path()
         && let Some(prev) = find_previous_libraries_for_bundle(&bundle)
@@ -107,8 +131,7 @@ pub fn discover_default_previous_libraries_path() -> Option<PathBuf> {
     let user_dirs = UserDirs::new()?;
     let music_dir = user_dirs
         .audio_dir()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| user_dirs.home_dir().join("Music"));
+        .map_or_else(|| user_dirs.home_dir().join("Music"), Path::to_path_buf);
 
     let candidates = [
         music_dir.join("Apple Music").join("Previous Libraries"),
@@ -123,6 +146,7 @@ pub fn discover_default_previous_libraries_path() -> Option<PathBuf> {
 
 /// Given a `.musiclibrary` bundle path, checks if a sibling or child `Previous Libraries`
 /// directory exists with at least one previous library bundle.
+#[must_use]
 pub fn find_previous_libraries_for_bundle(bundle_dir: &Path) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(parent) = bundle_dir.parent() {
@@ -137,6 +161,7 @@ pub fn find_previous_libraries_for_bundle(bundle_dir: &Path) -> Option<PathBuf> 
 
 /// Resolves a `Previous Libraries` directory from an arbitrary `path` (which may be the
 /// `Previous Libraries` folder itself, its parent `Apple Music` / `Music` folder, or a `.musiclibrary` bundle).
+#[must_use]
 pub fn find_previous_libraries_dir(path: &Path) -> Option<PathBuf> {
     if !path.is_dir() {
         return None;
@@ -165,25 +190,31 @@ pub fn find_previous_libraries_dir(path: &Path) -> Option<PathBuf> {
 }
 
 /// Lists all `.musiclibrary` subdirectories inside a `Previous Libraries` directory
-/// that contain at least one allowlisted library file.
+/// that contain at least one allowlisted library file (ignoring symlinks).
+#[must_use]
 pub fn list_previous_library_bundles(prev_libs_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(prev_libs_dir) else {
         return Vec::new();
     };
-    let mut bundles: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_dir()
-                && (p.join("Library.musicdb").is_file()
-                    || p.extension().and_then(|s| s.to_str()) == Some("musiclibrary"))
-        })
-        .collect();
+    let mut bundles = Vec::new();
+    for entry_res in entries {
+        if let Ok(entry) = entry_res
+            && entry.file_type().is_ok_and(|ft| ft.is_dir())
+        {
+            let p = entry.path();
+            if is_regular_file_no_symlink(&p.join("Library.musicdb"))
+                || p.extension().and_then(|s| s.to_str()) == Some("musiclibrary")
+            {
+                bundles.push(p);
+            }
+        }
+    }
     bundles.sort();
     bundles
 }
 
 /// Locates `.Media Preferences.plist` associated with a `.musiclibrary` bundle or `Previous Libraries` folder.
+#[must_use]
 pub fn find_media_preferences_plist(dir: &Path) -> Option<PathBuf> {
     let mut search_dirs = vec![dir.to_path_buf()];
     if let Some(parent) = dir.parent() {
@@ -196,7 +227,7 @@ pub fn find_media_preferences_plist(dir: &Path) -> Option<PathBuf> {
 
     for d in search_dirs {
         let candidate = d.join(MEDIA_PREFERENCES_FILENAME);
-        if candidate.is_file() {
+        if is_regular_file_no_symlink(&candidate) {
             return Some(candidate);
         }
     }
@@ -205,6 +236,15 @@ pub fn find_media_preferences_plist(dir: &Path) -> Option<PathBuf> {
 
 /// Packages the allowlisted files of a single `.musiclibrary` bundle (plus `.Media Preferences.plist` if found)
 /// into `output_archive` (`.tar` or `.tar.gz`), preserving the `Apple Music/<BundleName>/...` file tree.
+///
+/// Writes to a temporary file in the destination directory first and renames atomically on success.
+///
+/// # Privacy
+/// While audio files and cached artwork images are excluded, `Library.musicdb` still contains personal
+/// metadata including purchaser names, Apple ID email addresses, and Apple Store account IDs.
+///
+/// # Errors
+/// Returns [`MusicDbError`] if reading the bundle files or writing the archive fails.
 pub fn package_donated_library(bundle_dir: &Path, output_archive: &Path) -> Result<DonateReport> {
     let bundle_name = bundle_dir
         .file_name()
@@ -222,7 +262,7 @@ pub fn package_donated_library(bundle_dir: &Path, output_archive: &Path) -> Resu
     let archive_bundle_prefix = Path::new(parent_name).join(bundle_name);
     let mut archived_paths = Vec::new();
 
-    with_tar_builder(output_archive, |builder| {
+    with_tar_builder_atomic(output_archive, |builder| {
         if let Some(media_plist) = find_media_preferences_plist(bundle_dir) {
             let rel = Path::new(parent_name).join(MEDIA_PREFERENCES_FILENAME);
             append_file_to_tar(builder, &media_plist, &rel, &mut archived_paths)?;
@@ -236,7 +276,7 @@ pub fn package_donated_library(bundle_dir: &Path, output_archive: &Path) -> Resu
         Ok(())
     })?;
 
-    let archive_size_bytes = fs::metadata(output_archive).map(|m| m.len()).unwrap_or(0);
+    let archive_size_bytes = fs::metadata(output_archive)?.len();
     Ok(DonateReport {
         output_path: output_archive.to_path_buf(),
         archive_size_bytes,
@@ -247,6 +287,15 @@ pub fn package_donated_library(bundle_dir: &Path, output_archive: &Path) -> Resu
 
 /// Packages all `.musiclibrary` folders inside `prev_libs_dir` into `output_archive` (`.tar` or `.tar.gz`),
 /// preserving the `Previous Libraries/<BundleName>/...` file tree.
+///
+/// Writes to a temporary file in the destination directory first and renames atomically on success.
+///
+/// # Privacy
+/// While audio files and cached artwork images are excluded, `Library.musicdb` still contains personal
+/// metadata including purchaser names, Apple ID email addresses, and Apple Store account IDs.
+///
+/// # Errors
+/// Returns [`MusicDbError`] if no bundles are found or if reading/writing the archive fails.
 pub fn package_donated_previous_libraries(
     prev_libs_dir: &Path,
     output_archive: &Path,
@@ -256,14 +305,14 @@ pub fn package_donated_previous_libraries(
         return Err(MusicDbError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!(
-                "No .musiclibrary bundles found inside {}",
+                "no .musiclibrary bundles found inside {}",
                 prev_libs_dir.display()
             ),
         )));
     }
 
     let mut archived_paths = Vec::new();
-    with_tar_builder(output_archive, |builder| {
+    with_tar_builder_atomic(output_archive, |builder| {
         if let Some(media_plist) = find_media_preferences_plist(prev_libs_dir) {
             let rel = Path::new("Previous Libraries").join(MEDIA_PREFERENCES_FILENAME);
             append_file_to_tar(builder, &media_plist, &rel, &mut archived_paths)?;
@@ -278,7 +327,7 @@ pub fn package_donated_previous_libraries(
         Ok(())
     })?;
 
-    let archive_size_bytes = fs::metadata(output_archive).map(|m| m.len()).unwrap_or(0);
+    let archive_size_bytes = fs::metadata(output_archive)?.len();
     Ok(DonateReport {
         output_path: output_archive.to_path_buf(),
         archive_size_bytes,
@@ -287,38 +336,84 @@ pub fn package_donated_previous_libraries(
     })
 }
 
-fn with_tar_builder<F>(output_archive: &Path, f: F) -> Result<()>
-where
-    F: FnOnce(&mut tar::Builder<Box<dyn Write>>) -> Result<()>,
-{
-    let file = File::create(output_archive)?;
-    let is_gzip = output_archive
+fn temp_sibling_path(output_archive: &Path) -> PathBuf {
+    let parent = output_archive
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = output_archive
         .file_name()
         .and_then(|s| s.to_str())
-        .is_some_and(|n| n.ends_with(".tar.gz") || n.ends_with(".tgz"));
+        .unwrap_or("archive.tar");
+    let pid = std::process::id();
+    parent.join(format!(".{file_name}.{pid}.tmp"))
+}
 
-    let writer: Box<dyn Write> = if is_gzip {
-        Box::new(GzEncoder::new(file, Compression::default()))
+fn with_tar_builder_atomic<F>(output_archive: &Path, mut f: F) -> Result<()>
+where
+    F: FnMut(&mut dyn ArchiveSink) -> Result<()>,
+{
+    let temp_path = temp_sibling_path(output_archive);
+    let write_res = write_tar_to_path(&temp_path, output_archive, &mut f);
+    if let Err(err) = write_res {
+        // Best-effort cleanup of partial temporary archive on failure.
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
+    }
+    if let Err(err) = fs::rename(&temp_path, output_archive) {
+        // Best-effort cleanup if rename fails.
+        let _ = fs::remove_file(&temp_path);
+        return Err(MusicDbError::Io(err));
+    }
+    Ok(())
+}
+
+trait ArchiveSink {
+    fn append_file(&mut self, archive_rel_path: &Path, file: &mut File) -> Result<()>;
+}
+
+impl<W: Write> ArchiveSink for tar::Builder<W> {
+    fn append_file(&mut self, archive_rel_path: &Path, file: &mut File) -> Result<()> {
+        tar::Builder::append_file(self, archive_rel_path, file)?;
+        Ok(())
+    }
+}
+
+fn write_tar_to_path<F>(temp_path: &Path, final_path: &Path, f: &mut F) -> Result<()>
+where
+    F: FnMut(&mut dyn ArchiveSink) -> Result<()>,
+{
+    let file = File::create(temp_path)?;
+    let is_gzip = final_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gz") || ext.eq_ignore_ascii_case("tgz"));
+
+    if is_gzip {
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        f(&mut builder)?;
+        let encoder = builder.into_inner()?;
+        let mut file = encoder.finish()?;
+        file.flush()?;
     } else {
-        Box::new(file)
-    };
-
-    let mut builder = tar::Builder::new(writer);
-    f(&mut builder)?;
-    let mut inner = builder.into_inner()?;
-    inner.flush()?;
+        let mut builder = tar::Builder::new(file);
+        f(&mut builder)?;
+        let mut file = builder.into_inner()?;
+        file.flush()?;
+    }
     Ok(())
 }
 
 fn append_bundle_to_tar(
-    builder: &mut tar::Builder<Box<dyn Write>>,
+    builder: &mut dyn ArchiveSink,
     bundle_dir: &Path,
     archive_prefix: &Path,
     archived_paths: &mut Vec<String>,
 ) -> Result<()> {
     for &filename in DONATED_BUNDLE_FILES {
         let src = bundle_dir.join(filename);
-        if src.is_file() {
+        if is_regular_file_no_symlink(&src) {
             let rel = archive_prefix.join(filename);
             append_file_to_tar(builder, &src, &rel, archived_paths)?;
         }
@@ -326,7 +421,7 @@ fn append_bundle_to_tar(
 
     for &dirname in DONATED_BUNDLE_DIRS {
         let src_dir = bundle_dir.join(dirname);
-        if src_dir.is_dir() {
+        if is_regular_dir_no_symlink(&src_dir) {
             append_dir_recursive_to_tar(
                 builder,
                 &src_dir,
@@ -340,30 +435,39 @@ fn append_bundle_to_tar(
 }
 
 fn append_dir_recursive_to_tar(
-    builder: &mut tar::Builder<Box<dyn Write>>,
+    builder: &mut dyn ArchiveSink,
     src_dir: &Path,
     archive_prefix: &Path,
     archived_paths: &mut Vec<String>,
 ) -> Result<()> {
-    let mut entries: Vec<PathBuf> = fs::read_dir(src_dir)?.flatten().map(|e| e.path()).collect();
-    entries.sort();
+    let mut entries = Vec::new();
+    for entry_res in fs::read_dir(src_dir)? {
+        let entry = entry_res?;
+        let ft = entry.file_type()?;
+        // Never follow symlinks: skip any symlink entry.
+        if ft.is_symlink() {
+            continue;
+        }
+        entries.push((entry.path(), ft));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-    for entry in entries {
-        let Some(name) = entry.file_name() else {
+    for (entry_path, ft) in entries {
+        let Some(name) = entry_path.file_name() else {
             continue;
         };
         let rel = archive_prefix.join(name);
-        if entry.is_dir() {
-            append_dir_recursive_to_tar(builder, &entry, &rel, archived_paths)?;
-        } else if entry.is_file() {
-            append_file_to_tar(builder, &entry, &rel, archived_paths)?;
+        if ft.is_dir() {
+            append_dir_recursive_to_tar(builder, &entry_path, &rel, archived_paths)?;
+        } else if ft.is_file() {
+            append_file_to_tar(builder, &entry_path, &rel, archived_paths)?;
         }
     }
     Ok(())
 }
 
 fn append_file_to_tar(
-    builder: &mut tar::Builder<Box<dyn Write>>,
+    builder: &mut dyn ArchiveSink,
     src_file: &Path,
     archive_rel_path: &Path,
     archived_paths: &mut Vec<String>,

@@ -2,18 +2,19 @@ use binrw::binrw;
 use serde::{Deserialize, Serialize};
 
 use super::boma::BomaSection;
+use super::{read_bounded_vec, read_header_tail};
 
 /// `lama` (Album List Master) header (typically 48 bytes).
 #[binrw]
 #[brw(little, magic = b"lama")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LamaHeader {
-    /// Offset 4: Header size in bytes (typically 48).
+    /// Offset 4: Header size in bytes (typically 48, minimum 12).
     pub header_size: u32,
     /// Offset 8: Number of `iama` album subsections that follow.
     pub album_count: u32,
     /// Offset 12..48: Unknown / zero padding.
-    #[br(count = header_size.saturating_sub(12))]
+    #[br(parse_with = read_header_tail, args(header_size, 12, "lama"))]
     pub unk_12_end: Vec<u8>,
 }
 
@@ -22,8 +23,10 @@ pub struct LamaHeader {
 #[brw(little)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LamaSection {
+    /// The `lama` list header.
     pub header: LamaHeader,
-    #[br(count = header.album_count)]
+    /// All `iama` album records in the library.
+    #[br(parse_with = read_bounded_vec, args(header.album_count, 104, "lama.albums"))]
     pub albums: Vec<IamaSection>,
 }
 
@@ -79,7 +82,7 @@ pub struct IamaHeader {
     #[br(if(header_size >= 128))]
     pub date_released: Option<u32>,
     /// Remaining bytes up to `header_size` (`128..140` or `128..156`, all zeros).
-    #[br(count = header_size.saturating_sub(if header_size >= 128 { 128 } else if header_size >= 124 { 124 } else if header_size >= 120 { 120 } else if header_size >= 112 { 112 } else { 104 }))]
+    #[br(parse_with = read_header_tail, args(header_size, if header_size >= 128 { 128 } else if header_size >= 124 { 124 } else if header_size >= 120 { 120 } else if header_size >= 112 { 112 } else { 104 }, "iama"))]
     pub unk_tail: Vec<u8>,
 }
 
@@ -88,7 +91,9 @@ pub struct IamaHeader {
 #[brw(little)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IamaSection {
+    /// The `iama` album header.
     pub header: IamaHeader,
-    #[br(count = header.boma_count)]
+    /// Metadata `boma` children attached to this album.
+    #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "iama.bomas"))]
     pub bomas: Vec<BomaSection>,
 }

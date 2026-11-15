@@ -1,12 +1,16 @@
+//! Outer and inner `hfma` file header and `hsma` major section boundary header structures.
+
 use binrw::binrw;
 use serde::{Deserialize, Serialize};
+
+use super::read_header_tail;
 
 /// Outer and Inner `hfma` (File Header) section (typically 160 bytes).
 #[binrw]
 #[brw(little, magic = b"hfma")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HfmaHeader {
-    /// Offset 4: Header length in bytes (typically 160).
+    /// Offset 4: Header length in bytes (typically 160, minimum 160).
     pub header_size: u32,
     /// Offset 8: Total encrypted/compressed file size (0 in inner `hfma`).
     pub file_size: u32,
@@ -53,18 +57,21 @@ pub struct HfmaHeader {
     /// Offset 132..160: Remaining bytes up to 160.
     pub unk_132_160: [u8; 28],
     /// Any extra bytes if `header_size > 160`.
-    #[br(count = header_size.saturating_sub(160))]
+    #[br(parse_with = read_header_tail, args(header_size, 160, "hfma"))]
     pub extra_bytes: Vec<u8>,
 }
 
 impl HfmaHeader {
+    /// Returns the decoded UTF-8 application version string (e.g. `"1.6.0.151"`), trimmed at the first null byte.
+    #[must_use]
     pub fn version_string(&self) -> String {
         let len = self
             .version_bytes
             .iter()
             .position(|&b| b == 0)
             .unwrap_or(self.version_bytes.len());
-        String::from_utf8_lossy(&self.version_bytes[..len]).into_owned()
+        let slice = self.version_bytes.get(..len).unwrap_or(&self.version_bytes);
+        String::from_utf8_lossy(slice).into_owned()
     }
 }
 
@@ -73,7 +80,7 @@ impl HfmaHeader {
 #[brw(little, magic = b"hsma")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HsmaHeader {
-    /// Offset 4: Header size in bytes (typically 56).
+    /// Offset 4: Header size in bytes (typically 56, minimum 24).
     pub header_size: u32,
     /// Offset 8: Total size of this `hsma` + its child section tree in format <= 22 (0 in format >= 23, where `total_size_64` at offset 16 is used).
     pub total_size: u32,
@@ -91,15 +98,16 @@ pub struct HsmaHeader {
     /// Offset 16..24: 64-bit total size used in format >= 23 (Apple Music 1.7+) when `total_size == 0` (0 in older formats).
     pub total_size_64: u64,
     /// Offset 24..56: Reserved / unknown bytes (typically all 0).
-    #[br(count = header_size.saturating_sub(24))]
+    #[br(parse_with = read_header_tail, args(header_size, 24, "hsma"))]
     pub unk_24_end: Vec<u8>,
 }
 
 impl HsmaHeader {
     /// Effective total size in bytes of this `hsma` section (supporting both 32-bit <= v22 and 64-bit >= v23 headers).
+    #[must_use]
     pub fn effective_total_size(&self) -> u64 {
         if self.total_size != 0 {
-            self.total_size as u64
+            u64::from(self.total_size)
         } else {
             self.total_size_64
         }

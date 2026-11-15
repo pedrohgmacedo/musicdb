@@ -1221,7 +1221,10 @@ impl Library {
                 HsmaChild::SocialProfileList(lsma) => {
                     social_profiles.extend(lsma.profiles.iter().map(SocialProfile::from_raw));
                 }
-                HsmaChild::InnerHfma(_) | HsmaChild::Padding(_) | HsmaChild::Unknown { .. } => {}
+                HsmaChild::InnerHfma(_)
+                | HsmaChild::Padding(_)
+                | HsmaChild::Unknown { .. }
+                | HsmaChild::Skipped { .. } => {}
             }
         }
 

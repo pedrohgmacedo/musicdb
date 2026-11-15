@@ -4,6 +4,8 @@ use binrw::{BinRead, BinResult, BinWrite, Endian, binrw};
 use serde::{Deserialize, Serialize};
 
 use super::boma::BomaSection;
+use super::{read_bounded_vec, read_header_tail, remaining_stream_bytes};
+use crate::error::MusicDbError;
 use crate::model::SmartOperatorFlags;
 
 /// `lPma` (Playlist List Master) header (typically 92 bytes).
@@ -11,12 +13,12 @@ use crate::model::SmartOperatorFlags;
 #[brw(little, magic = b"lPma")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LPmaHeader {
-    /// Offset 4: Header size in bytes (typically 92).
+    /// Offset 4: Header size in bytes (typically 92, minimum 12).
     pub header_size: u32,
     /// Offset 8: Number of `lpma` playlist subsections that follow.
     pub playlist_count: u32,
     /// Offset 12..92: Unknown / zero padding.
-    #[br(count = header_size.saturating_sub(12))]
+    #[br(parse_with = read_header_tail, args(header_size, 12, "lPma"))]
     pub unk_12_end: Vec<u8>,
 }
 
@@ -25,8 +27,10 @@ pub struct LPmaHeader {
 #[brw(little)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LPmaSection {
+    /// The `lPma` list header.
     pub header: LPmaHeader,
-    #[br(count = header.playlist_count)]
+    /// All `lpma` playlist records in the library.
+    #[br(parse_with = read_bounded_vec, args(header.playlist_count, 324, "lPma.playlists"))]
     pub playlists: Vec<LpmaSection>,
 }
 
@@ -147,7 +151,7 @@ pub struct LpmaHeader {
     #[br(if(header_size >= 368))]
     pub unk_360_368: Option<u64>,
     /// Remaining bytes up to `header_size` beyond 368/328/324.
-    #[br(count = header_size.saturating_sub(if header_size >= 368 { 368 } else if header_size >= 328 { 328 } else { 324 }))]
+    #[br(parse_with = read_header_tail, args(header_size, if header_size >= 368 { 368 } else if header_size >= 328 { 328 } else { 324 }, "lpma"))]
     pub unk_tail: Vec<u8>,
 }
 
@@ -156,8 +160,10 @@ pub struct LpmaHeader {
 #[brw(little)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LpmaSection {
+    /// The `lpma` playlist header.
     pub header: LpmaHeader,
-    #[br(count = header.boma_count)]
+    /// Metadata and track item `boma` children attached to this playlist.
+    #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "lpma.bomas"))]
     pub bomas: Vec<BomaSection>,
 }
 
@@ -166,7 +172,7 @@ pub struct LpmaSection {
 #[brw(little, magic = b"ipfa")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IpfaSection {
-    /// Offset 4: Section size in bytes (typically 68).
+    /// Offset 4: Section size in bytes (typically 68, minimum 52).
     pub section_size: u32,
     /// Offset 8..12: Global counter.
     pub global_counter: u32,
@@ -180,8 +186,8 @@ pub struct IpfaSection {
     pub unk_40_counter: u32,
     /// Offset 44..52: Repeated `item_persistent_id` (often non-zero on last track in playlist).
     pub item_persistent_id_2: u64,
-    /// Offset 52..section_size: Remaining bytes (16 bytes `52..68` when `section_size == 68`).
-    #[br(count = section_size.saturating_sub(52))]
+    /// Offset 52..`section_size`: Remaining bytes (16 bytes `52..68` when `section_size == 68`).
+    #[br(parse_with = read_header_tail, args(section_size, 52, "ipfa"))]
     pub unk_52_end: Vec<u8>,
 }
 
@@ -190,14 +196,14 @@ pub struct IpfaSection {
 #[brw(little, magic = b"IPfa")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IPfaSection {
-    /// Offset 4: Section size in bytes (typically 32).
+    /// Offset 4: Section size in bytes (typically 32, minimum 24).
     pub section_size: u32,
     /// Offset 8..16: Playlist item (`IPfa`) Persistent ID.
     pub item_persistent_id: u64,
     /// Offset 16..24: Track Persistent ID (`itma` reference).
     pub track_persistent_id: u64,
-    /// Offset 24..section_size: Remaining bytes (8 bytes `24..32` when `section_size == 32`).
-    #[br(count = section_size.saturating_sub(24))]
+    /// Offset 24..`section_size`: Remaining bytes (8 bytes `24..32` when `section_size == 32`).
+    #[br(parse_with = read_header_tail, args(section_size, 24, "IPfa"))]
     pub unk_24_end: Vec<u8>,
 }
 
@@ -250,7 +256,7 @@ pub struct SlstSection {
     #[serde(with = "crate::sections::hex_array")]
     pub unk_16_136: [u8; 120],
     /// Child rules.
-    #[br(count = rule_count)]
+    #[br(parse_with = read_bounded_vec, args(rule_count, 56, "SLst.rules"))]
     pub rules: Vec<SmartPlaylistRule>,
 }
 
@@ -275,6 +281,7 @@ pub struct SmartPlaylistRule {
     pub child: SmartRuleChild,
 }
 
+/// Parsed child payload of a [`SmartPlaylistRule`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SmartRuleChild {
     /// Nested `SLst` rule group.
@@ -282,7 +289,12 @@ pub enum SmartRuleChild {
     /// 68-byte numeric/date/boolean/enum/playlist arguments block (Big-Endian).
     Arguments(SmartPlaylistRuleArguments),
     /// UTF-16 Big-Endian string argument.
-    StringUtf16Be { text: String, raw_bytes: Vec<u8> },
+    StringUtf16Be {
+        /// Decoded UTF-16BE string value.
+        text: String,
+        /// Exact raw UTF-16BE payload bytes.
+        raw_bytes: Vec<u8>,
+    },
     /// Fallback raw bytes if a rule child does not match the above.
     Raw(Vec<u8>),
 }
@@ -292,20 +304,33 @@ pub enum SmartRuleChild {
 #[brw(big)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SmartPlaylistRuleArguments {
+    /// Offset 0..8: Primary comparison value (integer, timestamp, enum value, or playlist persistent ID).
     pub arg_0: i64,
+    /// Offset 8..16: Relative time unit multiplier or secondary parameter (typically `1`).
     pub arg_1: i64,
+    /// Offset 16..24: Relative time unit seconds or tertiary parameter (typically `1`, `3600`, `86400`, etc.).
     pub arg_2: i64,
+    /// Offset 24..32: Upper-bound comparison value for `IN_RANGE` rules (or repetition of `arg_0`).
     pub arg_3: i64,
+    /// Offset 32..40: Secondary multiplier for upper bound (typically `1`).
     pub arg_4: i64,
+    /// Offset 40..48: Secondary unit for upper bound (typically `1`).
     pub arg_5: i64,
+    /// Offset 48..56: Reserved / unknown 64-bit word (typically `0`).
     pub arg_6: i64,
+    /// Offset 56..64: Reserved / unknown 64-bit word (typically `0`).
     pub arg_7: i64,
+    /// Offset 64..68: Trailing 32-bit word (typically `0`).
     pub unk_64: u32,
 }
 
 impl BinRead for SmartPlaylistRule {
     type Args<'a> = ();
 
+    #[expect(
+        clippy::similar_names,
+        reason = "unk_44 and unk_48 are named after their byte offsets in SmartPlaylistRule"
+    )]
     fn read_options<R: Read + Seek>(
         reader: &mut R,
         _endian: Endian,
@@ -320,14 +345,37 @@ impl BinRead for SmartPlaylistRule {
         let unk_48 = u32::read_be(reader)?;
         let child_size = u32::read_be(reader)?;
 
-        let mut child_bytes = vec![0u8; child_size as usize];
+        let payload_offset = reader.stream_position()?;
+        let remaining = remaining_stream_bytes(reader)?;
+        let needed_bytes = u64::from(child_size);
+        if needed_bytes > remaining {
+            return Err(binrw::Error::Custom {
+                pos: payload_offset,
+                err: Box::new(MusicDbError::TruncatedSection {
+                    section: "SmartPlaylistRule.child".to_string(),
+                    offset: payload_offset,
+                    needed: needed_bytes,
+                    available: remaining,
+                }),
+            });
+        }
+        let payload_len = usize::try_from(child_size).map_err(|_| binrw::Error::Custom {
+            pos: payload_offset,
+            err: Box::new(MusicDbError::TruncatedSection {
+                section: "SmartPlaylistRule.child".to_string(),
+                offset: payload_offset,
+                needed: needed_bytes,
+                available: remaining,
+            }),
+        })?;
+        let mut child_bytes = vec![0u8; payload_len];
         reader.read_exact(&mut child_bytes)?;
 
         // Determine how to parse `child_bytes`
-        let child = if child_bytes.len() >= 136 && &child_bytes[0..4] == b"SLst" {
+        let child = if child_bytes.len() >= 136 && child_bytes.get(0..4) == Some(b"SLst") {
             let mut cursor = Cursor::new(&child_bytes);
             match SlstSection::read_be(&mut cursor) {
-                Ok(slst) if cursor.position() as usize == child_bytes.len() => {
+                Ok(slst) if usize::try_from(cursor.position()).ok() == Some(child_bytes.len()) => {
                     SmartRuleChild::Nested(Box::new(slst))
                 }
                 _ => SmartRuleChild::Raw(child_bytes),
@@ -392,8 +440,9 @@ impl BinWrite for SmartPlaylistRule {
         match &self.child {
             SmartRuleChild::Nested(slst) => slst.write_be(writer)?,
             SmartRuleChild::Arguments(args) => args.write_be(writer)?,
-            SmartRuleChild::StringUtf16Be { raw_bytes, .. } => writer.write_all(raw_bytes)?,
-            SmartRuleChild::Raw(raw_bytes) => writer.write_all(raw_bytes)?,
+            SmartRuleChild::StringUtf16Be { raw_bytes, .. } | SmartRuleChild::Raw(raw_bytes) => {
+                writer.write_all(raw_bytes)?;
+            }
         }
         Ok(())
     }
@@ -401,6 +450,7 @@ impl BinWrite for SmartPlaylistRule {
 
 impl SmartPlaylistOptions {
     /// Human-readable name of `limit_unit`.
+    #[must_use]
     pub fn limit_unit_name(&self) -> &'static str {
         match self.limit_unit {
             1 => "minutes",
@@ -413,6 +463,7 @@ impl SmartPlaylistOptions {
     }
 
     /// Human-readable name of `limit_selection_method` (combined with `negate_limit_selection_method`).
+    #[must_use]
     pub fn selection_method_name(&self) -> &'static str {
         match (
             self.limit_selection_method,
@@ -438,6 +489,7 @@ impl SmartPlaylistOptions {
 
 impl SmartPlaylistRule {
     /// Human-readable name of `field_id` (all 32 Smart Playlist rule fields proven via `TEST_SMART_FIELDS_1` & `TEST_SMART_FIELDS_2`).
+    #[must_use]
     pub fn field_name(&self) -> &'static str {
         match self.field_id {
             0x00 => "Nested Group (SLst)",
@@ -494,6 +546,7 @@ impl SmartPlaylistRule {
     }
 
     /// Human-readable description of `comparison_method`.
+    #[must_use]
     pub fn comparison_description(&self) -> &'static str {
         let flags = SmartOperatorFlags::from_bits_retain(self.comparison_method);
         let is_str = flags.contains(SmartOperatorFlags::STRING_MODE);

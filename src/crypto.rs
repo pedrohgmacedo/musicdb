@@ -1,3 +1,5 @@
+//! AES-128-ECB encryption/decryption and bounded zlib compression/decompression for `.musicdb` files.
+
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -10,83 +12,146 @@ use flate2::write::ZlibEncoder;
 
 use crate::error::{MusicDbError, Result};
 
-/// Standard 16-byte AES-128-ECB key used by iTunes (.itl) and Apple Music (.musicdb).
+/// Default AES-128-ECB key used by iTunes and Apple Music for `.musicdb` and `.itdb` files.
 pub const DEFAULT_MUSICDB_KEY: &[u8; 16] = b"BHUILuilfghuila3";
 
-/// Unpacks an encrypted and zlib-compressed `.musicdb` file into raw library bytes:
-/// `[outer hfma header (uncompressed)] + [decompressed inner payload]`.
-pub fn decrypt_and_decompress_bytes(file_bytes: &[u8], key: &[u8; 16]) -> Result<Vec<u8>> {
-    if file_bytes.len() < 92 {
-        return Err(MusicDbError::HeaderTooLarge {
-            header_size: 92,
-            file_size: file_bytes.len(),
-        });
-    }
+/// Maximum allowed decompressed payload size (2 GiB) to guard against zip-bomb inputs.
+pub const MAX_DECOMPRESSED_SIZE: u64 = 2 * 1024 * 1024 * 1024;
 
-    let sig: [u8; 4] = file_bytes[0..4].try_into().unwrap();
+/// Minimum outer `hfma` header size required to read the encryption envelope fields (up to offset 92).
+const MIN_OUTER_HEADER_SIZE: u32 = 92;
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
+    let end = offset.checked_add(4)?;
+    let slice: [u8; 4] = bytes.get(offset..end)?.try_into().ok()?;
+    Some(u32::from_le_bytes(slice))
+}
+
+struct OuterEnvelopeFields {
+    header_size_u32: u32,
+    file_size: u32,
+    max_encrypted_size: usize,
+}
+
+fn parse_outer_envelope(bytes: &[u8]) -> Result<OuterEnvelopeFields> {
+    let Some(sig_slice) = bytes.get(0..4) else {
+        return Err(MusicDbError::TruncatedSection {
+            section: "hfma".to_string(),
+            offset: 0,
+            needed: u64::from(MIN_OUTER_HEADER_SIZE),
+            available: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        });
+    };
+    let sig: [u8; 4] = sig_slice.try_into().unwrap_or([0; 4]);
     if &sig != b"hfma" {
         return Err(MusicDbError::InvalidSignature(sig));
     }
 
-    let header_size = u32::from_le_bytes(file_bytes[4..8].try_into().unwrap()) as usize;
-    let file_size = u32::from_le_bytes(file_bytes[8..12].try_into().unwrap());
+    let (Some(header_size_u32), Some(file_size), Some(max_encrypted_size_u32)) = (
+        read_u32_le(bytes, 4),
+        read_u32_le(bytes, 8),
+        read_u32_le(bytes, 84),
+    ) else {
+        return Err(MusicDbError::TruncatedSection {
+            section: "hfma".to_string(),
+            offset: 0,
+            needed: u64::from(MIN_OUTER_HEADER_SIZE),
+            available: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        });
+    };
 
-    if file_bytes.len() != file_size as usize {
+    if header_size_u32 < MIN_OUTER_HEADER_SIZE {
+        return Err(MusicDbError::InvalidHeaderSize {
+            section: "hfma",
+            header_size: header_size_u32,
+            min_size: MIN_OUTER_HEADER_SIZE,
+        });
+    }
+
+    let max_encrypted_size = usize::try_from(max_encrypted_size_u32).unwrap_or(usize::MAX);
+    Ok(OuterEnvelopeFields {
+        header_size_u32,
+        file_size,
+        max_encrypted_size,
+    })
+}
+
+/// Unpacks an encrypted and zlib-compressed `.musicdb` file into raw library bytes:
+/// `[outer hfma header (uncompressed)] + [decompressed inner payload]`.
+///
+/// # Errors
+/// Returns [`MusicDbError`] if the header is truncated or invalid, the file size does not match,
+/// zlib decompression fails, or the decompressed output exceeds [`MAX_DECOMPRESSED_SIZE`].
+pub fn decrypt_and_decompress_bytes(file_bytes: &[u8], key: &[u8; 16]) -> Result<Vec<u8>> {
+    let env = parse_outer_envelope(file_bytes)?;
+
+    if usize::try_from(env.file_size).ok() != Some(file_bytes.len()) {
         return Err(MusicDbError::FileSizeMismatch {
-            expected: file_size,
+            expected: env.file_size,
             actual: file_bytes.len(),
         });
     }
 
-    if header_size > file_bytes.len() {
+    let header_size =
+        usize::try_from(env.header_size_u32).map_err(|_| MusicDbError::HeaderTooLarge {
+            header_size: env.header_size_u32,
+            file_size: file_bytes.len(),
+        })?;
+    let Some((header_slice, payload_slice)) = file_bytes.split_at_checked(header_size) else {
         return Err(MusicDbError::HeaderTooLarge {
-            header_size: header_size as u32,
+            header_size: env.header_size_u32,
             file_size: file_bytes.len(),
         });
-    }
+    };
 
-    let max_encrypted_size = u32::from_le_bytes(file_bytes[84..88].try_into().unwrap()) as usize;
-    let payload_size = file_bytes.len() - header_size;
-
+    let payload_size = payload_slice.len();
     let encrypted_size =
-        if max_encrypted_size > file_bytes.len() || max_encrypted_size > payload_size {
+        if env.max_encrypted_size > file_bytes.len() || env.max_encrypted_size > payload_size {
             payload_size - (payload_size % 16)
         } else {
-            max_encrypted_size - (max_encrypted_size % 16)
+            env.max_encrypted_size - (env.max_encrypted_size % 16)
         };
 
     let cipher = Aes128::new(key.into());
-    let mut payload = file_bytes[header_size..].to_vec();
+    let mut payload = payload_slice.to_vec();
 
-    for block in payload[..encrypted_size].as_chunks_mut::<16>().0 {
-        cipher.decrypt_block(block.into());
+    if let Some(encrypted_region) = payload.get_mut(..encrypted_size) {
+        for block in encrypted_region.as_chunks_mut::<16>().0 {
+            cipher.decrypt_block(block.into());
+        }
     }
 
-    // Decompress with zlib (if payload starts with a valid zlib stream; otherwise check if raw)
+    // Check if the decrypted payload is already raw sections (starts with "hsma", which can never be a valid RFC 1950 zlib header since 0x6873 % 31 != 0)
+    if payload.get(0..4) == Some(b"hsma") {
+        let mut raw_bytes = Vec::with_capacity(header_slice.len().saturating_add(payload.len()));
+        raw_bytes.extend_from_slice(header_slice);
+        raw_bytes.extend_from_slice(&payload);
+        return Ok(raw_bytes);
+    }
+
     let mut decompressed = Vec::new();
-    let mut decoder = ZlibDecoder::new(&payload[..]);
-    match decoder.read_to_end(&mut decompressed) {
-        Ok(_) => {
-            let mut raw_bytes = Vec::with_capacity(header_size + decompressed.len());
-            raw_bytes.extend_from_slice(&file_bytes[..header_size]);
-            raw_bytes.extend_from_slice(&decompressed);
-            Ok(raw_bytes)
-        }
-        Err(e) => {
-            // Check if the decrypted payload is already raw sections (e.g. starts with "hsma")
-            if payload.len() >= 4 && &payload[0..4] == b"hsma" {
-                let mut raw_bytes = Vec::with_capacity(header_size + payload.len());
-                raw_bytes.extend_from_slice(&file_bytes[..header_size]);
-                raw_bytes.extend_from_slice(&payload);
-                Ok(raw_bytes)
-            } else {
-                Err(MusicDbError::Decompression(e))
-            }
-        }
+    let decoder = ZlibDecoder::new(payload.as_slice());
+    let mut bounded_decoder = decoder.take(MAX_DECOMPRESSED_SIZE.saturating_add(1));
+    bounded_decoder
+        .read_to_end(&mut decompressed)
+        .map_err(MusicDbError::Decompression)?;
+
+    if u64::try_from(decompressed.len()).unwrap_or(u64::MAX) > MAX_DECOMPRESSED_SIZE {
+        return Err(MusicDbError::DecompressionLimitExceeded {
+            max_bytes: MAX_DECOMPRESSED_SIZE,
+        });
     }
+
+    let mut raw_bytes = Vec::with_capacity(header_slice.len().saturating_add(decompressed.len()));
+    raw_bytes.extend_from_slice(header_slice);
+    raw_bytes.extend_from_slice(&decompressed);
+    Ok(raw_bytes)
 }
 
 /// Loads a `.musicdb` file (or `.musiclibrary` bundle directory) from disk and returns the raw (decrypted + decompressed) bytes.
+///
+/// # Errors
+/// Returns [`MusicDbError`] if the file cannot be read, decrypted, or decompressed.
 pub fn load_raw_musicdb(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     let p = path.as_ref();
     let target = if p.is_dir() && p.join("Library.musicdb").exists() {
@@ -99,24 +164,23 @@ pub fn load_raw_musicdb(path: impl AsRef<Path>) -> Result<Vec<u8>> {
 }
 
 /// Compresses and encrypts raw library bytes (`[outer hfma] + [inner sections]`) back into `.musicdb` format.
+///
+/// # Errors
+/// Returns [`MusicDbError`] if the outer `hfma` header is truncated or invalid, or if zlib compression fails.
 pub fn compress_and_encrypt_bytes(raw_bytes: &[u8], key: &[u8; 16]) -> Result<Vec<u8>> {
-    if raw_bytes.len() < 92 {
+    let env = parse_outer_envelope(raw_bytes)?;
+
+    let header_size =
+        usize::try_from(env.header_size_u32).map_err(|_| MusicDbError::HeaderTooLarge {
+            header_size: env.header_size_u32,
+            file_size: raw_bytes.len(),
+        })?;
+    let Some((header, inner)) = raw_bytes.split_at_checked(header_size) else {
         return Err(MusicDbError::HeaderTooLarge {
-            header_size: 92,
+            header_size: env.header_size_u32,
             file_size: raw_bytes.len(),
         });
-    }
-
-    let sig: [u8; 4] = raw_bytes[0..4].try_into().unwrap();
-    if &sig != b"hfma" {
-        return Err(MusicDbError::InvalidSignature(sig));
-    }
-
-    let header_size = u32::from_le_bytes(raw_bytes[4..8].try_into().unwrap()) as usize;
-    let max_encrypted_size = u32::from_le_bytes(raw_bytes[84..88].try_into().unwrap()) as usize;
-
-    let header = &raw_bytes[..header_size];
-    let inner = &raw_bytes[header_size..];
+    };
 
     // Apple Music experimentally uses zlib compression level 1 (fast)
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
@@ -126,22 +190,32 @@ pub fn compress_and_encrypt_bytes(raw_bytes: &[u8], key: &[u8; 16]) -> Result<Ve
     let mut compressed = encoder.finish().map_err(MusicDbError::Compression)?;
 
     let compressed_size = compressed.len();
-    let encrypted_size = if max_encrypted_size > compressed_size {
+    let encrypted_size = if env.max_encrypted_size > compressed_size {
         compressed_size - (compressed_size % 16)
     } else {
-        max_encrypted_size - (max_encrypted_size % 16)
+        env.max_encrypted_size - (env.max_encrypted_size % 16)
     };
 
     let cipher = Aes128::new(key.into());
-    for block in compressed[..encrypted_size].as_chunks_mut::<16>().0 {
-        cipher.encrypt_block(block.into());
+    if let Some(encrypted_region) = compressed.get_mut(..encrypted_size) {
+        for block in encrypted_region.as_chunks_mut::<16>().0 {
+            cipher.encrypt_block(block.into());
+        }
     }
 
-    let new_file_size = (header_size + compressed.len()) as u32;
-    let mut out = Vec::with_capacity(new_file_size as usize);
-    out.extend_from_slice(&header[..8]);
-    out.extend_from_slice(&new_file_size.to_le_bytes());
-    out.extend_from_slice(&header[12..]);
+    let total_len = header_size.saturating_add(compressed.len());
+    let new_file_size = u32::try_from(total_len).map_err(|_| {
+        MusicDbError::Compression(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "compressed musicdb exceeds u32::MAX bytes",
+        ))
+    })?;
+
+    let mut out = Vec::with_capacity(total_len);
+    out.extend_from_slice(header);
+    if let Some(file_size_slot) = out.get_mut(8..12) {
+        file_size_slot.copy_from_slice(&new_file_size.to_le_bytes());
+    }
     out.extend_from_slice(&compressed);
 
     Ok(out)

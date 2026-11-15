@@ -503,6 +503,22 @@ mod tests {
         let parsed_raw = RawLibraryFile::from_raw_bytes(&decrypted_raw).expect("parse synthetic");
         assert_eq!(parsed_raw.to_raw_bytes().unwrap(), decrypted_raw);
 
+        // Verify filtered parsing preserves 100% lossless round-trip via HsmaChild::Skipped
+        let parsed_filtered =
+            RawLibraryFile::from_raw_bytes_filtered(&decrypted_raw, |subtype| subtype != 1)
+                .expect("parse synthetic filtered");
+        assert!(
+            parsed_filtered
+                .sections
+                .iter()
+                .any(|s| matches!(s.child, HsmaChild::Skipped { subtype: 1, .. }))
+        );
+        assert_eq!(parsed_filtered.to_raw_bytes().unwrap(), decrypted_raw);
+        assert_eq!(
+            parsed_filtered.to_encrypted_bytes().unwrap(),
+            encrypted_musicdb
+        );
+
         let lib = Library::from_raw(&parsed_raw);
         assert_eq!(lib.tracks.len(), 1);
         assert_eq!(lib.albums.len(), 1);
@@ -664,9 +680,15 @@ mod tests {
         std::fs::write(bundle_dir.join("Extras.itdb"), b"extras").unwrap();
         std::fs::write(bundle_dir.join("Genius.itdb"), b"genius").unwrap();
         std::fs::write(prefs_dir.join("Songs.plist"), b"songs").unwrap();
-        // Should be excluded:
+        // Should be excluded (artwork, media, and symlinks):
         std::fs::write(artwork_dir.join("big_image.jpeg"), b"excluded").unwrap();
         std::fs::write(media_dir.join("song.mp3"), b"excluded").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            media_dir.join("song.mp3"),
+            prefs_dir.join("symlink_secret.plist"),
+        )
+        .unwrap();
 
         std::fs::write(prev_dir.join("Library.musicdb"), b"prev_mdb").unwrap();
         std::fs::write(prev_dir.join("Preferences.plist"), b"prev_prefs").unwrap();
@@ -694,7 +716,9 @@ mod tests {
             !lib_report
                 .archived_paths
                 .iter()
-                .any(|p| p.contains("big_image.jpeg") || p.contains("song.mp3"))
+                .any(|p| p.contains("big_image.jpeg")
+                    || p.contains("song.mp3")
+                    || p.contains("symlink_secret.plist"))
         );
 
         let found_prev = find_previous_libraries_for_bundle(&found_bundle).expect("find prev");
@@ -710,5 +734,72 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp_root);
+    }
+
+    #[test]
+    fn test_malformed_inputs_do_not_panic_or_abort() {
+        // Probe 1: compress_and_encrypt_bytes with header_size = 5000 on a 160-byte buffer
+        let mut bad_header = vec![0u8; 160];
+        bad_header[0..4].copy_from_slice(b"hfma");
+        bad_header[4..8].copy_from_slice(&5000u32.to_le_bytes());
+        assert!(matches!(
+            compress_and_encrypt_bytes(&bad_header, DEFAULT_MUSICDB_KEY),
+            Err(MusicDbError::HeaderTooLarge {
+                header_size: 5000,
+                file_size: 160
+            })
+        ));
+
+        // Probe 1b: header_size below minimum (< 92) in both decrypt and encrypt
+        let mut small_header = vec![0u8; 160];
+        small_header[0..4].copy_from_slice(b"hfma");
+        small_header[4..8].copy_from_slice(&16u32.to_le_bytes());
+        small_header[8..12].copy_from_slice(&160u32.to_le_bytes());
+        assert!(matches!(
+            decrypt_and_decompress_bytes(&small_header, DEFAULT_MUSICDB_KEY),
+            Err(MusicDbError::InvalidHeaderSize {
+                section: "hfma",
+                header_size: 16,
+                min_size: 92
+            })
+        ));
+        assert!(matches!(
+            compress_and_encrypt_bytes(&small_header, DEFAULT_MUSICDB_KEY),
+            Err(MusicDbError::InvalidHeaderSize {
+                section: "hfma",
+                header_size: 16,
+                min_size: 92
+            })
+        ));
+
+        // Probe 2: RawLibraryFile::from_raw_bytes with hsma.total_size_64 = u64::MAX / 2
+        let mut huge_hsma = vec![0u8; 160 + 56];
+        huge_hsma[0..4].copy_from_slice(b"hfma");
+        huge_hsma[4..8].copy_from_slice(&160u32.to_le_bytes());
+        huge_hsma[160..164].copy_from_slice(b"hsma");
+        huge_hsma[164..168].copy_from_slice(&56u32.to_le_bytes());
+        huge_hsma[168..172].copy_from_slice(&0u32.to_le_bytes());
+        huge_hsma[172..176].copy_from_slice(&1u32.to_le_bytes());
+        huge_hsma[176..184].copy_from_slice(&(u64::MAX / 2).to_le_bytes());
+        assert!(RawLibraryFile::from_raw_bytes(&huge_hsma).is_err());
+
+        // Probe 3: HfmaHeader with header_size = 100 (< 160 minimum)
+        let mut short_hfma = vec![0u8; 160];
+        short_hfma[0..4].copy_from_slice(b"hfma");
+        short_hfma[4..8].copy_from_slice(&100u32.to_le_bytes());
+        assert!(RawLibraryFile::from_raw_bytes(&short_hfma).is_err());
+
+        // Probe 4: ltma section claiming u32::MAX tracks inside a small hsma buffer
+        let mut huge_track_count = vec![0u8; 160 + 56 + 92];
+        huge_track_count[0..4].copy_from_slice(b"hfma");
+        huge_track_count[4..8].copy_from_slice(&160u32.to_le_bytes());
+        huge_track_count[160..164].copy_from_slice(b"hsma");
+        huge_track_count[164..168].copy_from_slice(&56u32.to_le_bytes());
+        huge_track_count[168..172].copy_from_slice(&(56u32 + 92u32).to_le_bytes());
+        huge_track_count[172..176].copy_from_slice(&1u32.to_le_bytes());
+        huge_track_count[216..220].copy_from_slice(b"ltma");
+        huge_track_count[220..224].copy_from_slice(&92u32.to_le_bytes());
+        huge_track_count[224..228].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(RawLibraryFile::from_raw_bytes(&huge_track_count).is_err());
     }
 }

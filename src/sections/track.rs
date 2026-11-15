@@ -2,18 +2,19 @@ use binrw::binrw;
 use serde::{Deserialize, Serialize};
 
 use super::boma::BomaSection;
+use super::{read_bounded_vec, read_header_tail};
 
 /// `ltma` (Track List Master) header (typically 92 bytes).
 #[binrw]
 #[brw(little, magic = b"ltma")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LtmaHeader {
-    /// Offset 4: Header size in bytes (typically 92).
+    /// Offset 4: Header size in bytes (typically 92, minimum 12).
     pub header_size: u32,
     /// Offset 8: Number of `itma` track subsections that follow.
     pub track_count: u32,
     /// Offset 12..92: Unknown / zero padding.
-    #[br(count = header_size.saturating_sub(12))]
+    #[br(parse_with = read_header_tail, args(header_size, 12, "ltma"))]
     pub unk_12_end: Vec<u8>,
 }
 
@@ -22,8 +23,10 @@ pub struct LtmaHeader {
 #[brw(little)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LtmaSection {
+    /// The `ltma` list header.
     pub header: LtmaHeader,
-    #[br(count = header.track_count)]
+    /// All `itma` track records in the library.
+    #[br(parse_with = read_bounded_vec, args(header.track_count, 376, "ltma.tracks"))]
     pub tracks: Vec<ItmaSection>,
 }
 
@@ -203,7 +206,7 @@ pub struct ItmaHeader {
     /// Offset 356..376: Unknown 20 bytes.
     pub unk_356_376: [u8; 20],
     /// Any extra bytes if `header_size > 376`.
-    #[br(count = header_size.saturating_sub(376))]
+    #[br(parse_with = read_header_tail, args(header_size, 376, "itma"))]
     pub extra_bytes: Vec<u8>,
 }
 
@@ -212,8 +215,10 @@ pub struct ItmaHeader {
 #[brw(little)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ItmaSection {
+    /// The `itma` track header.
     pub header: ItmaHeader,
-    #[br(count = header.boma_count)]
+    /// Metadata `boma` children attached to this track.
+    #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "itma.bomas"))]
     pub bomas: Vec<BomaSection>,
 }
 
@@ -247,7 +252,7 @@ pub struct TrackNumerics {
     pub unk_35_60: [u8; 25],
     /// Offset 60..64: Sample rate in Hz (IEEE 754 f32, e.g. 44100.0).
     pub sample_rate: f32,
-    /// Offset 64..68: File type FourCC in little-endian (e.g. `0x4D503320` = `"MP3 "`, `0x4D344120` = `"M4A "`).
+    /// Offset 64..68: File type `FourCC` in little-endian (e.g. `0x4D503320` = `"MP3 "`, `0x4D344120` = `"M4A "`).
     pub file_type_fourcc: u32,
     /// Offset 68..72: Secondary file type / unknown.
     pub unk_68_file_type: u32,
@@ -291,7 +296,7 @@ pub struct TrackNumerics {
     pub date_released: u32,
     /// Offset 144..148: Cloud codec kind (`2` = `"mp4a"` MPEG-4 audio, `3` = `"mpeg"` MP3 audio, `0` on local file subrecords and video).
     pub cloud_codec_kind: u32,
-    /// Offset 148..152: Codec/Subtype FourCC in little-endian (e.g. `0x6D703461` = `"mp4a"`, `0x6D706567` = `"mpeg"`).
+    /// Offset 148..152: Codec/Subtype `FourCC` in little-endian (e.g. `0x6D703461` = `"mp4a"`, `0x6D706567` = `"mpeg"`).
     pub codec_fourcc: u32,
     /// Offset 152..156: Unknown (0 or e.g. `0x00000123`).
     pub unk_152: u32,
@@ -354,6 +359,7 @@ pub struct TrackNumerics {
 
 impl TrackNumerics {
     /// Converts `file_type_fourcc` (e.g. `0x4D503320`) into its 4-character ASCII representation (e.g. `"MP3 "`).
+    #[must_use]
     pub fn file_type_fourcc_str(&self) -> Option<String> {
         if self.file_type_fourcc == 0 {
             return None;
@@ -367,6 +373,7 @@ impl TrackNumerics {
     }
 
     /// Converts `codec_fourcc` (e.g. `0x6D703461`) into its 4-character ASCII representation (e.g. `"mp4a"`).
+    #[must_use]
     pub fn codec_fourcc_str(&self) -> Option<String> {
         if self.codec_fourcc == 0 {
             return None;
@@ -420,7 +427,7 @@ pub struct VideoInfo {
     pub width: u32,
     /// Offset 8..12: Unknown (typically 1).
     pub unk_8: u32,
-    /// Offset 12..16: Video codec FourCC in little-endian (e.g. `0x61766331` = `"avc1"`).
+    /// Offset 12..16: Video codec `FourCC` in little-endian (e.g. `0x61766331` = `"avc1"`).
     pub codec_fourcc: u32,
     /// Offset 16..20: Unknown 4 bytes.
     pub unk_16: u32,

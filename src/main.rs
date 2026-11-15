@@ -118,7 +118,8 @@ enum Commands {
         path: PathBuf,
     },
 
-    /// Package Apple Music Library metadata files (excluding media and artwork images) into a .tar archive for format research
+    /// Package Apple Music Library metadata files (excluding media and artwork images) into a .tar archive for format research.
+    /// Note: Library.musicdb contains personal metadata such as purchaser names, Apple ID emails, and account IDs.
     DonateLibrary {
         /// Optional path to Apple Music folder or .musiclibrary bundle (auto-discovers default library if omitted)
         path: Option<PathBuf>,
@@ -130,7 +131,8 @@ enum Commands {
         yes: bool,
     },
 
-    /// Package all Previous Libraries metadata bundles (excluding media and artwork images) into a .tar archive for format research
+    /// Package all Previous Libraries metadata bundles (excluding media and artwork images) into a .tar archive for format research.
+    /// Note: Library.musicdb contains personal metadata such as purchaser names, Apple ID emails, and account IDs.
     DonatePreviousLibraries {
         /// Optional path to Previous Libraries or Apple Music folder (auto-discovers default location if omitted)
         path: Option<PathBuf>,
@@ -302,6 +304,9 @@ fn main() -> Result<()> {
                             String::from_utf8_lossy(signature),
                             raw_bytes.len()
                         )
+                    }
+                    HsmaChild::Skipped { subtype, raw_bytes } => {
+                        format!("Skipped(subtype={subtype}, len={})", raw_bytes.len())
                     }
                 };
                 println!(
@@ -791,7 +796,7 @@ fn main() -> Result<()> {
                 })?;
                 if !yes
                     && !prompt_yes_no(&format!(
-                        "Found Apple Music Library at {:?}. Package metadata into {:?}?",
+                        "Found Apple Music Library at {:?}.\nNote: Library.musicdb contains purchaser names/emails and Apple account IDs.\nPackage metadata into {:?}?",
                         discovered.display(),
                         output.display()
                     ))?
@@ -866,7 +871,7 @@ fn main() -> Result<()> {
                 let count = list_previous_library_bundles(&discovered).len();
                 if !yes
                     && !prompt_yes_no(&format!(
-                        "Found {} previous library snapshot(s) in {:?}. Package metadata into {:?}?",
+                        "Found {} previous library snapshot(s) in {:?}.\nNote: Library.musicdb contains purchaser names/emails and Apple account IDs.\nPackage metadata into {:?}?",
                         count,
                         discovered.display(),
                         output.display()

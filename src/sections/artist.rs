@@ -2,18 +2,19 @@ use binrw::binrw;
 use serde::{Deserialize, Serialize};
 
 use super::boma::BomaSection;
+use super::{read_bounded_vec, read_header_tail};
 
 /// `lAma` (Artist List Master) header (typically 100 bytes).
 #[binrw]
 #[brw(little, magic = b"lAma")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LAmaHeader {
-    /// Offset 4: Header size in bytes (typically 100).
+    /// Offset 4: Header size in bytes (typically 100, minimum 12).
     pub header_size: u32,
     /// Offset 8: Number of `iAma` artist subsections that follow.
     pub artist_count: u32,
     /// Offset 12..100: Unknown / zero padding.
-    #[br(count = header_size.saturating_sub(12))]
+    #[br(parse_with = read_header_tail, args(header_size, 12, "lAma"))]
     pub unk_12_end: Vec<u8>,
 }
 
@@ -22,8 +23,10 @@ pub struct LAmaHeader {
 #[brw(little)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LAmaSection {
+    /// The `lAma` list header.
     pub header: LAmaHeader,
-    #[br(count = header.artist_count)]
+    /// All `iAma` artist records in the library.
+    #[br(parse_with = read_bounded_vec, args(header.artist_count, 120, "lAma.artists"))]
     pub artists: Vec<IAmaSection>,
 }
 
@@ -74,7 +77,7 @@ pub struct IAmaHeader {
     #[br(if(header_size >= 124))]
     pub date_cloud_synced: Option<u32>,
     /// Remaining bytes up to `header_size` (8 bytes `124..132` when `header_size == 132`, all zeros).
-    #[br(count = header_size.saturating_sub(if header_size >= 124 { 124 } else { 120 }))]
+    #[br(parse_with = read_header_tail, args(header_size, if header_size >= 124 { 124 } else { 120 }, "iAma"))]
     pub unk_tail: Vec<u8>,
 }
 
@@ -83,7 +86,9 @@ pub struct IAmaHeader {
 #[brw(little)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IAmaSection {
+    /// The `iAma` artist header.
     pub header: IAmaHeader,
-    #[br(count = header.boma_count)]
+    /// Metadata `boma` children attached to this artist.
+    #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "iAma.bomas"))]
     pub bomas: Vec<BomaSection>,
 }

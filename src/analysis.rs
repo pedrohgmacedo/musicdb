@@ -828,6 +828,7 @@ pub fn analyze_unknowns(raw: &RawLibraryFile) -> UnknownsReport {
                     raw_bytes.len(),
                 ));
             }
+            HsmaChild::Skipped { .. } => {}
         }
     }
 

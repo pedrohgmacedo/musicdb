@@ -1,3 +1,5 @@
+//! `boma` (Binary Object / Metadata Container) section and payload structures.
+
 use std::io::{Cursor, Read, Seek, Write};
 
 use binrw::{BinRead, BinResult, BinWrite, Endian};
@@ -5,18 +7,20 @@ use serde::{Deserialize, Serialize};
 
 use super::library_master::{PlmaSub1F6, PlmaSub1FF};
 use super::playlist::{IPfaSection, IpfaSection, SlstSection, SmartPlaylistOptions};
+use super::remaining_stream_bytes;
 use super::track::{TrackNumerics, TrackPlaysSkips, VideoInfo};
+use crate::error::MusicDbError;
 
 /// `boma` (Binary Object / Metadata Container) section.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BomaSection {
-    /// Offset 4: Header size in bytes (always 20 = `0x14`).
+    /// Offset 4: Header size in bytes (always 20 = `0x14`, minimum 16).
     pub header_size: u32,
     /// Offset 8: Total size in bytes of this `boma` (header + payload).
     pub total_size: u32,
     /// Offset 12: Subtype identifier (`0x0001`, `0x0002`, `0x00CE`, etc.).
     pub subtype: u32,
-    /// Offset 16..header_size: Remaining header bytes (4 bytes `16..20` when `header_size == 20`).
+    /// Offset 16..`header_size`: Remaining header bytes (4 bytes `16..20` when `header_size == 20`).
     pub unk_16_end: Vec<u8>,
     /// Parsed payload of length `total_size - header_size`.
     pub payload: BomaPayload,
@@ -63,37 +67,59 @@ pub enum BomaPayload {
     /// Structured string with 16-byte header (`encoding`, `byte_len`, `counter`, `unk_12`).
     StringSection(BomaStringSection),
     /// Raw UTF-8 string without 16-byte string header (e.g., XML plists `0x36`, `0x38`, `0xCD`, `0x192`, `0x1FC`).
-    RawStringUtf8 { text: String, raw_bytes: Vec<u8> },
+    RawStringUtf8 {
+        /// Decoded UTF-8 text.
+        text: String,
+        /// Exact raw payload bytes.
+        raw_bytes: Vec<u8>,
+    },
     /// Raw UTF-16LE string without 16-byte string header (e.g., `0x1FD`, `0x200` on Windows).
-    RawStringUtf16Le { text: String, raw_bytes: Vec<u8> },
+    RawStringUtf16Le {
+        /// Decoded UTF-16LE text.
+        text: String,
+        /// Exact raw payload bytes.
+        raw_bytes: Vec<u8>,
+    },
     /// macOS `book` (Bookmark / Alias) structure (e.g., `0x0042`, `0x01FC`, `0x01FD`, `0x0200` on macOS).
     Book {
+        /// Extracted filesystem path from `0x0101` path components, if present.
         extracted_path: Option<String>,
+        /// All decoded string components inside the bookmark record.
         components: Vec<String>,
+        /// Exact raw bookmark payload bytes.
         raw_bytes: Vec<u8>,
     },
     /// Unrecognized or raw `boma` payload preserved losslessly.
-    Unknown { subtype: u32, raw_bytes: Vec<u8> },
+    Unknown {
+        /// `boma` subtype identifier.
+        subtype: u32,
+        /// Exact raw payload bytes.
+        raw_bytes: Vec<u8>,
+    },
 }
 
 impl BomaSection {
-    /// Returns the human-readable name of the `boma` subtype (given its parent context if relevant).
+    /// Returns the human-readable name of the `boma` subtype.
+    #[must_use]
     pub fn subtype_name(&self) -> &'static str {
         boma_subtype_name(self.subtype)
     }
 
     /// Extracts the string value if this `boma` holds a string (`StringSection`, `RawStringUtf8`, `RawStringUtf16Le`, or `Book`).
+    #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         match &self.payload {
             BomaPayload::StringSection(s) => Some(&s.text),
-            BomaPayload::RawStringUtf8 { text, .. } => Some(text),
-            BomaPayload::RawStringUtf16Le { text, .. } => Some(text),
+            BomaPayload::RawStringUtf8 { text, .. }
+            | BomaPayload::RawStringUtf16Le { text, .. } => Some(text),
             BomaPayload::Book { extracted_path, .. } => extracted_path.as_deref(),
             _ => None,
         }
     }
 }
 
+/// Returns the human-readable field name for a known `boma` subtype ID.
+#[must_use]
 pub fn boma_subtype_name(subtype: u32) -> &'static str {
     match subtype {
         0x0001 => "track_numerics",
@@ -171,19 +197,27 @@ pub fn boma_subtype_name(subtype: u32) -> &'static str {
     }
 }
 
+fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
+    let end = offset.checked_add(4)?;
+    let slice: [u8; 4] = bytes.get(offset..end)?.try_into().ok()?;
+    Some(u32::from_le_bytes(slice))
+}
+
 fn parse_book_components(payload: &[u8]) -> (Option<String>, Vec<String>) {
     let mut all_parts = Vec::new();
     let mut path_parts = Vec::new();
     let mut pos = 4usize; // skip "book"
-    while pos + 8 <= payload.len() {
-        let str_len = u32::from_le_bytes(payload[pos..pos + 4].try_into().unwrap()) as usize;
-        let marker = u32::from_le_bytes(payload[pos + 4..pos + 8].try_into().unwrap());
+    while let (Some(str_len_u32), Some(marker)) = (
+        read_u32_le(payload, pos),
+        read_u32_le(payload, pos.saturating_add(4)),
+    ) {
+        let str_len = usize::try_from(str_len_u32).unwrap_or(usize::MAX);
+        let str_start = pos.saturating_add(8);
+        let str_end = str_start.saturating_add(str_len);
         if (marker == 0x0101 || marker == 0x0901 || marker == 0x0201)
-            && str_len > 0
-            && str_len < 4096
-            && pos + 8 + str_len <= payload.len()
+            && (1..4096).contains(&str_len)
+            && let Some(str_bytes) = payload.get(str_start..str_end)
         {
-            let str_bytes = &payload[pos + 8..pos + 8 + str_len];
             let s = String::from_utf8_lossy(str_bytes)
                 .trim_end_matches('\0')
                 .to_string();
@@ -199,9 +233,9 @@ fn parse_book_components(payload: &[u8]) -> (Option<String>, Vec<String>) {
                 }
             }
             let padding = (4 - (str_len % 4)) % 4;
-            pos += 8 + str_len + padding;
+            pos = str_end.saturating_add(padding);
         } else {
-            pos += 4;
+            pos = pos.saturating_add(4);
         }
     }
     let extracted_path = if path_parts.is_empty() {
@@ -234,11 +268,66 @@ impl BinRead for BomaSection {
         let total_size = u32::read_le(reader)?;
         let subtype = u32::read_le(reader)?;
 
-        let unk_header_len = header_size.saturating_sub(16) as usize;
+        let Some(unk_header_len_u32) = header_size.checked_sub(16) else {
+            return Err(binrw::Error::Custom {
+                pos,
+                err: Box::new(MusicDbError::InvalidHeaderSize {
+                    section: "boma",
+                    header_size,
+                    min_size: 16,
+                }),
+            });
+        };
+
+        let Some(payload_len_u32) = total_size.checked_sub(header_size) else {
+            return Err(binrw::Error::Custom {
+                pos,
+                err: Box::new(MusicDbError::InvalidHeaderSize {
+                    section: "boma.total_size",
+                    header_size,
+                    min_size: total_size,
+                }),
+            });
+        };
+
+        let needed = u64::from(unk_header_len_u32).saturating_add(u64::from(payload_len_u32));
+        let body_pos = reader.stream_position()?;
+        let remaining = remaining_stream_bytes(reader)?;
+        if needed > remaining {
+            return Err(binrw::Error::Custom {
+                pos: body_pos,
+                err: Box::new(MusicDbError::TruncatedSection {
+                    section: format!("boma(subtype={subtype:#06x})"),
+                    offset: body_pos,
+                    needed,
+                    available: remaining,
+                }),
+            });
+        }
+
+        let unk_header_len =
+            usize::try_from(unk_header_len_u32).map_err(|_| binrw::Error::Custom {
+                pos: body_pos,
+                err: Box::new(MusicDbError::TruncatedSection {
+                    section: format!("boma(subtype={subtype:#06x})"),
+                    offset: body_pos,
+                    needed,
+                    available: remaining,
+                }),
+            })?;
+        let payload_len = usize::try_from(payload_len_u32).map_err(|_| binrw::Error::Custom {
+            pos: body_pos,
+            err: Box::new(MusicDbError::TruncatedSection {
+                section: format!("boma(subtype={subtype:#06x})"),
+                offset: body_pos,
+                needed,
+                available: remaining,
+            }),
+        })?;
+
         let mut unk_16_end = vec![0u8; unk_header_len];
         reader.read_exact(&mut unk_16_end)?;
 
-        let payload_len = total_size.saturating_sub(header_size) as usize;
         let mut payload_bytes = vec![0u8; payload_len];
         reader.read_exact(&mut payload_bytes)?;
 
@@ -254,61 +343,76 @@ impl BinRead for BomaSection {
     }
 }
 
-fn parse_boma_payload(subtype: u32, payload_bytes: Vec<u8>) -> BinResult<BomaPayload> {
-    match subtype {
+fn parse_structured_boma_payload(
+    subtype: u32,
+    payload_bytes: &[u8],
+) -> BinResult<Option<BomaPayload>> {
+    let first_four = payload_bytes.get(0..4);
+    let parsed = match subtype {
         0x0001 if payload_bytes.len() == 364 => {
-            let mut cur = Cursor::new(&payload_bytes);
-            let numerics = TrackNumerics::read_le(&mut cur)?;
-            return Ok(BomaPayload::TrackNumerics(Box::new(numerics)));
+            let mut cur = Cursor::new(payload_bytes);
+            Some(BomaPayload::TrackNumerics(Box::new(
+                TrackNumerics::read_le(&mut cur)?,
+            )))
         }
         0x0017 if payload_bytes.len() == 52 => {
-            let mut cur = Cursor::new(&payload_bytes);
-            let plays = TrackPlaysSkips::read_le(&mut cur)?;
-            return Ok(BomaPayload::TrackPlaysSkips(plays));
+            let mut cur = Cursor::new(payload_bytes);
+            Some(BomaPayload::TrackPlaysSkips(TrackPlaysSkips::read_le(
+                &mut cur,
+            )?))
         }
         0x0024 if payload_bytes.len() == 84 => {
-            let mut cur = Cursor::new(&payload_bytes);
-            let video = VideoInfo::read_le(&mut cur)?;
-            return Ok(BomaPayload::VideoInfo(Box::new(video)));
+            let mut cur = Cursor::new(payload_bytes);
+            Some(BomaPayload::VideoInfo(Box::new(VideoInfo::read_le(
+                &mut cur,
+            )?)))
         }
-        0x00CE if payload_bytes.len() >= 52 && &payload_bytes[0..4] == b"ipfa" => {
-            let mut cur = Cursor::new(&payload_bytes);
-            let ipfa = IpfaSection::read_le(&mut cur)?;
-            return Ok(BomaPayload::PlaylistItem(ipfa));
+        0x00CE if payload_bytes.len() >= 52 && first_four == Some(b"ipfa") => {
+            let mut cur = Cursor::new(payload_bytes);
+            Some(BomaPayload::PlaylistItem(IpfaSection::read_le(&mut cur)?))
         }
-        0x00DA if payload_bytes.len() >= 24 && &payload_bytes[0..4] == b"IPfa" => {
-            let mut cur = Cursor::new(&payload_bytes);
-            let ipfa = IPfaSection::read_le(&mut cur)?;
-            return Ok(BomaPayload::PlaylistItemCompact(ipfa));
+        0x00DA if payload_bytes.len() >= 24 && first_four == Some(b"IPfa") => {
+            let mut cur = Cursor::new(payload_bytes);
+            Some(BomaPayload::PlaylistItemCompact(IPfaSection::read_le(
+                &mut cur,
+            )?))
         }
         0x00CA if payload_bytes.len() == 112 => {
-            let mut cur = Cursor::new(&payload_bytes);
-            let opts = SmartPlaylistOptions::read_le(&mut cur)?;
-            return Ok(BomaPayload::SmartPlaylistOptions(Box::new(opts)));
+            let mut cur = Cursor::new(payload_bytes);
+            Some(BomaPayload::SmartPlaylistOptions(Box::new(
+                SmartPlaylistOptions::read_le(&mut cur)?,
+            )))
         }
-        0x00C9 if payload_bytes.len() >= 136 && &payload_bytes[0..4] == b"SLst" => {
-            let mut cur = Cursor::new(&payload_bytes);
+        0x00C9 if payload_bytes.len() >= 136 && first_four == Some(b"SLst") => {
+            let mut cur = Cursor::new(payload_bytes);
             if let Ok(slst) = SlstSection::read_be(&mut cur)
-                && cur.position() as usize == payload_bytes.len()
+                && usize::try_from(cur.position()).ok() == Some(payload_bytes.len())
             {
-                return Ok(BomaPayload::SmartPlaylistRules(Box::new(slst)));
+                Some(BomaPayload::SmartPlaylistRules(Box::new(slst)))
+            } else {
+                None
             }
         }
         0x01F6 if payload_bytes.len() == 20 => {
-            let mut cur = Cursor::new(&payload_bytes);
-            let sub = PlmaSub1F6::read_le(&mut cur)?;
-            return Ok(BomaPayload::Plma1F6(sub));
+            let mut cur = Cursor::new(payload_bytes);
+            Some(BomaPayload::Plma1F6(PlmaSub1F6::read_le(&mut cur)?))
         }
         0x01FF if payload_bytes.len() == 44 => {
-            let mut cur = Cursor::new(&payload_bytes);
-            let sub = PlmaSub1FF::read_le(&mut cur)?;
-            return Ok(BomaPayload::Plma1FF(sub));
+            let mut cur = Cursor::new(payload_bytes);
+            Some(BomaPayload::Plma1FF(PlmaSub1FF::read_le(&mut cur)?))
         }
-        _ => {}
+        _ => None,
+    };
+    Ok(parsed)
+}
+
+fn parse_boma_payload(subtype: u32, payload_bytes: Vec<u8>) -> BinResult<BomaPayload> {
+    if let Some(structured) = parse_structured_boma_payload(subtype, &payload_bytes)? {
+        return Ok(structured);
     }
 
     // Check if it's a macOS `book` structure
-    if payload_bytes.len() >= 8 && &payload_bytes[0..4] == b"book" {
+    if payload_bytes.len() >= 8 && payload_bytes.get(0..4) == Some(b"book") {
         let (extracted_path, components) = parse_book_components(&payload_bytes);
         return Ok(BomaPayload::Book {
             extracted_path,
@@ -318,31 +422,33 @@ fn parse_boma_payload(subtype: u32, payload_bytes: Vec<u8>) -> BinResult<BomaPay
     }
 
     // Check if it's a structured `BomaStringSection` (16-byte header where encoding in [1, 2] and byte_len + 16 == payload_bytes.len())
-    if payload_bytes.len() >= 16 {
-        let encoding = u32::from_le_bytes(payload_bytes[0..4].try_into().unwrap());
-        let string_byte_len = u32::from_le_bytes(payload_bytes[4..8].try_into().unwrap());
-        let parent_subtype_counter = u32::from_le_bytes(payload_bytes[8..12].try_into().unwrap());
-        let unk_12 = u32::from_le_bytes(payload_bytes[12..16].try_into().unwrap());
+    if let (Some(encoding), Some(string_byte_len), Some(parent_subtype_counter), Some(unk_12)) = (
+        read_u32_le(&payload_bytes, 0),
+        read_u32_le(&payload_bytes, 4),
+        read_u32_le(&payload_bytes, 8),
+        read_u32_le(&payload_bytes, 12),
+    ) && (encoding == 1 || encoding == 2)
+        && usize::try_from(string_byte_len)
+            .ok()
+            .and_then(|n| n.checked_add(16))
+            == Some(payload_bytes.len())
+        && let Some(raw_slice) = payload_bytes.get(16..)
+    {
+        let raw_string_bytes = raw_slice.to_vec();
+        let text = if encoding == 1 {
+            decode_utf16le(&raw_string_bytes)
+        } else {
+            String::from_utf8_lossy(&raw_string_bytes).into_owned()
+        };
 
-        if (encoding == 1 || encoding == 2)
-            && (string_byte_len as usize).saturating_add(16) == payload_bytes.len()
-        {
-            let raw_string_bytes = payload_bytes[16..].to_vec();
-            let text = if encoding == 1 {
-                decode_utf16le(&raw_string_bytes)
-            } else {
-                String::from_utf8_lossy(&raw_string_bytes).into_owned()
-            };
-
-            return Ok(BomaPayload::StringSection(BomaStringSection {
-                encoding,
-                string_byte_len,
-                parent_subtype_counter,
-                unk_12,
-                text,
-                raw_string_bytes,
-            }));
-        }
+        return Ok(BomaPayload::StringSection(BomaStringSection {
+            encoding,
+            string_byte_len,
+            parent_subtype_counter,
+            unk_12,
+            text,
+            raw_string_bytes,
+        }));
     }
 
     // Check known Raw String subtypes
@@ -415,10 +521,10 @@ impl BinWrite for BomaSection {
                 s.unk_12.write_le(writer)?;
                 writer.write_all(&s.raw_string_bytes)?;
             }
-            BomaPayload::RawStringUtf8 { raw_bytes, .. } => writer.write_all(raw_bytes)?,
-            BomaPayload::RawStringUtf16Le { raw_bytes, .. } => writer.write_all(raw_bytes)?,
-            BomaPayload::Book { raw_bytes, .. } => writer.write_all(raw_bytes)?,
-            BomaPayload::Unknown { raw_bytes, .. } => writer.write_all(raw_bytes)?,
+            BomaPayload::RawStringUtf8 { raw_bytes, .. }
+            | BomaPayload::RawStringUtf16Le { raw_bytes, .. }
+            | BomaPayload::Book { raw_bytes, .. }
+            | BomaPayload::Unknown { raw_bytes, .. } => writer.write_all(raw_bytes)?,
         }
 
         Ok(())
