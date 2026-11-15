@@ -270,7 +270,7 @@ fn run_info(path: Option<PathBuf>) -> Result<()> {
     println!(
         "Date Modified         : {}",
         m.date_modified
-            .map_or_else(|| "<none>".to_string(), |d| d.to_rfc3339())
+            .map_or_else(|| "<none>".to_string(), |d| d.to_string())
     );
     let tz_hours = f64::from(m.timezone_offset_seconds) / 3600.0;
     println!(

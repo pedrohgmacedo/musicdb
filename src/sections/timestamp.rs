@@ -3,7 +3,7 @@
 use std::fmt;
 
 use binrw::binrw;
-use chrono::{DateTime, TimeZone, Utc};
+use jiff::Timestamp;
 
 /// Seconds between 1904-01-01 00:00:00 UTC (Apple/Mac HFS+ epoch) and 1970-01-01 00:00:00 UTC (Unix epoch).
 pub(crate) const APPLE_TO_UNIX_EPOCH_OFFSET: i64 = 2_082_844_800;
@@ -57,14 +57,14 @@ impl AppleTimestamp {
         self.0 == 0
     }
 
-    /// Converts this timestamp to a UTC [`DateTime`], returning `None` for `0` or sentinel values `< 86_400`.
+    /// Converts this timestamp to a UTC [`Timestamp`], returning `None` for `0` or sentinel values `< 86_400`.
     #[must_use]
-    pub fn to_utc(self) -> Option<DateTime<Utc>> {
+    pub fn to_utc(self) -> Option<Timestamp> {
         if self.0 < 86_400 {
             return None;
         }
         let unix_secs = i64::from(self.0) - APPLE_TO_UNIX_EPOCH_OFFSET;
-        Utc.timestamp_opt(unix_secs, 0).single()
+        Timestamp::from_second(unix_secs).ok()
     }
 }
 
@@ -83,7 +83,7 @@ impl From<AppleTimestamp> for u32 {
 impl fmt::Display for AppleTimestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(dt) = self.to_utc() {
-            write!(f, "{}", dt.to_rfc3339())
+            write!(f, "{dt}")
         } else if self.0 == 0 {
             f.write_str("0")
         } else {
@@ -95,7 +95,7 @@ impl fmt::Display for AppleTimestamp {
 impl fmt::Debug for AppleTimestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(dt) = self.to_utc() {
-            write!(f, "AppleTimestamp({} /* {} */)", self.0, dt.to_rfc3339())
+            write!(f, "AppleTimestamp({} /* {dt} */)", self.0)
         } else {
             write!(f, "AppleTimestamp({})", self.0)
         }
@@ -133,8 +133,8 @@ mod tests {
 
         let at_cutoff = AppleTimestamp::new(86_400);
         let cutoff_dt = at_cutoff.to_utc().expect("86_400 must convert");
-        assert_eq!(cutoff_dt.to_rfc3339(), "1904-01-02T00:00:00+00:00");
-        assert_eq!(at_cutoff.to_string(), "1904-01-02T00:00:00+00:00");
+        assert_eq!(cutoff_dt.to_string(), "1904-01-02T00:00:00Z");
+        assert_eq!(at_cutoff.to_string(), "1904-01-02T00:00:00Z");
 
         let max_ts = AppleTimestamp::new(u32::MAX);
         assert_eq!(max_ts.raw(), u32::MAX);
@@ -142,13 +142,13 @@ mod tests {
 
         let unix_epoch = AppleTimestamp::from(2_082_844_800u32);
         let dt = unix_epoch.to_utc().expect("Unix epoch must convert");
-        assert_eq!(dt.timestamp(), 0);
+        assert_eq!(dt.as_second(), 0);
         assert_eq!(unix_epoch.raw(), 2_082_844_800);
         assert_eq!(u32::from(unix_epoch), 2_082_844_800);
-        assert_eq!(unix_epoch.to_string(), "1970-01-01T00:00:00+00:00");
+        assert_eq!(unix_epoch.to_string(), "1970-01-01T00:00:00Z");
         assert_eq!(
             format!("{unix_epoch:?}"),
-            "AppleTimestamp(2082844800 /* 1970-01-01T00:00:00+00:00 */)"
+            "AppleTimestamp(2082844800 /* 1970-01-01T00:00:00Z */)"
         );
     }
 

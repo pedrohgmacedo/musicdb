@@ -100,13 +100,13 @@ mod tests {
             crate::AppleTimestamp::new(86_400)
                 .to_utc()
                 .unwrap()
-                .to_rfc3339(),
-            "1904-01-02T00:00:00+00:00"
+                .to_string(),
+            "1904-01-02T00:00:00Z"
         );
         assert!(crate::AppleTimestamp::new(u32::MAX).to_utc().is_some());
         // 2_082_844_800 is 1970-01-01T00:00:00Z in Apple HFS+ epoch (1904-01-01)
         let epoch = apple_timestamp_to_utc(2_082_844_800).unwrap();
-        assert_eq!(epoch.timestamp(), 0);
+        assert_eq!(epoch.as_second(), 0);
         assert_eq!(
             format_persistent_id(0x0123_4567_89AB_CDEF),
             "0123456789ABCDEF"

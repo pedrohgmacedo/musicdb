@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use bitflags::bitflags;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use crate::error::{MusicDbError, Result};
 use crate::sections::{
@@ -18,10 +18,10 @@ use crate::sections::{
 /// Seconds between 1904-01-01 00:00:00 UTC (Apple/Mac HFS+ epoch) and 1970-01-01 00:00:00 UTC (Unix epoch).
 pub const APPLE_TO_UNIX_EPOCH_OFFSET: i64 = crate::sections::timestamp::APPLE_TO_UNIX_EPOCH_OFFSET;
 
-/// Converts an Apple 32-bit timestamp (seconds since 1904-01-01 UTC/local) to a [`DateTime<Utc>`].
+/// Converts an Apple 32-bit timestamp (seconds since 1904-01-01 UTC/local) to a [`Timezone`].
 /// Returns `None` if `apple_ts < 86_400` (0 or small non-timestamp sentinel values such as `2` on local `TrackNumerics[0].date_cloud_synced`).
 #[must_use]
-pub fn apple_timestamp_to_utc(apple_ts: u32) -> Option<DateTime<Utc>> {
+pub fn apple_timestamp_to_utc(apple_ts: u32) -> Option<Timestamp> {
     AppleTimestamp::new(apple_ts).to_utc()
 }
 
@@ -1714,7 +1714,7 @@ pub enum SmartRuleValue {
         /// Raw Apple HFS+ timestamp (seconds since 1904-01-01).
         apple_timestamp: i64,
         /// Converted UTC timestamp if valid.
-        utc: Option<DateTime<Utc>>,
+        utc: Option<Timestamp>,
     },
     /// Inclusive date range comparison operand.
     DateRange {
@@ -1723,9 +1723,9 @@ pub enum SmartRuleValue {
         /// End Apple HFS+ timestamp.
         end_apple: i64,
         /// Converted start UTC timestamp.
-        start_utc: Option<DateTime<Utc>>,
+        start_utc: Option<Timestamp>,
         /// Converted end UTC timestamp.
-        end_utc: Option<DateTime<Utc>>,
+        end_utc: Option<Timestamp>,
     },
     /// Reference to another playlist by [`PersistentId`].
     PlaylistRef {
@@ -1879,7 +1879,7 @@ pub struct LibraryMetadata {
     /// Signed-in Apple Store account `dsid` (`0` if signed out).
     pub apple_store_account_id: u64,
     /// Library modification timestamp from `hfma`.
-    pub date_modified: Option<DateTime<Utc>>,
+    pub date_modified: Option<Timestamp>,
     /// "Settings -> General -> Show -> Songs list checkboxes" setting from `plma`.
     pub show_song_list_checkboxes: Option<bool>,
     /// "Settings -> Files -> Keep Music Media folder organized" setting from `plma`.
@@ -1928,13 +1928,13 @@ pub struct Album {
     /// Whether `suggestion_flag` has the `0x0100` locally-modified bit set.
     pub suggestion_locally_modified: bool,
     /// Timestamp when `suggestion_flag` was last modified (`iama` offset 96..100).
-    pub date_suggestion_flag_modified: Option<DateTime<Utc>>,
+    pub date_suggestion_flag_modified: Option<Timestamp>,
     /// Most recent last-played timestamp across tracks on this album (`iama` offset 100..104).
-    pub date_last_played: Option<DateTime<Utc>>,
+    pub date_last_played: Option<Timestamp>,
     /// iCloud sync timestamp (`iama` offset 120..124).
-    pub date_cloud_synced: Option<DateTime<Utc>>,
+    pub date_cloud_synced: Option<Timestamp>,
     /// Album release date (`iama` offset 124..128).
-    pub date_released: Option<DateTime<Utc>>,
+    pub date_released: Option<Timestamp>,
     /// 64-bit Apple Music Store Album ID (`plID`, `iama` offset 104..112).
     pub apple_music_store_album_id: Option<u64>,
 }
@@ -1967,9 +1967,9 @@ pub struct Artist {
     /// Whether `suggestion_flag` has the `0x0100` locally-modified bit set.
     pub suggestion_locally_modified: bool,
     /// Timestamp when `suggestion_flag` was last modified (`iAma` offset 60..64).
-    pub date_suggestion_flag_modified: Option<DateTime<Utc>>,
+    pub date_suggestion_flag_modified: Option<Timestamp>,
     /// iCloud sync timestamp (`iAma` offset 120..124).
-    pub date_cloud_synced: Option<DateTime<Utc>>,
+    pub date_cloud_synced: Option<Timestamp>,
     /// 64-bit Apple Music Store Artist ID (`atID`, `iAma` offset 52..60).
     pub apple_music_store_artist_id: u64,
     /// Artwork UUID in `artwork.sqlite` (`iAma` offset 64..80).
@@ -2150,21 +2150,21 @@ pub struct Track {
     /// Cumulative skip count (`TrackPlaysSkips` offset 36..40).
     pub true_skip_count: Option<u32>,
     /// Date added to library (`TrackNumerics` offset 92..96).
-    pub date_added: Option<DateTime<Utc>>,
+    pub date_added: Option<Timestamp>,
     /// Date modified (`TrackNumerics` offset 128..132).
-    pub date_modified: Option<DateTime<Utc>>,
+    pub date_modified: Option<Timestamp>,
     /// Date last played (`TrackPlaysSkips` offset 8..12).
-    pub date_last_played: Option<DateTime<Utc>>,
+    pub date_last_played: Option<Timestamp>,
     /// Date first played in UTC (`TrackPlaysSkips` offset 20..24).
-    pub date_first_played_utc: Option<DateTime<Utc>>,
+    pub date_first_played_utc: Option<Timestamp>,
     /// Date last skipped (`TrackPlaysSkips` offset 28..32).
-    pub date_last_skipped: Option<DateTime<Utc>>,
+    pub date_last_skipped: Option<Timestamp>,
     /// Release date (`TrackNumerics` offset 140..144).
-    pub date_released: Option<DateTime<Utc>>,
+    pub date_released: Option<Timestamp>,
     /// Purchase date (`TrackNumerics` offset 136..140).
-    pub date_purchased: Option<DateTime<Utc>>,
+    pub date_purchased: Option<Timestamp>,
     /// Cloud sync timestamp (`TrackNumerics` offset 356..360).
-    pub date_cloud_synced: Option<DateTime<Utc>>,
+    pub date_cloud_synced: Option<Timestamp>,
     /// Local relative or `file://` URL (`boma 0x000B`).
     pub file_url: Option<String>,
     /// Legacy colon/slash file path (`boma 0x0043`).
@@ -2235,15 +2235,15 @@ pub struct Playlist {
     /// User suggestion / favorite flag (`lpma` offset 223..225).
     pub suggestion_flag: SuggestionFlag,
     /// Creation timestamp (`lpma` offset 22..26).
-    pub date_created: Option<DateTime<Utc>>,
+    pub date_created: Option<Timestamp>,
     /// Modification timestamp (`lpma` offset 138..142).
-    pub date_modified: Option<DateTime<Utc>>,
+    pub date_modified: Option<Timestamp>,
     /// Last played timestamp (`lpma` offset 182..186).
-    pub date_last_played: Option<DateTime<Utc>>,
+    pub date_last_played: Option<Timestamp>,
     /// Cloud publish / artwork generation timestamp (`lpma` offset 304..308).
-    pub date_cloud_published: Option<DateTime<Utc>>,
+    pub date_cloud_published: Option<Timestamp>,
     /// Cloud sync timestamp (`lpma` offset 324..328 / 356..360).
-    pub date_cloud_synced: Option<DateTime<Utc>>,
+    pub date_cloud_synced: Option<Timestamp>,
     /// User-visible play count (`lpma` offset 174..178).
     pub play_count: u32,
     /// Cumulative play count (`lpma` offset 178..182).
@@ -3467,7 +3467,7 @@ fn format_smart_condition_description(rule: &SmartPlaylistRule, value: &SmartRul
         SmartRuleValue::Date {
             utc,
             apple_timestamp,
-        } => utc.map_or_else(|| apple_timestamp.to_string(), |d| d.to_rfc3339()),
+        } => utc.map_or_else(|| apple_timestamp.to_string(), |d| d.to_string()),
         SmartRuleValue::DateRange {
             start_utc,
             end_utc,
@@ -3475,8 +3475,8 @@ fn format_smart_condition_description(rule: &SmartPlaylistRule, value: &SmartRul
             end_apple,
         } => format!(
             "{} to {}",
-            start_utc.map_or_else(|| start_apple.to_string(), |d| d.to_rfc3339()),
-            end_utc.map_or_else(|| end_apple.to_string(), |d| d.to_rfc3339())
+            start_utc.map_or_else(|| start_apple.to_string(), |d| d.to_string()),
+            end_utc.map_or_else(|| end_apple.to_string(), |d| d.to_string())
         ),
         SmartRuleValue::PlaylistRef {
             playlist_persistent_id,
