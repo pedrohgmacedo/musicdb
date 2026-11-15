@@ -103,13 +103,29 @@ mod tests {
 
         let sentinel = AppleTimestamp::new(2);
         assert!(!sentinel.is_zero());
+        assert_eq!(sentinel.raw(), 2);
         assert_eq!(sentinel.to_utc(), None);
         assert_eq!(sentinel.to_string(), "sentinel(2)");
         assert_eq!(format!("{sentinel:?}"), "AppleTimestamp(2)");
 
+        let below_cutoff = AppleTimestamp::new(86_399);
+        assert_eq!(below_cutoff.raw(), 86_399);
+        assert_eq!(below_cutoff.to_utc(), None);
+        assert_eq!(below_cutoff.to_string(), "sentinel(86399)");
+
+        let at_cutoff = AppleTimestamp::new(86_400);
+        let cutoff_dt = at_cutoff.to_utc().expect("86_400 must convert");
+        assert_eq!(cutoff_dt.to_rfc3339(), "1904-01-02T00:00:00+00:00");
+        assert_eq!(at_cutoff.to_string(), "1904-01-02T00:00:00+00:00");
+
+        let max_ts = AppleTimestamp::new(u32::MAX);
+        assert_eq!(max_ts.raw(), u32::MAX);
+        assert!(max_ts.to_utc().is_some());
+
         let unix_epoch = AppleTimestamp::from(2_082_844_800u32);
         let dt = unix_epoch.to_utc().expect("Unix epoch must convert");
         assert_eq!(dt.timestamp(), 0);
+        assert_eq!(unix_epoch.raw(), 2_082_844_800);
         assert_eq!(u32::from(unix_epoch), 2_082_844_800);
         assert_eq!(unix_epoch.to_string(), "1970-01-01T00:00:00+00:00");
         assert_eq!(
@@ -121,12 +137,21 @@ mod tests {
     #[test]
     fn apple_timestamp_binrw_roundtrip() {
         let ts = AppleTimestamp::new(3_800_000_000);
-        let mut buf = Vec::new();
-        ts.write_le(&mut Cursor::new(&mut buf)).expect("write_le");
-        assert_eq!(buf, 3_800_000_000u32.to_le_bytes());
+        let mut le_buf = Vec::new();
+        ts.write_le(&mut Cursor::new(&mut le_buf))
+            .expect("write_le");
+        assert_eq!(le_buf, 3_800_000_000u32.to_le_bytes());
 
-        let parsed = AppleTimestamp::read_le(&mut Cursor::new(&buf)).expect("read_le");
-        assert_eq!(parsed, ts);
+        let parsed_le = AppleTimestamp::read_le(&mut Cursor::new(&le_buf)).expect("read_le");
+        assert_eq!(parsed_le, ts);
+
+        let mut be_buf = Vec::new();
+        ts.write_be(&mut Cursor::new(&mut be_buf))
+            .expect("write_be");
+        assert_eq!(be_buf, 3_800_000_000u32.to_be_bytes());
+
+        let parsed_be = AppleTimestamp::read_be(&mut Cursor::new(&be_buf)).expect("read_be");
+        assert_eq!(parsed_be, ts);
     }
 
     #[cfg(feature = "serde")]
