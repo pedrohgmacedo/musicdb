@@ -59,7 +59,11 @@ Much of the existing code predates these rules.
 - **Don't ignore errors silently** (`.ok()`, `let _ =`, `.flatten()` on `read_dir`, `unwrap_or_default()` on I/O). Either propagate the error, or, for best-effort data such as sidecar plists, record a warning the caller can see. Write a comment wherever you ignore something on purpose.
 
 ### Public API design (Rust API Guidelines)
-- **Every public struct and enum is `#[non_exhaustive]`.** Read-only domain records (`Track`, `Album`, `Artist`, `Playlist`, `LibraryMetadata`) may expose `pub` data fields for ergonomic access and pattern matching (`#[non_exhaustive]` prevents external struct-literal construction), while container internals (such as `Library` indexes) stay private behind methods. Derived or computed values (`stars()`, `flags()`, `raw()`) are methods, not fields.
+- **Every public struct and enum is `#[non_exhaustive]`** (except transparent 1-field newtypes such as `PersistentId`, `Unknown<T>`, and `AppleTimestamp`). Read-only domain records (`Track`, `Album`, `Artist`, `Playlist`, `LibraryMetadata`) may expose `pub` data fields for ergonomic access and pattern matching (`#[non_exhaustive]` prevents external struct-literal construction), while container internals (such as `Library` indexes) stay private behind methods. Derived or computed values (`stars()`, `flags()`, `raw()`) are methods, not fields.
+- **Undecoded binary fields & format newtypes in `src/sections/`:**
+  - Wrap undecoded binary fields in `Unknown<T>` (never bare `u8`/`u32`/`[u8; N]`/`Vec<u8>`) and register every one in that struct's `VisitUnknowns` impl via `visit_unknowns!`. Split partially-decoded byte arrays cleanly into known fields plus `Unknown<T>` rather than leaving known flags inside `Unknown<[u8; N]>`.
+  - Use `AppleTimestamp` for 32-bit Apple epoch timestamp fields in `src/sections/`, and use `SectionKind` for `hsma` section filtering and dispatch.
+  - `VisitUnknowns` / `UnknownVisitor` format introspection belongs in `src/sections/`, while `analysis` reports stay CLI-only.
 - **Be careful with what you make `pub`.** Helpers, serde `with` modules and research utilities are `pub(crate)`. Everything `pub` falls under semver.
 - **Don't put dependency types in public domain signatures** (e.g. `plist::Value`) without asking. In `MusicDbError`, existing `#[from]`/`#[source]` wrappers for `binrw::Error`, `plist::Error` and `#[cfg(feature = "sqlite")] rusqlite::Error` are acceptable while on `0.x`; ask before exposing any new dependency error type publicly.
 - **Use newtypes for identifiers:** persistent IDs are a `PersistentId(u64)` with `Display`/`FromStr` as 16-digit uppercase hex, not a `String` and a `u64` side by side.
@@ -98,6 +102,7 @@ Much of the existing code predates these rules.
 - Human-readable output comes from `Display` impls on the report types, not from long chains of `println!`.
 - `anyhow` with `.context("…")` is fine here, and so are `unwrap`/`expect` where an explanation is given.
 - Reverse-engineering and research code (analysis reports, offset diffing, library donation) belongs to the CLI side, not the library's public API.
+- Experimental or one-off RE tools belong in `src/analysis/adhoc/` behind `--features adhoc` so temporary investigations stay out of default CLI commands.
 
 ## Tests
 - **Never commit real Apple Music libraries or anything derived from them.** They contain personal data (purchaser names and emails, account IDs). Build fixtures **synthetically** in code (see the synthetic round-trip test in `src/lib.rs`).
