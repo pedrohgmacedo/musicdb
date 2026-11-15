@@ -30,6 +30,14 @@ fn run() -> musicdb::Result<ExitCode> {
                     raw_bytes.len()
                 );
             }
+            HsmaChild::Unknown {
+                kind, raw_bytes, ..
+            } => {
+                println!(
+                    "  [{idx}] {kind} (total_size={total_size}): unparsed ({} raw bytes preserved)",
+                    raw_bytes.len()
+                );
+            }
             _ => {
                 println!("  [{idx}] {kind} (total_size={total_size}): parsed");
             }
