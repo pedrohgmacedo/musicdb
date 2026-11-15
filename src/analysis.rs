@@ -4,46 +4,46 @@ use std::path::Path;
 use plist::Value as PlistValue;
 use serde::{Deserialize, Serialize};
 
-use crate::model::format_persistent_id;
-use crate::sections::{BomaPayload, HsmaChild, ItmaSection, RawLibraryFile};
+use musicdb::model::format_persistent_id;
+use musicdb::sections::{BomaPayload, HsmaChild, ItmaSection, RawLibraryFile};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UnknownFieldSummary {
-    pub section: String,
-    pub field_name: String,
-    pub offset_info: String,
-    pub total_instances: usize,
-    pub nonzero_instances: usize,
-    pub distinct_nonzero_count: usize,
-    pub sample_values: Vec<(String, usize)>,
+pub(crate) struct UnknownFieldSummary {
+    pub(crate) section: String,
+    pub(crate) field_name: String,
+    pub(crate) offset_info: String,
+    pub(crate) total_instances: usize,
+    pub(crate) nonzero_instances: usize,
+    pub(crate) distinct_nonzero_count: usize,
+    pub(crate) sample_values: Vec<(String, usize)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UnknownsReport {
-    pub unknown_hsma_sections: Vec<(u32, String, usize)>,
-    pub unknown_boma_subtypes: BTreeMap<String, usize>,
-    pub boma_subtype_counts: BTreeMap<String, usize>,
-    pub ipfa_short_id_verification: IpfaShortIdCheck,
-    pub global_counter_analysis: GlobalCounterAnalysis,
-    pub nonzero_unknown_fields: Vec<UnknownFieldSummary>,
+pub(crate) struct UnknownsReport {
+    pub(crate) unknown_hsma_sections: Vec<(u32, String, usize)>,
+    pub(crate) unknown_boma_subtypes: BTreeMap<String, usize>,
+    pub(crate) boma_subtype_counts: BTreeMap<String, usize>,
+    pub(crate) ipfa_short_id_verification: IpfaShortIdCheck,
+    pub(crate) global_counter_analysis: GlobalCounterAnalysis,
+    pub(crate) nonzero_unknown_fields: Vec<UnknownFieldSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IpfaShortIdCheck {
-    pub total_ipfa_items: usize,
-    pub matched_track_persistent_id: usize,
-    pub matched_itma_global_counter: usize,
-    pub mismatched_examples: Vec<String>,
+pub(crate) struct IpfaShortIdCheck {
+    pub(crate) total_ipfa_items: usize,
+    pub(crate) matched_track_persistent_id: usize,
+    pub(crate) matched_itma_global_counter: usize,
+    pub(crate) mismatched_examples: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GlobalCounterAnalysis {
-    pub album_count: usize,
-    pub artist_count: usize,
-    pub first_itma_global_counter: Option<u32>,
-    pub last_itma_global_counter: Option<u32>,
-    pub first_lpma_global_counter: Option<u32>,
-    pub last_ipfa_global_counter: Option<u32>,
+pub(crate) struct GlobalCounterAnalysis {
+    pub(crate) album_count: usize,
+    pub(crate) artist_count: usize,
+    pub(crate) first_itma_global_counter: Option<u32>,
+    pub(crate) last_itma_global_counter: Option<u32>,
+    pub(crate) first_lpma_global_counter: Option<u32>,
+    pub(crate) last_ipfa_global_counter: Option<u32>,
 }
 
 struct FieldTracker {
@@ -150,7 +150,7 @@ impl FieldTracker {
 
 /// Scans a `RawLibraryFile` for all unknown byte regions, unhandled `boma` subtypes,
 /// and verifies structural invariants (such as `ipfa` offset 40 == `itma` `global_counter`).
-pub fn analyze_unknowns(raw: &RawLibraryFile) -> UnknownsReport {
+pub(crate) fn analyze_unknowns(raw: &RawLibraryFile) -> UnknownsReport {
     let mut unknown_hsma_sections = Vec::new();
     let mut unknown_boma_subtypes: BTreeMap<String, usize> = BTreeMap::new();
     let mut boma_subtype_counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -828,7 +828,7 @@ pub fn analyze_unknowns(raw: &RawLibraryFile) -> UnknownsReport {
                     raw_bytes.len(),
                 ));
             }
-            HsmaChild::Skipped { .. } => {}
+            HsmaChild::Skipped { .. } | _ => {}
         }
     }
 
@@ -861,7 +861,7 @@ pub fn analyze_unknowns(raw: &RawLibraryFile) -> UnknownsReport {
 
 fn record_boma_stats(
     parent: &str,
-    boma: &crate::sections::BomaSection,
+    boma: &musicdb::sections::BomaSection,
     subtype_counts: &mut BTreeMap<String, usize>,
     unknown_subtypes: &mut BTreeMap<String, usize>,
 ) {
@@ -878,34 +878,34 @@ fn record_boma_stats(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LibraryDiffReport {
-    pub hfma_changed_4byte_offsets: Vec<(usize, u32, u32)>,
-    pub hsma_10_hex_a: Option<String>,
-    pub hsma_10_hex_b: Option<String>,
-    pub plma_changed_4byte_offsets: Vec<(usize, u32, u32)>,
-    pub plma_boma_changes: Vec<String>,
-    pub tracks_in_a: usize,
-    pub tracks_in_b: usize,
-    pub common_tracks: usize,
-    pub added_tracks: Vec<String>,
-    pub removed_tracks: Vec<String>,
-    pub itma_offset_change_frequencies: BTreeMap<usize, usize>,
-    pub track_numerics_offset_change_frequencies: BTreeMap<usize, usize>,
-    pub sample_track_diffs: Vec<TrackDiffSample>,
-    pub album_diffs: Vec<String>,
-    pub artist_diffs: Vec<String>,
-    pub playlist_diffs: Vec<String>,
+pub(crate) struct LibraryDiffReport {
+    pub(crate) hfma_changed_4byte_offsets: Vec<(usize, u32, u32)>,
+    pub(crate) hsma_10_hex_a: Option<String>,
+    pub(crate) hsma_10_hex_b: Option<String>,
+    pub(crate) plma_changed_4byte_offsets: Vec<(usize, u32, u32)>,
+    pub(crate) plma_boma_changes: Vec<String>,
+    pub(crate) tracks_in_a: usize,
+    pub(crate) tracks_in_b: usize,
+    pub(crate) common_tracks: usize,
+    pub(crate) added_tracks: Vec<String>,
+    pub(crate) removed_tracks: Vec<String>,
+    pub(crate) itma_offset_change_frequencies: BTreeMap<usize, usize>,
+    pub(crate) track_numerics_offset_change_frequencies: BTreeMap<usize, usize>,
+    pub(crate) sample_track_diffs: Vec<TrackDiffSample>,
+    pub(crate) album_diffs: Vec<String>,
+    pub(crate) artist_diffs: Vec<String>,
+    pub(crate) playlist_diffs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrackDiffSample {
-    pub persistent_id: String,
-    pub title: Option<String>,
-    pub artist: Option<String>,
-    pub high_level_changes: Vec<String>,
-    pub itma_changed_4byte_offsets: Vec<(usize, u32, u32)>,
-    pub numerics_changed_4byte_offsets: Vec<(usize, u32, u32)>,
-    pub plays_skips_changed_4byte_offsets: Vec<(usize, u32, u32)>,
+pub(crate) struct TrackDiffSample {
+    pub(crate) persistent_id: String,
+    pub(crate) title: Option<String>,
+    pub(crate) artist: Option<String>,
+    pub(crate) high_level_changes: Vec<String>,
+    pub(crate) itma_changed_4byte_offsets: Vec<(usize, u32, u32)>,
+    pub(crate) numerics_changed_4byte_offsets: Vec<(usize, u32, u32)>,
+    pub(crate) plays_skips_changed_4byte_offsets: Vec<(usize, u32, u32)>,
 }
 
 fn diff_4byte_words<T: binrw::BinWrite>(
@@ -941,7 +941,7 @@ where
 
 /// Compares two `RawLibraryFile` snapshots (e.g. 2024 vs 2025 or 2025 vs 2026) at both the high-level
 /// and 4-byte word offset levels for common tracks, albums, artists, playlists, and headers.
-pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> LibraryDiffReport {
+pub(crate) fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> LibraryDiffReport {
     let hfma_changed_4byte_offsets =
         diff_4byte_words(&raw_a.outer_header, &raw_b.outer_header, &[]);
 
@@ -1060,7 +1060,7 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
     let mut album_diffs = Vec::new();
     for (&apid, &ab) in &albums_b {
         if !albums_a.contains_key(&apid) {
-            let ma = crate::model::Album::from_raw(ab);
+            let ma = musicdb::model::Album::from_raw(ab);
             album_diffs.push(format!(
                 "+ ADDED ALBUM {:016X}: title={:?} artist={:?} album_artist={:?} is_comp={}",
                 apid, ma.title, ma.artist, ma.album_artist, ma.is_compilation
@@ -1069,7 +1069,7 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
     }
     for (&apid, &aa) in &albums_a {
         let Some(&ab) = albums_b.get(&apid) else {
-            let ma = crate::model::Album::from_raw(aa);
+            let ma = musicdb::model::Album::from_raw(aa);
             album_diffs.push(format!(
                 "- REMOVED ALBUM {:016X}: title={:?} artist={:?} album_artist={:?}",
                 apid, ma.title, ma.artist, ma.album_artist
@@ -1077,8 +1077,8 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
             continue;
         };
         let off_diffs = diff_4byte_words(&aa.header, &ab.header, &[8]);
-        let ma = crate::model::Album::from_raw(aa);
-        let mb = crate::model::Album::from_raw(ab);
+        let ma = musicdb::model::Album::from_raw(aa);
+        let mb = musicdb::model::Album::from_raw(ab);
         if !off_diffs.is_empty()
             || ma.title != mb.title
             || ma.artist != mb.artist
@@ -1095,8 +1095,8 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
     for (&rpid, &ra) in &artists_a {
         if let Some(&rb) = artists_b.get(&rpid) {
             let off_diffs = diff_4byte_words(&ra.header, &rb.header, &[8]);
-            let ma = crate::model::Artist::from_raw(ra);
-            let mb = crate::model::Artist::from_raw(rb);
+            let ma = musicdb::model::Artist::from_raw(ra);
+            let mb = musicdb::model::Artist::from_raw(rb);
             if !off_diffs.is_empty() || ma.name != mb.name || ma.sort_name != mb.sort_name {
                 artist_diffs.push(format!(
                     "~ CHANGED ARTIST {:016X} ({:?}): offsets={:?} fav={:?}->{:?}",
@@ -1111,14 +1111,14 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
     pb_keys.sort();
     for ppid in pb_keys {
         let pb = playlists_b[&ppid];
-        let mb = crate::model::Playlist::from_raw(pb);
+        let mb = musicdb::model::Playlist::from_raw(pb);
         if let Some(&pa) = playlists_a.get(&ppid) {
             let mut ignore = vec![8, 16];
             if pa.header.date_created == pb.header.date_created {
                 ignore.push(24);
             }
             let off_diffs = diff_4byte_words(&pa.header, &pb.header, &ignore);
-            let ma = crate::model::Playlist::from_raw(pa);
+            let ma = musicdb::model::Playlist::from_raw(pa);
             let mut boma_diffs = Vec::new();
             if pa.bomas.len() != pb.bomas.len() {
                 boma_diffs.push(format!(
@@ -1271,7 +1271,7 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
     for ppid in pa_keys {
         if !playlists_b.contains_key(&ppid) {
             let pa = playlists_a[&ppid];
-            let ma = crate::model::Playlist::from_raw(pa);
+            let ma = musicdb::model::Playlist::from_raw(pa);
             playlist_diffs.push(format!(
                 "- REMOVED PLAYLIST {:016X} ({:?}): parent={:?} kind={:?} tracks={}",
                 ppid, ma.name, ma.parent_persistent_id, ma.kind, ma.declared_track_count
@@ -1288,7 +1288,7 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
 
     for (&pid, &itma_b) in &map_b {
         if !map_a.contains_key(&pid) {
-            let tb = crate::model::Track::from_raw(itma_b);
+            let tb = musicdb::model::Track::from_raw(itma_b);
             added_tracks.push(format!(
                 "{} ({:?} - {:?})",
                 tb.persistent_id, tb.artist, tb.title
@@ -1301,7 +1301,7 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
     for pid in pids {
         let itma_a = map_a[&pid];
         let Some(&itma_b) = map_b.get(&pid) else {
-            let ta = crate::model::Track::from_raw(itma_a);
+            let ta = musicdb::model::Track::from_raw(itma_a);
             removed_tracks.push(format!(
                 "{} ({:?} - {:?})",
                 ta.persistent_id, ta.artist, ta.title
@@ -1310,8 +1310,8 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
         };
         common_tracks += 1;
 
-        let ta = crate::model::Track::from_raw(itma_a);
-        let tb = crate::model::Track::from_raw(itma_b);
+        let ta = musicdb::model::Track::from_raw(itma_a);
+        let tb = musicdb::model::Track::from_raw(itma_b);
 
         // Compare serialized 376-byte itma headers word-by-word
         let mut cur_a = std::io::Cursor::new(Vec::new());
@@ -1548,16 +1548,16 @@ pub fn diff_libraries(raw_a: &RawLibraryFile, raw_b: &RawLibraryFile) -> Library
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct XmlComparisonReport {
-    pub xml_track_count: usize,
-    pub musicdb_track_count: usize,
-    pub matched_by_persistent_id: usize,
-    pub field_match_counts: BTreeMap<String, (usize, usize)>,
-    pub unmapped_xml_keys_found_in_binary: BTreeMap<String, Vec<String>>,
+pub(crate) struct XmlComparisonReport {
+    pub(crate) xml_track_count: usize,
+    pub(crate) musicdb_track_count: usize,
+    pub(crate) matched_by_persistent_id: usize,
+    pub(crate) field_match_counts: BTreeMap<String, (usize, usize)>,
+    pub(crate) unmapped_xml_keys_found_in_binary: BTreeMap<String, Vec<String>>,
 }
 
 /// Cross-references a `RawLibraryFile` against an `iTunes Music Library.xml` file.
-pub fn compare_with_itunes_xml(
+pub(crate) fn compare_with_itunes_xml(
     raw: &RawLibraryFile,
     xml_path: impl AsRef<Path>,
 ) -> anyhow::Result<XmlComparisonReport> {
@@ -1607,7 +1607,7 @@ pub fn compare_with_itunes_xml(
             continue;
         };
         matched_by_persistent_id += 1;
-        let mdb_track = crate::model::Track::from_raw(itma);
+        let mdb_track = musicdb::model::Track::from_raw(itma);
 
         if let Some(v) = tdict.get("Name").and_then(|v| v.as_string()) {
             check_eq!("Name (title)", Some(v), mdb_track.title.as_deref());

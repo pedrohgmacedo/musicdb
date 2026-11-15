@@ -3,7 +3,6 @@
 use std::io::{Cursor, Read, Seek, Write};
 
 use binrw::{BinRead, BinResult, BinWrite, Endian};
-use serde::{Deserialize, Serialize};
 
 use super::library_master::{PlmaSub1F6, PlmaSub1FF};
 use super::playlist::{IPfaSection, IpfaSection, SlstSection, SmartPlaylistOptions};
@@ -12,7 +11,9 @@ use super::track::{TrackNumerics, TrackPlaysSkips, VideoInfo};
 use crate::error::MusicDbError;
 
 /// `boma` (Binary Object / Metadata Container) section.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BomaSection {
     /// Offset 4: Header size in bytes (always 20 = `0x14`, minimum 16).
     pub header_size: u32,
@@ -27,7 +28,9 @@ pub struct BomaSection {
 }
 
 /// Structured string payload inside a `boma` container.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BomaStringSection {
     /// Offset 0..4: String encoding (`1` = UTF-16LE, `2` = UTF-8).
     pub encoding: u32,
@@ -44,7 +47,9 @@ pub struct BomaStringSection {
 }
 
 /// Payload variants of a `boma` container.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BomaPayload {
     /// Subtype `0x0001`: Track numeric properties (364 bytes).
     TrackNumerics(Box<TrackNumerics>),

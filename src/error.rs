@@ -90,7 +90,12 @@ pub enum MusicDbError {
         actual: u64,
     },
 
+    /// Default Apple Music library was not found in the user's Music directory.
+    #[error("default Apple Music library not found in user Music directory")]
+    LibraryNotFound,
+
     /// SQLite database export error.
+    #[cfg(feature = "sqlite")]
     #[error("sqlite export error")]
     Sqlite(#[from] rusqlite::Error),
 
@@ -99,6 +104,7 @@ pub enum MusicDbError {
     Plist(#[from] plist::Error),
 
     /// JSON serialization error.
+    #[cfg(any(feature = "sqlite", feature = "cli"))]
     #[error("json serialization error")]
     Json(#[from] serde_json::Error),
 }

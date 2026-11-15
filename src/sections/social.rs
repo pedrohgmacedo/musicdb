@@ -1,5 +1,4 @@
 use binrw::binrw;
-use serde::{Deserialize, Serialize};
 
 use super::boma::BomaSection;
 use super::{read_bounded_vec, read_header_tail};
@@ -7,7 +6,9 @@ use super::{read_bounded_vec, read_header_tail};
 /// `Lsma` (Social Profiles List Master, `hsma` subtype 15) header (typically 92 bytes).
 #[binrw]
 #[brw(little, magic = b"Lsma")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LsmaHeader {
     /// Offset 4: Header size in bytes (typically 92, minimum 12).
     pub header_size: u32,
@@ -21,7 +22,9 @@ pub struct LsmaHeader {
 /// Complete `Lsma` section with all `isma` social profile items.
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LsmaSection {
     /// The `Lsma` list header.
     pub header: LsmaHeader,
@@ -33,7 +36,9 @@ pub struct LsmaSection {
 /// `isma` (Social Profile Item) header (typically 136 bytes).
 #[binrw]
 #[brw(little, magic = b"isma")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IsmaHeader {
     /// Offset 4: Header size in bytes (typically 136).
     pub header_size: u32,
@@ -63,7 +68,9 @@ pub struct IsmaHeader {
 /// Complete `isma` section (header + `boma` children).
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IsmaSection {
     /// The `isma` social profile header.
     pub header: IsmaHeader,

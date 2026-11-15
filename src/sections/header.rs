@@ -1,14 +1,15 @@
 //! Outer and inner `hfma` file header and `hsma` major section boundary header structures.
 
 use binrw::binrw;
-use serde::{Deserialize, Serialize};
 
 use super::read_header_tail;
 
 /// Outer and Inner `hfma` (File Header) section (typically 160 bytes).
 #[binrw]
 #[brw(little, magic = b"hfma")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HfmaHeader {
     /// Offset 4: Header length in bytes (typically 160, minimum 160).
     pub header_size: u32,
@@ -78,7 +79,9 @@ impl HfmaHeader {
 /// `hsma` (Major Section Boundary Header, typically 56 bytes).
 #[binrw]
 #[brw(little, magic = b"hsma")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HsmaHeader {
     /// Offset 4: Header size in bytes (typically 56, minimum 24).
     pub header_size: u32,

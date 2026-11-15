@@ -1,5 +1,4 @@
 use binrw::binrw;
-use serde::{Deserialize, Serialize};
 
 use super::boma::BomaSection;
 use super::{read_bounded_vec, read_header_tail};
@@ -7,7 +6,9 @@ use super::{read_bounded_vec, read_header_tail};
 /// `lAma` (Artist List Master) header (typically 100 bytes).
 #[binrw]
 #[brw(little, magic = b"lAma")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LAmaHeader {
     /// Offset 4: Header size in bytes (typically 100, minimum 12).
     pub header_size: u32,
@@ -21,7 +22,9 @@ pub struct LAmaHeader {
 /// Complete `lAma` section with all `iAma` artist items.
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LAmaSection {
     /// The `lAma` list header.
     pub header: LAmaHeader,
@@ -33,7 +36,9 @@ pub struct LAmaSection {
 /// `iAma` (Artist Item) header (132 bytes in modern Apple Music, 120 in Catalina).
 #[binrw]
 #[brw(little, magic = b"iAma")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IAmaHeader {
     /// Offset 4: Header size in bytes (typically 132).
     pub header_size: u32,
@@ -84,7 +89,9 @@ pub struct IAmaHeader {
 /// Complete `iAma` section (header + `boma` children).
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IAmaSection {
     /// The `iAma` artist header.
     pub header: IAmaHeader,

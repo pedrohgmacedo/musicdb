@@ -1,20 +1,13 @@
-pub mod analysis;
 pub mod crypto;
-pub mod donate;
 pub mod error;
+/// High-level domain model for Apple Music libraries (`Library`, `Track`, `Album`, `Artist`, `Playlist`).
 pub mod model;
 pub mod sections;
+#[cfg(feature = "sqlite")]
 pub mod sqlite;
 
 pub use crypto::{
     DEFAULT_MUSICDB_KEY, compress_and_encrypt_bytes, decrypt_and_decompress_bytes, load_raw_musicdb,
-};
-pub use donate::{
-    DEFAULT_DONATED_LIBRARY_ARCHIVE, DEFAULT_DONATED_PREVIOUS_LIBRARIES_ARCHIVE,
-    DONATED_BUNDLE_DIRS, DONATED_BUNDLE_FILES, DonateReport, MEDIA_PREFERENCES_FILENAME,
-    discover_default_previous_libraries_path, find_media_preferences_plist,
-    find_musiclibrary_bundle, find_previous_libraries_dir, find_previous_libraries_for_bundle,
-    list_previous_library_bundles, package_donated_library, package_donated_previous_libraries,
 };
 pub use error::{MusicDbError, Result};
 pub use model::{
@@ -536,10 +529,13 @@ mod tests {
             Some("Rock")
         );
 
-        let tmp_sqlite = std::env::temp_dir().join("musicdb_synthetic_test.sqlite");
-        let _ = std::fs::remove_file(&tmp_sqlite);
-        lib.export_sqlite(&tmp_sqlite).expect("export_sqlite");
-        let _ = std::fs::remove_file(&tmp_sqlite);
+        #[cfg(feature = "sqlite")]
+        {
+            let tmp_dir = tempfile::tempdir().expect("create tempdir");
+            let tmp_sqlite = tmp_dir.path().join("musicdb_synthetic_test.sqlite");
+            lib.export_sqlite(&tmp_sqlite).expect("export_sqlite");
+            assert!(tmp_sqlite.is_file());
+        }
     }
 
     #[test]
@@ -652,88 +648,6 @@ mod tests {
                 .expect("Séries et films playlist");
             assert_eq!(tv.system_kind, DistinguishedPlaylistKind::TvAndMovies);
         }
-    }
-
-    #[test]
-    fn test_donate_library_and_previous_libraries() {
-        let tmp_root = std::env::temp_dir().join("musicdb_donate_test");
-        let _ = std::fs::remove_dir_all(&tmp_root);
-        let apple_music_dir = tmp_root.join("Apple Music");
-        let bundle_dir = apple_music_dir.join("Apple Music Library.musiclibrary");
-        let prefs_dir = bundle_dir.join("preferences");
-        let artwork_dir = bundle_dir.join("artwork");
-        let media_dir = apple_music_dir.join("Media");
-        let prev_dir = apple_music_dir
-            .join("Previous Libraries")
-            .join("Apple Music Library [2026-10-28].musiclibrary");
-
-        std::fs::create_dir_all(&prefs_dir).unwrap();
-        std::fs::create_dir_all(&artwork_dir).unwrap();
-        std::fs::create_dir_all(&media_dir).unwrap();
-        std::fs::create_dir_all(&prev_dir).unwrap();
-
-        std::fs::write(apple_music_dir.join(".Media Preferences.plist"), b"plist").unwrap();
-        std::fs::write(bundle_dir.join("Library.musicdb"), b"mdb").unwrap();
-        std::fs::write(bundle_dir.join("Library Preferences.musicdb"), b"pmdb").unwrap();
-        std::fs::write(bundle_dir.join("Preferences.plist"), b"prefs").unwrap();
-        std::fs::write(bundle_dir.join("artwork.sqlite"), b"sqlite").unwrap();
-        std::fs::write(bundle_dir.join("Extras.itdb"), b"extras").unwrap();
-        std::fs::write(bundle_dir.join("Genius.itdb"), b"genius").unwrap();
-        std::fs::write(prefs_dir.join("Songs.plist"), b"songs").unwrap();
-        // Should be excluded (artwork, media, and symlinks):
-        std::fs::write(artwork_dir.join("big_image.jpeg"), b"excluded").unwrap();
-        std::fs::write(media_dir.join("song.mp3"), b"excluded").unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(
-            media_dir.join("song.mp3"),
-            prefs_dir.join("symlink_secret.plist"),
-        )
-        .unwrap();
-
-        std::fs::write(prev_dir.join("Library.musicdb"), b"prev_mdb").unwrap();
-        std::fs::write(prev_dir.join("Preferences.plist"), b"prev_prefs").unwrap();
-
-        let found_bundle = find_musiclibrary_bundle(&apple_music_dir).expect("find bundle");
-        assert_eq!(found_bundle, bundle_dir);
-
-        let tar_lib = tmp_root.join(DEFAULT_DONATED_LIBRARY_ARCHIVE);
-        let lib_report = package_donated_library(&found_bundle, &tar_lib).expect("package library");
-        assert_eq!(lib_report.bundle_count, 1);
-        assert!(
-            lib_report
-                .archived_paths
-                .contains(&"Apple Music/.Media Preferences.plist".to_string())
-        );
-        assert!(
-            lib_report.archived_paths.contains(
-                &"Apple Music/Apple Music Library.musiclibrary/Library.musicdb".to_string()
-            )
-        );
-        assert!(lib_report.archived_paths.contains(
-            &"Apple Music/Apple Music Library.musiclibrary/preferences/Songs.plist".to_string()
-        ));
-        assert!(
-            !lib_report
-                .archived_paths
-                .iter()
-                .any(|p| p.contains("big_image.jpeg")
-                    || p.contains("song.mp3")
-                    || p.contains("symlink_secret.plist"))
-        );
-
-        let found_prev = find_previous_libraries_for_bundle(&found_bundle).expect("find prev");
-        let tar_prev = tmp_root.join(DEFAULT_DONATED_PREVIOUS_LIBRARIES_ARCHIVE);
-        let prev_report =
-            package_donated_previous_libraries(&found_prev, &tar_prev).expect("package prev");
-        assert_eq!(prev_report.bundle_count, 1);
-        assert!(
-            prev_report.archived_paths.contains(
-                &"Previous Libraries/Apple Music Library [2026-10-28].musiclibrary/Library.musicdb"
-                    .to_string()
-            )
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp_root);
     }
 
     #[test]

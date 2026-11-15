@@ -1,5 +1,4 @@
 use binrw::binrw;
-use serde::{Deserialize, Serialize};
 
 use super::boma::BomaSection;
 use super::{read_bounded_vec, read_header_tail};
@@ -7,7 +6,9 @@ use super::{read_bounded_vec, read_header_tail};
 /// `plma` (Library Master) header (typically 194 bytes in modern Apple Music, 160 in Catalina).
 #[binrw]
 #[brw(little, magic = b"plma")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlmaHeader {
     /// Offset 4: Header size in bytes (194 or 160, minimum 160).
     pub header_size: u32,
@@ -61,7 +62,9 @@ pub struct PlmaHeader {
 /// Complete `plma` section including its `boma` children.
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlmaSection {
     /// The `plma` library master header.
     pub header: PlmaHeader,
@@ -73,7 +76,9 @@ pub struct PlmaSection {
 /// Payload of `boma` subtype `0x01F6` under `plma` (20 bytes).
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlmaSub1F6 {
     /// Offset 0..4: Unknown 4-byte value (e.g. `01 00 14 00`).
     pub unk_0: [u8; 4],
@@ -84,7 +89,9 @@ pub struct PlmaSub1F6 {
 /// Payload of `boma` subtype `0x01FF` under `plma` (44 bytes).
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlmaSub1FF {
     /// Offset 0..8: Unknown (typically 1 as u64).
     pub unk_0: u64,

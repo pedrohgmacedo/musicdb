@@ -1,5 +1,4 @@
 use binrw::binrw;
-use serde::{Deserialize, Serialize};
 
 use super::boma::BomaSection;
 use super::{read_bounded_vec, read_header_tail};
@@ -7,7 +6,9 @@ use super::{read_bounded_vec, read_header_tail};
 /// `ltma` (Track List Master) header (typically 92 bytes).
 #[binrw]
 #[brw(little, magic = b"ltma")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LtmaHeader {
     /// Offset 4: Header size in bytes (typically 92, minimum 12).
     pub header_size: u32,
@@ -21,7 +22,9 @@ pub struct LtmaHeader {
 /// Complete `ltma` section with all `itma` track items.
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LtmaSection {
     /// The `ltma` list header.
     pub header: LtmaHeader,
@@ -33,7 +36,9 @@ pub struct LtmaSection {
 /// `itma` (Track Item) header (typically 376 bytes).
 #[binrw]
 #[brw(little, magic = b"itma")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ItmaHeader {
     /// Offset 4: Header size in bytes (typically 376).
     pub header_size: u32,
@@ -213,7 +218,9 @@ pub struct ItmaHeader {
 /// Complete `itma` section (header + `boma` children).
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ItmaSection {
     /// The `itma` track header.
     pub header: ItmaHeader,
@@ -226,7 +233,9 @@ pub struct ItmaSection {
 /// Note: Offsets here are relative to the start of the `boma` payload (subtract 20 from raw `boma` offsets).
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TrackNumerics {
     /// Offset 0..4: Global counter.
     pub global_counter: u32,
@@ -315,7 +324,7 @@ pub struct TrackNumerics {
     /// Offset 208..216: 64-bit Apple Music Store Album Artist ID (exceeds `u32::MAX` for modern artists).
     pub apple_music_store_album_artist_id: u64,
     /// Offset 216..256: Unknown 40 bytes.
-    #[serde(with = "crate::sections::hex_array")]
+    #[cfg_attr(feature = "serde", serde(with = "crate::sections::hex_array"))]
     pub unk_216_256: [u8; 40],
     /// Offset 256..264: Gapless playback total sample count (words 3..4 of `iTunSMPB`).
     pub gapless_total_samples: u64,
@@ -390,7 +399,9 @@ impl TrackNumerics {
 /// Payload of `boma` subtype `0x0017` (Track Play & Skip Statistics, 52 bytes).
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TrackPlaysSkips {
     /// Offset 0..8: Track Persistent ID.
     pub track_persistent_id: u64,
@@ -419,7 +430,9 @@ pub struct TrackPlaysSkips {
 /// Payload of `boma` subtype `0x0024` (Video Track Metadata, 84 bytes).
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VideoInfo {
     /// Offset 0..4: Vertical resolution (height in pixels).
     pub height: u32,

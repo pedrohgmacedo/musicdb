@@ -19,7 +19,6 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use binrw::{BinRead, BinResult, BinWrite, Endian, binrw};
-use serde::{Deserialize, Serialize};
 
 use crate::crypto::{DEFAULT_MUSICDB_KEY, compress_and_encrypt_bytes, load_raw_musicdb};
 use crate::error::{MusicDbError, Result};
@@ -143,7 +142,8 @@ where
 }
 
 /// Serde helper for fixed-size byte arrays larger than 32 bytes, encoded as lowercase hex strings.
-pub mod hex_array {
+#[cfg(feature = "serde")]
+pub(crate) mod hex_array {
     use serde::de::Error;
     use serde::{Deserializer, Serializer};
 
@@ -151,7 +151,7 @@ pub mod hex_array {
     ///
     /// # Errors
     /// Returns a serializer error if writing the string fails.
-    pub fn serialize<S, const N: usize>(
+    pub(crate) fn serialize<S, const N: usize>(
         bytes: &[u8; N],
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error>
@@ -165,7 +165,7 @@ pub mod hex_array {
     ///
     /// # Errors
     /// Returns a deserializer error if the input is not valid hex or does not decode to `N` bytes.
-    pub fn deserialize<'de, D, const N: usize>(
+    pub(crate) fn deserialize<'de, D, const N: usize>(
         deserializer: D,
     ) -> std::result::Result<[u8; N], D::Error>
     where
@@ -181,7 +181,9 @@ pub mod hex_array {
 /// `LPma` (Padding / Footer section at the end of recent libraries, subtype 17 of `hsma`).
 #[binrw]
 #[brw(little, magic = b"LPma")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LPmaPaddingSection {
     /// Offset 4: Section size in bytes (typically 96, minimum 8).
     pub section_size: u32,
@@ -191,7 +193,9 @@ pub struct LPmaPaddingSection {
 }
 
 /// A major `hsma` section boundary and its parsed child section tree.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HsmaSection {
     /// The `hsma` boundary header (`56` bytes in standard libraries).
     pub header: HsmaHeader,
@@ -200,7 +204,9 @@ pub struct HsmaSection {
 }
 
 /// Child section inside an `hsma` boundary.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HsmaChild {
     /// Subtype 3: Inner `hfma` header.
     InnerHfma(HfmaHeader),
@@ -413,7 +419,9 @@ impl BinWrite for HsmaSection {
 
 /// Complete Layer-1 Raw AST of a `.musicdb` file.
 /// Preserves 100% of bytes for lossless round-tripping and unknown-byte analysis.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RawLibraryFile {
     /// Outer uncompressed `hfma` envelope header.
     pub outer_header: HfmaHeader,

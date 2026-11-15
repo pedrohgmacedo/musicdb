@@ -1,7 +1,6 @@
 use std::io::{Cursor, Read, Seek, Write};
 
 use binrw::{BinRead, BinResult, BinWrite, Endian, binrw};
-use serde::{Deserialize, Serialize};
 
 use super::boma::BomaSection;
 use super::{read_bounded_vec, read_header_tail, remaining_stream_bytes};
@@ -11,7 +10,9 @@ use crate::model::SmartOperatorFlags;
 /// `lPma` (Playlist List Master) header (typically 92 bytes).
 #[binrw]
 #[brw(little, magic = b"lPma")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LPmaHeader {
     /// Offset 4: Header size in bytes (typically 92, minimum 12).
     pub header_size: u32,
@@ -25,7 +26,9 @@ pub struct LPmaHeader {
 /// Complete `lPma` section with all `lpma` playlist items.
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LPmaSection {
     /// The `lPma` list header.
     pub header: LPmaHeader,
@@ -37,7 +40,9 @@ pub struct LPmaSection {
 /// `lpma` (Playlist Item) header (typically 368 bytes in modern Apple Music, 324 in Catalina).
 #[binrw]
 #[brw(little, magic = b"lpma")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LpmaHeader {
     /// Offset 4: Header size in bytes (typically 368).
     pub header_size: u32,
@@ -74,7 +79,7 @@ pub struct LpmaHeader {
     /// Offset 78..82: Special / Distinguished Kind bytes (e.g. offset 79: 4=Music, 19=Purchases, 26=Genius, 47=Music Videos, 64=TV & Movies, 65=Downloaded).
     pub distinguished_kind_bytes: [u8; 4],
     /// Offset 82..138: Unknown 56 bytes.
-    #[serde(with = "crate::sections::hex_array")]
+    #[cfg_attr(feature = "serde", serde(with = "crate::sections::hex_array"))]
     pub unk_82_138: [u8; 56],
     /// Offset 138..142: Playlist modification date (Apple timestamp).
     pub date_modified: u32,
@@ -158,7 +163,9 @@ pub struct LpmaHeader {
 /// Complete `lpma` section (header + `boma` children).
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LpmaSection {
     /// The `lpma` playlist header.
     pub header: LpmaHeader,
@@ -170,7 +177,9 @@ pub struct LpmaSection {
 /// Payload of `boma` subtype `0x00CE` (`ipfa` Playlist Track Item, typically 68 bytes).
 #[binrw]
 #[brw(little, magic = b"ipfa")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IpfaSection {
     /// Offset 4: Section size in bytes (typically 68, minimum 52).
     pub section_size: u32,
@@ -194,7 +203,9 @@ pub struct IpfaSection {
 /// Payload of `boma` subtype `0x00DA` (`IPfa` Compact Playlist Track Item introduced in format 23.1, typically 32 bytes).
 #[binrw]
 #[brw(little, magic = b"IPfa")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IPfaSection {
     /// Offset 4: Section size in bytes (typically 32, minimum 24).
     pub section_size: u32,
@@ -210,7 +221,9 @@ pub struct IPfaSection {
 /// Payload of `boma` subtype `0x00CA` (Smart Playlist Options, 112 bytes).
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SmartPlaylistOptions {
     /// Offset 0: Checkbox "Live updating" (0 or 1).
     pub checkbox_live_updating: u8,
@@ -237,14 +250,16 @@ pub struct SmartPlaylistOptions {
     /// Offset 16: Unknown byte (typically 7).
     pub unk_16: u8,
     /// Offset 17..112: Remaining 95 bytes.
-    #[serde(with = "crate::sections::hex_array")]
+    #[cfg_attr(feature = "serde", serde(with = "crate::sections::hex_array"))]
     pub unk_17_112: [u8; 95],
 }
 
 /// Payload of `boma` subtype `0x00C9` (`SLst` Smart Playlist Rules List, 136-byte BIG-ENDIAN header + rules).
 #[binrw]
 #[brw(big, magic = b"SLst")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SlstSection {
     /// Offset 4..8: Unknown version/flags (typically `0x00010001`).
     pub unk_4: u32,
@@ -253,7 +268,7 @@ pub struct SlstSection {
     /// Offset 12..16: Conjunction (`0` = Match ALL, `1` = Match ANY) (Big-Endian).
     pub conjunction: u32,
     /// Offset 16..136: 120 bytes of header padding (typically zeros).
-    #[serde(with = "crate::sections::hex_array")]
+    #[cfg_attr(feature = "serde", serde(with = "crate::sections::hex_array"))]
     pub unk_16_136: [u8; 120],
     /// Child rules.
     #[br(parse_with = read_bounded_vec, args(rule_count, 56, "SLst.rules"))]
@@ -261,7 +276,9 @@ pub struct SlstSection {
 }
 
 /// A single Smart Playlist Rule inside `SLst` (56-byte BIG-ENDIAN header + variable-length child).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SmartPlaylistRule {
     /// Offset 0..4: Field ID (Big-Endian; 0 = nested `SLst`).
     pub field_id: u32,
@@ -282,7 +299,9 @@ pub struct SmartPlaylistRule {
 }
 
 /// Parsed child payload of a [`SmartPlaylistRule`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SmartRuleChild {
     /// Nested `SLst` rule group.
     Nested(Box<SlstSection>),
@@ -302,7 +321,9 @@ pub enum SmartRuleChild {
 /// 68-byte Big-Endian arguments block for a `SmartPlaylistRule`.
 #[binrw]
 #[brw(big)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SmartPlaylistRuleArguments {
     /// Offset 0..8: Primary comparison value (integer, timestamp, enum value, or playlist persistent ID).
     pub arg_0: i64,
