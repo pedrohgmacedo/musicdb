@@ -162,10 +162,11 @@ fn diff_plma(
 }
 
 fn encode_boma_body_hex(boma: &BomaSection) -> String {
-    serialize_le(boma)
-        .get(20..)
-        .map(hex::encode)
-        .unwrap_or_default()
+    let bytes = serialize_le(boma);
+    let Some(body) = bytes.get(20..) else {
+        return String::new();
+    };
+    hex::encode(body)
 }
 
 fn diff_albums(
