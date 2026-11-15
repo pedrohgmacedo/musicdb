@@ -2,6 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/musicdb.svg)](https://crates.io/crates/musicdb)
 [![docs.rs](https://docs.rs/musicdb/badge.svg)](https://docs.rs/musicdb/latest/musicdb/)
+[![CI](https://img.shields.io/github/actions/workflow/status/pedrohgmacedo/musicdb/ci.yml?branch=master&label=CI)](https://github.com/pedrohgmacedo/musicdb/actions/workflows/ci.yml)
 
 A parser, domain model, SQLite/JSON exporter, and reverse-engineering library and cli tool for Apple Music `.musiclibrary` bundles (`Library.musicdb`, `Library Preferences.musicdb`, and `preferences/*.plist`).
 
