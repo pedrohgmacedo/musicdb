@@ -140,4 +140,144 @@ impl HsmaHeader {
             self.total_size_64
         }
     }
+
+    /// Returns the typed [`SectionKind`] for this header's `subtype`.
+    #[must_use]
+    pub fn kind(&self) -> SectionKind {
+        SectionKind::from(self.subtype)
+    }
+}
+
+/// Typed identifier for an `hsma` container section's `subtype` field.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SectionKind {
+    /// Subtype 1: Track list (`ltma`).
+    TrackList,
+    /// Subtype 2: Playlist list (`lPma`).
+    PlaylistList,
+    /// Subtype 3: Inner file header (`hfma`).
+    InnerHfma,
+    /// Subtype 4: Album list (`lama`).
+    AlbumList,
+    /// Subtype 5: Artist list (`lAma`).
+    ArtistList,
+    /// Subtype 6: Library master (`plma`).
+    LibraryMaster,
+    /// Subtype 10: Trailer signature / hash.
+    Trailer,
+    /// Subtype 15: Social profile list (`Lsma`).
+    SocialProfileList,
+    /// Subtype 17: Padding / footer (`LPma`).
+    Padding,
+    /// Unrecognized `hsma` subtype value, preserved losslessly.
+    Unknown(u32),
+}
+
+impl From<u32> for SectionKind {
+    fn from(subtype: u32) -> Self {
+        match subtype {
+            1 => Self::TrackList,
+            2 => Self::PlaylistList,
+            3 => Self::InnerHfma,
+            4 => Self::AlbumList,
+            5 => Self::ArtistList,
+            6 => Self::LibraryMaster,
+            10 => Self::Trailer,
+            15 => Self::SocialProfileList,
+            17 => Self::Padding,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl From<SectionKind> for u32 {
+    fn from(kind: SectionKind) -> Self {
+        match kind {
+            SectionKind::TrackList => 1,
+            SectionKind::PlaylistList => 2,
+            SectionKind::InnerHfma => 3,
+            SectionKind::AlbumList => 4,
+            SectionKind::ArtistList => 5,
+            SectionKind::LibraryMaster => 6,
+            SectionKind::Trailer => 10,
+            SectionKind::SocialProfileList => 15,
+            SectionKind::Padding => 17,
+            SectionKind::Unknown(raw) => raw,
+        }
+    }
+}
+
+impl std::fmt::Display for SectionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TrackList => f.write_str("TrackList"),
+            Self::PlaylistList => f.write_str("PlaylistList"),
+            Self::InnerHfma => f.write_str("InnerHfma"),
+            Self::AlbumList => f.write_str("AlbumList"),
+            Self::ArtistList => f.write_str("ArtistList"),
+            Self::LibraryMaster => f.write_str("LibraryMaster"),
+            Self::Trailer => f.write_str("Trailer"),
+            Self::SocialProfileList => f.write_str("SocialProfileList"),
+            Self::Padding => f.write_str("Padding"),
+            Self::Unknown(raw) => write!(f, "Unknown({raw})"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn section_kind_round_trips_all_known_and_unknown_subtypes() {
+        let known = [
+            (1, SectionKind::TrackList, "TrackList"),
+            (2, SectionKind::PlaylistList, "PlaylistList"),
+            (3, SectionKind::InnerHfma, "InnerHfma"),
+            (4, SectionKind::AlbumList, "AlbumList"),
+            (5, SectionKind::ArtistList, "ArtistList"),
+            (6, SectionKind::LibraryMaster, "LibraryMaster"),
+            (10, SectionKind::Trailer, "Trailer"),
+            (15, SectionKind::SocialProfileList, "SocialProfileList"),
+            (17, SectionKind::Padding, "Padding"),
+        ];
+
+        for (raw, expected_kind, expected_display) in known {
+            let kind = SectionKind::from(raw);
+            assert_eq!(kind, expected_kind);
+            assert_eq!(u32::from(kind), raw);
+            assert_eq!(kind.to_string(), expected_display);
+        }
+
+        for unknown_raw in [0, 7, 99, u32::MAX] {
+            let kind = SectionKind::from(unknown_raw);
+            assert_eq!(kind, SectionKind::Unknown(unknown_raw));
+            assert_eq!(u32::from(kind), unknown_raw);
+            assert_eq!(kind.to_string(), format!("Unknown({unknown_raw})"));
+        }
+    }
+
+    #[test]
+    fn hsma_header_kind_matches_subtype() {
+        let header = HsmaHeader {
+            header_size: 56,
+            total_size: 56,
+            subtype: 4,
+            total_size_64: 0,
+            unk_24_end: Unknown::new(vec![0; 32]),
+        };
+        assert_eq!(header.kind(), SectionKind::AlbumList);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn section_kind_serde_round_trip() {
+        for kind in [SectionKind::TrackList, SectionKind::Unknown(42)] {
+            let json = serde_json::to_string(&kind).expect("serialize SectionKind");
+            let parsed: SectionKind = serde_json::from_str(&json).expect("deserialize SectionKind");
+            assert_eq!(parsed, kind);
+        }
+    }
 }

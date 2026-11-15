@@ -29,7 +29,7 @@ use crate::error::{MusicDbError, Result};
 pub use album::{AlbumItem, AlbumItemHeader, AlbumListHeader, AlbumListSection};
 pub use artist::{ArtistItem, ArtistItemHeader, ArtistListHeader, ArtistListSection};
 pub use boma::{BomaPayload, BomaSection, BomaStringSection};
-pub use header::{HfmaHeader, HsmaHeader};
+pub use header::{HfmaHeader, HsmaHeader, SectionKind};
 pub use library_master::{LibraryMasterHeader, LibraryMasterSection, PlmaSub1F6, PlmaSub1FF};
 pub use playlist::{
     CompactPlaylistTrackItem, PlaylistItem, PlaylistItemHeader, PlaylistListHeader,
@@ -223,16 +223,17 @@ pub enum HsmaChild {
 }
 
 impl HsmaSection {
-    /// Reads an `HsmaSection` from `reader`, parsing its child section when `include_subtype(subtype)`
+    /// Reads an `HsmaSection` from `reader`, parsing its child section when `include_kind(header.kind())`
     /// returns `true`, or preserving the child bytes inside [`HsmaChild::Skipped`] when `false`.
-    pub(crate) fn read_filtered<R, F>(reader: &mut R, include_subtype: &F) -> BinResult<Self>
+    pub(crate) fn read_filtered<R, F>(reader: &mut R, include_kind: &F) -> BinResult<Self>
     where
         R: Read + Seek,
-        F: Fn(u32) -> bool,
+        F: Fn(SectionKind) -> bool,
     {
         let start_pos = reader.stream_position()?;
         let header = HsmaHeader::read_le(reader)?;
         let subtype = header.subtype;
+        let kind = header.kind();
         let total_size = header.effective_total_size();
         let header_size_u64 = u64::from(header.header_size);
         let child_pos = reader.stream_position()?;
@@ -274,7 +275,7 @@ impl HsmaSection {
         let mut child_bytes = vec![0u8; child_len];
         reader.read_exact(&mut child_bytes)?;
 
-        if !include_subtype(subtype) {
+        if !include_kind(kind) {
             return Ok(Self {
                 header,
                 child: HsmaChild::Skipped {
@@ -463,18 +464,18 @@ impl RawLibraryFile {
         Self::from_raw_bytes(&raw_bytes)
     }
 
-    /// Parses only selected `hsma` section subtypes from a `.musicdb` file (or `.musiclibrary` bundle),
+    /// Parses only selected `hsma` section kinds from a `.musicdb` file (or `.musiclibrary` bundle),
     /// storing unselected sections as [`HsmaChild::Skipped`] so serialization remains 100% lossless.
     ///
     /// # Errors
     /// Returns [`MusicDbError`] if reading, decrypting, decompressing, or parsing fails.
-    pub fn open_filtered<F>(path: impl AsRef<Path>, include_subtype: F) -> Result<Self>
+    pub fn open_filtered<F>(path: impl AsRef<Path>, include_kind: F) -> Result<Self>
     where
-        F: Fn(u32) -> bool,
+        F: Fn(SectionKind) -> bool,
     {
         let mdb_path = Self::resolve_musicdb_path(path);
         let raw_bytes = load_raw_musicdb(mdb_path)?;
-        Self::from_raw_bytes_filtered(&raw_bytes, include_subtype)
+        Self::from_raw_bytes_filtered(&raw_bytes, include_kind)
     }
 
     /// Parses already-decrypted and decompressed raw `.musicdb` bytes.
@@ -486,13 +487,13 @@ impl RawLibraryFile {
     }
 
     /// Parses already-decrypted and decompressed raw `.musicdb` bytes, storing `hsma` sections where
-    /// `include_subtype(subtype)` is `false` as [`HsmaChild::Skipped`] so round-tripping stays lossless.
+    /// `include_kind(kind)` is `false` as [`HsmaChild::Skipped`] so round-tripping stays lossless.
     ///
     /// # Errors
     /// Returns [`MusicDbError`] if any header or section boundary is malformed or truncated.
-    pub fn from_raw_bytes_filtered<F>(raw_bytes: &[u8], include_subtype: F) -> Result<Self>
+    pub fn from_raw_bytes_filtered<F>(raw_bytes: &[u8], include_kind: F) -> Result<Self>
     where
-        F: Fn(u32) -> bool,
+        F: Fn(SectionKind) -> bool,
     {
         let mut cur = Cursor::new(raw_bytes);
         let outer_header = HfmaHeader::read_le(&mut cur)?;
@@ -503,7 +504,7 @@ impl RawLibraryFile {
                 break;
             };
             if next_four == b"hsma" {
-                let hsma = HsmaSection::read_filtered(&mut cur, &include_subtype)?;
+                let hsma = HsmaSection::read_filtered(&mut cur, &include_kind)?;
                 sections.push(hsma);
             } else {
                 break;

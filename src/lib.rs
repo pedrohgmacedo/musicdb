@@ -22,7 +22,7 @@ pub use model::{
     SortModeFlags, SuggestionFlag, SuggestionFlags, Track, TrackSortModes,
     discover_default_library_path,
 };
-pub use sections::{AppleTimestamp, RawLibraryFile};
+pub use sections::{AppleTimestamp, RawLibraryFile, SectionKind};
 
 #[cfg(test)]
 mod tests {
@@ -515,9 +515,10 @@ mod tests {
         assert_eq!(parsed_raw.to_raw_bytes().unwrap(), decrypted_raw);
 
         // Verify filtered parsing preserves 100% lossless round-trip via HsmaChild::Skipped
-        let parsed_filtered =
-            RawLibraryFile::from_raw_bytes_filtered(&decrypted_raw, |subtype| subtype != 1)
-                .expect("parse synthetic filtered");
+        let parsed_filtered = RawLibraryFile::from_raw_bytes_filtered(&decrypted_raw, |kind| {
+            kind != SectionKind::TrackList
+        })
+        .expect("parse synthetic filtered");
         assert!(
             parsed_filtered
                 .sections
