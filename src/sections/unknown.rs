@@ -14,7 +14,6 @@ use super::read_header_tail;
 /// settled format fields at the type level and enables automatic traversal via
 /// [`VisitUnknowns`].
 #[repr(transparent)]
-#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Unknown<T>(pub T);
 

@@ -14,7 +14,6 @@ pub(crate) const APPLE_TO_UNIX_EPOCH_OFFSET: i64 = 2_082_844_800;
 /// or `2` on local `TrackNumerics[0].date_cloud_synced`) by [`AppleTimestamp::to_utc`].
 #[binrw]
 #[repr(transparent)]
-#[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
