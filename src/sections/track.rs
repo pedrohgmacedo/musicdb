@@ -2,6 +2,7 @@ use binrw::binrw;
 
 use super::boma::BomaSection;
 use super::read_bounded_vec;
+use super::timestamp::AppleTimestamp;
 use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
 
 /// Track list master header (`ltma`, typically 92 bytes).
@@ -215,7 +216,7 @@ pub struct TrackItemHeader {
     /// Offset 332..336: Unknown 4 bytes.
     pub unk_332: Unknown<u32>,
     /// Offset 336..340: Suggestion flag modified date (Apple timestamp).
-    pub date_suggestion_flag_modified: u32,
+    pub date_suggestion_flag_modified: AppleTimestamp,
     /// Offset 340..344: Unknown 4 bytes.
     pub unk_340: Unknown<u32>,
     /// Offset 344..348: Artwork cache size kind in `artwork.sqlite` (`cache_items.size_kind`; 1 = `_sk1`, 0 = none).
@@ -223,7 +224,7 @@ pub struct TrackItemHeader {
     /// Offset 348..352: Artwork cached image format in `artwork.sqlite` (`cache_items.extension`; 1 = `jpeg`, 2 = `png`, 0 = none).
     pub artwork_image_format: u32,
     /// Offset 352..356: Date added of the most recently added track (only set on that track, else 0).
-    pub date_added_most_recent_track: u32,
+    pub date_added_most_recent_track: AppleTimestamp,
     /// Offset 356..376: Unknown 20 bytes.
     pub unk_356_376: Unknown<[u8; 20]>,
     /// Any extra bytes if `header_size > 376`.
@@ -346,7 +347,7 @@ pub struct TrackNumerics {
     /// Offset 88..92: Bit rate in kbps (matches iTunes XML `Bit Rate`).
     pub bit_rate: u32,
     /// Offset 92..96: Date Added (Apple local timestamp; non-zero iff track is in Master Playlist `####!####`).
-    pub date_added: u32,
+    pub date_added: AppleTimestamp,
     /// Offset 96..108: Unknown 12 bytes.
     pub unk_96_108: Unknown<[u8; 12]>,
     /// Offset 108..112: Gapless playback encoder delay in samples (word 1 of `iTunSMPB`, e.g. 2112 for AAC or 576 for LAME MP3).
@@ -360,13 +361,13 @@ pub struct TrackNumerics {
     /// Offset 124..128: Custom lyrics checksum/hash (0 if no custom lyrics).
     pub custom_lyrics_hash: u32,
     /// Offset 128..132: Date Modified (Apple local timestamp).
-    pub date_modified: u32,
+    pub date_modified: AppleTimestamp,
     /// Offset 132..136: Volume normalization (Sound Check / iTunes XML `Normalization`, `iTunNORM`).
     pub normalization: u32,
     /// Offset 136..140: Purchase Date (Apple timestamp).
-    pub date_purchased: u32,
+    pub date_purchased: AppleTimestamp,
     /// Offset 140..144: Release Date (Apple UTC timestamp).
-    pub date_released: u32,
+    pub date_released: AppleTimestamp,
     /// Offset 144..148: Cloud codec kind (`2` = `"mp4a"` MPEG-4 audio, `3` = `"mpeg"` MP3 audio, `0` on local file subrecords and video).
     pub cloud_codec_kind: u32,
     /// Offset 148..152: Codec/Subtype `FourCC` in little-endian (e.g. `0x6D703461` = `"mp4a"`, `0x6D706567` = `"mpeg"`).
@@ -424,7 +425,7 @@ pub struct TrackNumerics {
     /// Offset 348..356: 64-bit Apple Music / iTunes Store Track `adamId` repeated.
     pub store_track_adam_id_4: u64,
     /// Offset 356..360: Cloud sync timestamp (Apple UTC timestamp, or 2 on local asset).
-    pub date_cloud_synced: u32,
+    pub date_cloud_synced: AppleTimestamp,
     /// Offset 360..364: Unknown 4 bytes.
     pub unk_360: Unknown<u32>,
 }
@@ -498,17 +499,17 @@ pub struct TrackPlaysSkips {
     /// Offset 0..8: Track Persistent ID.
     pub track_persistent_id: u64,
     /// Offset 8..12: Last played date (Apple timestamp, 0 if never or reset).
-    pub date_last_played: u32,
+    pub date_last_played: AppleTimestamp,
     /// Offset 12..16: Play count (can be reset in GUI).
     pub play_count: u32,
     /// Offset 16..20: True play count (not affected by GUI reset).
     pub true_play_count: u32,
     /// Offset 20..24: First ever played date in UTC (Apple timestamp).
-    pub date_first_played_utc: u32,
+    pub date_first_played_utc: AppleTimestamp,
     /// Offset 24..28: Unknown 4 bytes.
     pub unk_24: Unknown<u32>,
     /// Offset 28..32: Last skipped date (Apple timestamp).
-    pub date_last_skipped: u32,
+    pub date_last_skipped: AppleTimestamp,
     /// Offset 32..36: Skip count.
     pub skip_count: u32,
     /// Offset 36..40: True skip count.

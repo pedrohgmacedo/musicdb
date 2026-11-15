@@ -2,6 +2,7 @@ use binrw::binrw;
 
 use super::boma::BomaSection;
 use super::read_bounded_vec;
+use super::timestamp::AppleTimestamp;
 use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
 
 /// Album list master header (`lama`, typically 48 bytes).
@@ -89,9 +90,9 @@ pub struct AlbumItemHeader {
     /// Offset 72..96: Unknown 24 bytes (all zeros).
     pub unk_72_96: Unknown<[u8; 24]>,
     /// Offset 96..100: Suggestion flag modified date (Apple timestamp).
-    pub date_suggestion_flag_modified: u32,
+    pub date_suggestion_flag_modified: AppleTimestamp,
     /// Offset 100..104: Most recent last-played date of any track in the album (Apple timestamp).
-    pub date_last_played: u32,
+    pub date_last_played: AppleTimestamp,
     /// Offset 104..112: 64-bit Apple Music Store Album ID (`plID` atom, present when `header_size >= 112`).
     #[br(if(header_size >= 112))]
     pub apple_music_store_album_id: Option<u64>,
@@ -100,10 +101,10 @@ pub struct AlbumItemHeader {
     pub apple_music_store_album_id_2: Option<u64>,
     /// Offset 120..124: Cloud sync timestamp (UTC Apple timestamp, or 2 on local-only albums; present when `header_size >= 124`).
     #[br(if(header_size >= 124))]
-    pub date_cloud_synced: Option<u32>,
+    pub date_cloud_synced: Option<AppleTimestamp>,
     /// Offset 124..128: Album release date (UTC Apple timestamp; present when `header_size >= 128`).
     #[br(if(header_size >= 128))]
-    pub date_released: Option<u32>,
+    pub date_released: Option<AppleTimestamp>,
     /// Remaining bytes up to `header_size` (`128..140` or `128..156`, all zeros).
     #[br(parse_with = read_unknown_tail, args(header_size, AlbumItemHeader::tail_start_offset(header_size), "iama"))]
     pub unk_tail: Unknown<Vec<u8>>,

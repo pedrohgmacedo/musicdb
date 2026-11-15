@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use bitflags::bitflags;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 
 use crate::error::{MusicDbError, Result};
 use crate::sections::{
-    AlbumItem, ArtistItem, BomaPayload, BomaSection, HsmaChild, LibraryMasterSection, PlaylistItem,
-    RawLibraryFile, SlstSection, SmartPlaylistOptions, SmartPlaylistRule, SmartRuleChild,
-    SocialProfileItem, TrackItem, TrackNumerics,
+    AlbumItem, AppleTimestamp, ArtistItem, BomaPayload, BomaSection, HsmaChild,
+    LibraryMasterSection, PlaylistItem, RawLibraryFile, SlstSection, SmartPlaylistOptions,
+    SmartPlaylistRule, SmartRuleChild, SocialProfileItem, TrackItem, TrackNumerics,
 };
 
 /// Seconds between 1904-01-01 00:00:00 UTC (Apple/Mac HFS+ epoch) and 1970-01-01 00:00:00 UTC (Unix epoch).
@@ -22,11 +22,7 @@ pub const APPLE_TO_UNIX_EPOCH_OFFSET: i64 = 2_082_844_800;
 /// Returns `None` if `apple_ts < 86_400` (0 or small non-timestamp sentinel values such as `2` on local `TrackNumerics[0].date_cloud_synced`).
 #[must_use]
 pub fn apple_timestamp_to_utc(apple_ts: u32) -> Option<DateTime<Utc>> {
-    if apple_ts < 86_400 {
-        return None;
-    }
-    let unix_secs = i64::from(apple_ts) - APPLE_TO_UNIX_EPOCH_OFFSET;
-    Utc.timestamp_opt(unix_secs, 0).single()
+    AppleTimestamp::new(apple_ts).to_utc()
 }
 
 /// Formats a 64-bit Persistent ID as a 16-character uppercase hexadecimal string (matching `iTunes Music Library.xml`).
@@ -2606,7 +2602,7 @@ impl From<&RawLibraryFile> for Library {
             declared_playlist_count: h.playlist_count,
             timezone_offset_seconds: h.timezone_offset_seconds,
             apple_store_account_id: h.apple_store_account_id,
-            date_modified: apple_timestamp_to_utc(h.date_modified),
+            date_modified: h.date_modified.to_utc(),
             show_song_list_checkboxes: None,
             keep_media_folder_organized: None,
             copy_files_to_media_folder: None,
@@ -2776,10 +2772,10 @@ impl From<&AlbumItem> for Album {
             star_rating_is_computed: h.star_rating_inheritance == 0x20,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
             suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
-            date_suggestion_flag_modified: apple_timestamp_to_utc(h.date_suggestion_flag_modified),
-            date_last_played: apple_timestamp_to_utc(h.date_last_played),
-            date_cloud_synced: h.date_cloud_synced.and_then(apple_timestamp_to_utc),
-            date_released: h.date_released.and_then(apple_timestamp_to_utc),
+            date_suggestion_flag_modified: h.date_suggestion_flag_modified.to_utc(),
+            date_last_played: h.date_last_played.to_utc(),
+            date_cloud_synced: h.date_cloud_synced.and_then(AppleTimestamp::to_utc),
+            date_released: h.date_released.and_then(AppleTimestamp::to_utc),
             apple_music_store_album_id: h.apple_music_store_album_id.filter(|&id| id != 0),
         }
     }
@@ -2814,8 +2810,8 @@ impl From<&ArtistItem> for Artist {
             cloud_artist_id,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
             suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
-            date_suggestion_flag_modified: apple_timestamp_to_utc(h.date_suggestion_flag_modified),
-            date_cloud_synced: h.date_cloud_synced.and_then(apple_timestamp_to_utc),
+            date_suggestion_flag_modified: h.date_suggestion_flag_modified.to_utc(),
+            date_cloud_synced: h.date_cloud_synced.and_then(AppleTimestamp::to_utc),
             apple_music_store_artist_id: if h.apple_music_store_artist_id != 0 {
                 h.apple_music_store_artist_id
             } else {
@@ -2899,9 +2895,9 @@ fn apply_track_boma(track: &mut Track, boma: &BomaSection) {
                 track.true_play_count = Some(ps.true_play_count);
                 track.skip_count = Some(ps.skip_count);
                 track.true_skip_count = Some(ps.true_skip_count);
-                track.date_last_played = apple_timestamp_to_utc(ps.date_last_played);
-                track.date_first_played_utc = apple_timestamp_to_utc(ps.date_first_played_utc);
-                track.date_last_skipped = apple_timestamp_to_utc(ps.date_last_skipped);
+                track.date_last_played = ps.date_last_played.to_utc();
+                track.date_first_played_utc = ps.date_first_played_utc.to_utc();
+                track.date_last_skipped = ps.date_last_skipped.to_utc();
             }
         }
         BomaPayload::Book { extracted_path, .. } => {
@@ -2936,10 +2932,10 @@ fn apply_primary_track_numerics(track: &mut Track, num: &TrackNumerics) {
         (num.gapless_last_eight_frames_offset != 0).then_some(num.gapless_last_eight_frames_offset);
     track.store_genre_id = (num.store_genre_id != 0).then_some(num.store_genre_id);
     track.custom_lyrics_hash = (num.custom_lyrics_hash != 0).then_some(num.custom_lyrics_hash);
-    track.date_added = apple_timestamp_to_utc(num.date_added);
-    track.date_modified = apple_timestamp_to_utc(num.date_modified);
-    track.date_purchased = apple_timestamp_to_utc(num.date_purchased);
-    if num.date_purchased != 0
+    track.date_added = num.date_added.to_utc();
+    track.date_modified = num.date_modified.to_utc();
+    track.date_purchased = num.date_purchased.to_utc();
+    if !num.date_purchased.is_zero()
         || (num.subrecord_kind == 1
             && (num.store_track_adam_id != 0 || num.storefront_id != 0)
             && num.is_itunes_matched == [0, 0]
@@ -2947,8 +2943,8 @@ fn apply_primary_track_numerics(track: &mut Track, num: &TrackNumerics) {
     {
         track.purchased = true;
     }
-    track.date_released = apple_timestamp_to_utc(num.date_released);
-    track.date_cloud_synced = apple_timestamp_to_utc(num.date_cloud_synced);
+    track.date_released = num.date_released.to_utc();
+    track.date_cloud_synced = num.date_cloud_synced.to_utc();
     track.is_itunes_matched = Some(num.is_itunes_matched != [0, 0]);
     track.is_apple_music_catalog = Some(num.is_apple_music_catalog != 0);
     if num.store_track_adam_id != 0 {
@@ -2975,13 +2971,13 @@ fn apply_primary_track_numerics(track: &mut Track, num: &TrackNumerics) {
 
 fn apply_secondary_track_numerics(track: &mut Track, num: &TrackNumerics) {
     if track.date_cloud_synced.is_none() {
-        track.date_cloud_synced = apple_timestamp_to_utc(num.date_cloud_synced);
+        track.date_cloud_synced = num.date_cloud_synced.to_utc();
     }
     if track.date_released.is_none() {
-        track.date_released = apple_timestamp_to_utc(num.date_released);
+        track.date_released = num.date_released.to_utc();
     }
-    if track.date_purchased.is_none() && num.date_purchased != 0 {
-        track.date_purchased = apple_timestamp_to_utc(num.date_purchased);
+    if track.date_purchased.is_none() && !num.date_purchased.is_zero() {
+        track.date_purchased = num.date_purchased.to_utc();
         track.purchased = true;
     }
     if track.artwork_count.unwrap_or(0) == 0 && num.artwork_count != 0 {
@@ -3132,14 +3128,14 @@ impl From<&PlaylistItem> for Playlist {
             show_in_profile_and_search: h.checkbox_show_in_profile_and_search != 0,
             system_kind,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
-            date_created: apple_timestamp_to_utc(h.date_created),
-            date_modified: apple_timestamp_to_utc(h.date_modified),
-            date_last_played: apple_timestamp_to_utc(h.date_last_played),
-            date_cloud_published: apple_timestamp_to_utc(h.date_cloud_published),
+            date_created: h.date_created.to_utc(),
+            date_modified: h.date_modified.to_utc(),
+            date_last_played: h.date_last_played.to_utc(),
+            date_cloud_published: h.date_cloud_published.to_utc(),
             date_cloud_synced: h
                 .date_suggestion_flag_modified
                 .or(h.date_cloud_synced_2)
-                .and_then(apple_timestamp_to_utc),
+                .and_then(AppleTimestamp::to_utc),
             play_count: h.play_count,
             true_play_count: h.true_play_count,
             refresh_interval_seconds: h.refresh_interval_seconds,

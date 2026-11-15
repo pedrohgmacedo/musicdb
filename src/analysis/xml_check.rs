@@ -265,7 +265,7 @@ fn compare_xml_special_numerics(
     {
         // In iTunes XML, "Play Date" is seconds since 1904-01-01 in local time.
         let ps_date = itma.bomas.iter().find_map(|b| match &b.payload {
-            BomaPayload::TrackPlaysSkips(ps) => Some(ps.date_last_played),
+            BomaPayload::TrackPlaysSkips(ps) => Some(ps.date_last_played.raw()),
             _ => None,
         });
         record_match(

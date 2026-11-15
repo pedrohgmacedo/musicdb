@@ -2,6 +2,7 @@
 
 use binrw::binrw;
 
+use super::timestamp::AppleTimestamp;
 use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
 
 /// Outer and Inner `hfma` (File Header) section (typically 160 bytes).
@@ -44,7 +45,7 @@ pub struct HfmaHeader {
     /// Offset 92..100: Apple Store account ID (0 when not signed in).
     pub apple_store_account_id: u64,
     /// Offset 100..104: Library modification date (seconds since 1904-01-01 00:00:00 UTC).
-    pub date_modified: u32,
+    pub date_modified: AppleTimestamp,
     /// Offset 104..108: Unknown (typically 1 in outer, 0 in inner).
     pub unk_104: Unknown<u32>,
     /// Offset 108..116: Original iTunes Library Persistent ID (if imported from iTunes).

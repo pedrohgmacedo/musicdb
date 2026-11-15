@@ -12,6 +12,8 @@ pub mod library_master;
 pub mod playlist;
 /// `Lsma` and `isma` social profile binary structures.
 pub mod social;
+/// `AppleTimestamp` newtype for 32-bit HFS+ epoch timestamps.
+pub mod timestamp;
 /// `ltma`, `itma`, and `TrackNumerics` track binary structures.
 pub mod track;
 pub mod unknown;
@@ -37,6 +39,7 @@ pub use playlist::{
 pub use social::{
     SocialProfileItem, SocialProfileItemHeader, SocialProfileListHeader, SocialProfileListSection,
 };
+pub use timestamp::AppleTimestamp;
 pub use track::{
     TrackItem, TrackItemHeader, TrackListHeader, TrackListSection, TrackNumerics, TrackPlaysSkips,
     VideoInfo,

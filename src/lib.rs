@@ -22,7 +22,7 @@ pub use model::{
     SortModeFlags, SuggestionFlag, SuggestionFlags, Track, TrackSortModes,
     discover_default_library_path,
 };
-pub use sections::RawLibraryFile;
+pub use sections::{AppleTimestamp, RawLibraryFile};
 
 #[cfg(test)]
 mod tests {
@@ -179,7 +179,7 @@ mod tests {
             max_crypt_size: 102_400,
             timezone_offset_seconds: -10_800,
             apple_store_account_id: 0,
-            date_modified: 3_800_000_000,
+            date_modified: AppleTimestamp::new(3_800_000_000),
             unk_104: Unknown(1),
             itunes_library_persistent_id: 0xABCD_0123_4567_89EF,
             unk_116: Unknown([0x64, 0, 0, 0]),
@@ -215,12 +215,12 @@ mod tests {
                 unk_44_64: Unknown([0; 20]),
                 album_persistent_id_2: 0xAA00_0000_0000_0001,
                 unk_72_96: Unknown([0; 24]),
-                date_suggestion_flag_modified: 3_800_000_000,
-                date_last_played: 3_800_000_000,
+                date_suggestion_flag_modified: AppleTimestamp::new(3_800_000_000),
+                date_last_played: AppleTimestamp::new(3_800_000_000),
                 apple_music_store_album_id: Some(1_440_000_001),
                 apple_music_store_album_id_2: Some(1_440_000_001),
-                date_cloud_synced: Some(3_800_000_000),
-                date_released: Some(3_700_000_000),
+                date_cloud_synced: Some(AppleTimestamp::new(3_800_000_000)),
+                date_released: Some(AppleTimestamp::new(3_700_000_000)),
                 unk_tail: Unknown(vec![0; 12]),
             },
             bomas: vec![album_boma],
@@ -245,7 +245,7 @@ mod tests {
                 unk_28: Unknown(1),
                 unk_32_52: Unknown([0; 20]),
                 apple_music_store_artist_id: 900_001,
-                date_suggestion_flag_modified: 0,
+                date_suggestion_flag_modified: AppleTimestamp::new(0),
                 artwork_uuid: [0x11; 16],
                 artist_persistent_id_2: 0xBB00_0000_0000_0002,
                 unk_88_96: Unknown([0; 8]),
@@ -256,7 +256,7 @@ mod tests {
                 artwork_size_kind: 1,
                 artwork_image_format: 1,
                 apple_music_store_artist_id_2: 900_001,
-                date_cloud_synced: Some(3_800_000_000),
+                date_cloud_synced: Some(AppleTimestamp::new(3_800_000_000)),
                 unk_tail: Unknown(vec![0; 8]),
             },
             bomas: vec![artist_boma],
@@ -293,17 +293,17 @@ mod tests {
             local_artwork_state: 2,
             artwork_total_size_bytes: 120_000,
             bit_rate: 256,
-            date_added: 3_800_000_000,
+            date_added: AppleTimestamp::new(3_800_000_000),
             unk_96_108: Unknown::new([0; 12]),
             gapless_encoder_delay: 2112,
             gapless_encoder_padding: 576,
             gapless_heuristic_info: 0,
             gapless_playback_flags: 1,
             custom_lyrics_hash: 0,
-            date_modified: 3_800_000_000,
+            date_modified: AppleTimestamp::new(3_800_000_000),
             normalization: 1500,
-            date_purchased: 0,
-            date_released: 3_700_000_000,
+            date_purchased: AppleTimestamp::new(0),
+            date_released: AppleTimestamp::new(3_700_000_000),
             cloud_codec_kind: 0,
             codec_fourcc: 0,
             unk_152: Unknown::new(0),
@@ -332,7 +332,7 @@ mod tests {
             unk_336_340: Unknown::new(0),
             store_track_adam_id_3: 0,
             store_track_adam_id_4: 0,
-            date_cloud_synced: 2,
+            date_cloud_synced: AppleTimestamp::new(2),
             unk_360: Unknown::new(0),
         };
         let mut num_cloud = num_local.clone();
@@ -344,7 +344,7 @@ mod tests {
         num_cloud.is_apple_music_catalog = 1;
         num_cloud.cloud_codec_kind = 2;
         num_cloud.codec_fourcc = 0x6D70_3461; // "mp4a"
-        num_cloud.date_cloud_synced = 3_800_000_000;
+        num_cloud.date_cloud_synced = AppleTimestamp::new(3_800_000_000);
 
         let track_bomas = vec![
             BomaSection {
@@ -368,12 +368,12 @@ mod tests {
                 unk_16_end: Unknown::new(vec![0; 4]),
                 payload: BomaPayload::TrackPlaysSkips(TrackPlaysSkips {
                     track_persistent_id: 0xDD00_0000_0000_0004,
-                    date_last_played: 3_800_000_000,
+                    date_last_played: AppleTimestamp::new(3_800_000_000),
                     play_count: 12,
                     true_play_count: 15,
-                    date_first_played_utc: 3_790_000_000,
+                    date_first_played_utc: AppleTimestamp::new(3_790_000_000),
                     unk_24: Unknown::new(0),
-                    date_last_skipped: 0,
+                    date_last_skipped: AppleTimestamp::new(0),
                     skip_count: 1,
                     true_skip_count: 1,
                     unk_40: Unknown::new(0),
@@ -468,11 +468,11 @@ mod tests {
                 cloud_saga_id_2: 0,
                 unk_328: Unknown::new(3),
                 unk_332: Unknown::new(0),
-                date_suggestion_flag_modified: 3_800_000_000,
+                date_suggestion_flag_modified: AppleTimestamp::new(3_800_000_000),
                 unk_340: Unknown::new(0),
                 artwork_size_kind: 1,
                 artwork_image_format: 1,
-                date_added_most_recent_track: 0,
+                date_added_most_recent_track: AppleTimestamp::new(0),
                 unk_356_376: Unknown::new([0; 20]),
                 extra_bytes: Unknown::new(Vec::new()),
             },

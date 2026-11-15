@@ -1,0 +1,141 @@
+//! 32-bit Apple/Mac HFS+ epoch timestamp newtype (`seconds since 1904-01-01`).
+
+use std::fmt;
+
+use binrw::binrw;
+use chrono::{DateTime, TimeZone, Utc};
+
+/// Seconds between 1904-01-01 00:00:00 UTC (Apple/Mac HFS+ epoch) and 1970-01-01 00:00:00 UTC (Unix epoch).
+pub(crate) const APPLE_TO_UNIX_EPOCH_OFFSET: i64 = 2_082_844_800;
+
+/// 32-bit unsigned Apple/Mac HFS+ timestamp (seconds since 1904-01-01 UTC/local).
+///
+/// Values below `86_400` are treated as non-timestamp sentinel values (such as `0` for unset
+/// or `2` on local `TrackNumerics[0].date_cloud_synced`) by [`AppleTimestamp::to_utc`].
+#[binrw]
+#[repr(transparent)]
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct AppleTimestamp(pub u32);
+
+impl AppleTimestamp {
+    /// Wraps a raw 32-bit Apple epoch timestamp.
+    #[must_use]
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// Returns the underlying raw 32-bit timestamp value.
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// Returns `true` if the raw timestamp is `0`.
+    #[must_use]
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Converts this timestamp to a UTC [`DateTime`], returning `None` for `0` or sentinel values `< 86_400`.
+    #[must_use]
+    pub fn to_utc(self) -> Option<DateTime<Utc>> {
+        if self.0 < 86_400 {
+            return None;
+        }
+        let unix_secs = i64::from(self.0) - APPLE_TO_UNIX_EPOCH_OFFSET;
+        Utc.timestamp_opt(unix_secs, 0).single()
+    }
+}
+
+impl From<u32> for AppleTimestamp {
+    fn from(raw: u32) -> Self {
+        Self(raw)
+    }
+}
+
+impl From<AppleTimestamp> for u32 {
+    fn from(ts: AppleTimestamp) -> Self {
+        ts.0
+    }
+}
+
+impl fmt::Display for AppleTimestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(dt) = self.to_utc() {
+            write!(f, "{}", dt.to_rfc3339())
+        } else if self.0 == 0 {
+            f.write_str("0")
+        } else {
+            write!(f, "sentinel({})", self.0)
+        }
+    }
+}
+
+impl fmt::Debug for AppleTimestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(dt) = self.to_utc() {
+            write!(f, "AppleTimestamp({} /* {} */)", self.0, dt.to_rfc3339())
+        } else {
+            write!(f, "AppleTimestamp({})", self.0)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use binrw::{BinRead, BinWrite};
+
+    use super::*;
+
+    #[test]
+    fn apple_timestamp_conversions_and_formatting() {
+        let zero = AppleTimestamp::default();
+        assert!(zero.is_zero());
+        assert_eq!(zero.raw(), 0);
+        assert_eq!(zero.to_utc(), None);
+        assert_eq!(zero.to_string(), "0");
+        assert_eq!(format!("{zero:?}"), "AppleTimestamp(0)");
+
+        let sentinel = AppleTimestamp::new(2);
+        assert!(!sentinel.is_zero());
+        assert_eq!(sentinel.to_utc(), None);
+        assert_eq!(sentinel.to_string(), "sentinel(2)");
+        assert_eq!(format!("{sentinel:?}"), "AppleTimestamp(2)");
+
+        let unix_epoch = AppleTimestamp::from(2_082_844_800u32);
+        let dt = unix_epoch.to_utc().expect("Unix epoch must convert");
+        assert_eq!(dt.timestamp(), 0);
+        assert_eq!(u32::from(unix_epoch), 2_082_844_800);
+        assert_eq!(unix_epoch.to_string(), "1970-01-01T00:00:00+00:00");
+        assert_eq!(
+            format!("{unix_epoch:?}"),
+            "AppleTimestamp(2082844800 /* 1970-01-01T00:00:00+00:00 */)"
+        );
+    }
+
+    #[test]
+    fn apple_timestamp_binrw_roundtrip() {
+        let ts = AppleTimestamp::new(3_800_000_000);
+        let mut buf = Vec::new();
+        ts.write_le(&mut Cursor::new(&mut buf)).expect("write_le");
+        assert_eq!(buf, 3_800_000_000u32.to_le_bytes());
+
+        let parsed = AppleTimestamp::read_le(&mut Cursor::new(&buf)).expect("read_le");
+        assert_eq!(parsed, ts);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn apple_timestamp_serde_roundtrip() {
+        let ts = AppleTimestamp::new(3_800_000_000);
+        let json = serde_json::to_string(&ts).expect("serialize");
+        assert_eq!(json, "3800000000");
+        let parsed: AppleTimestamp = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, ts);
+    }
+}

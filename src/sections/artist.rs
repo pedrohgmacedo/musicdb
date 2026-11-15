@@ -2,6 +2,7 @@ use binrw::binrw;
 
 use super::boma::BomaSection;
 use super::read_bounded_vec;
+use super::timestamp::AppleTimestamp;
 use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
 
 /// Artist list master header (`lAma`, typically 100 bytes).
@@ -73,7 +74,7 @@ pub struct ArtistItemHeader {
     /// Offset 52..60: 64-bit Apple Music Store Artist ID (`atID` atom, 0 if custom local artist).
     pub apple_music_store_artist_id: u64,
     /// Offset 60..64: Suggestion flag modified date (Apple timestamp).
-    pub date_suggestion_flag_modified: u32,
+    pub date_suggestion_flag_modified: AppleTimestamp,
     /// Offset 64..80: Artwork UUID in `artwork.sqlite` (16 bytes).
     pub artwork_uuid: [u8; 16],
     /// Offset 80..88: Secondary Artist Persistent ID (often matches `artist_persistent_id` if from iTunes, or 0).
@@ -96,7 +97,7 @@ pub struct ArtistItemHeader {
     pub apple_music_store_artist_id_2: u64,
     /// Offset 120..124: Cloud sync timestamp (UTC Apple timestamp, or 2; present when `header_size >= 124`).
     #[br(if(header_size >= 124))]
-    pub date_cloud_synced: Option<u32>,
+    pub date_cloud_synced: Option<AppleTimestamp>,
     /// Remaining bytes up to `header_size` (8 bytes `124..132` when `header_size == 132`, all zeros).
     #[br(parse_with = read_unknown_tail, args(header_size, ArtistItemHeader::tail_start_offset(header_size), "iAma"))]
     pub unk_tail: Unknown<Vec<u8>>,

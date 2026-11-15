@@ -3,6 +3,7 @@ use std::io::{Cursor, Read, Seek, Write};
 use binrw::{BinRead, BinResult, BinWrite, Endian, binrw};
 
 use super::boma::BomaSection;
+use super::timestamp::AppleTimestamp;
 use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
 use super::{read_bounded_vec, remaining_stream_bytes};
 use crate::error::MusicDbError;
@@ -71,7 +72,7 @@ pub struct PlaylistItemHeader {
     /// Offset 20..22: Unknown 2 bytes.
     pub unk_20_22: Unknown<[u8; 2]>,
     /// Offset 22..26: Playlist creation date (Apple timestamp).
-    pub date_created: u32,
+    pub date_created: AppleTimestamp,
     /// Offset 26..30: Global counter.
     pub global_counter: u32,
     /// Offset 30..38: Playlist Persistent ID.
@@ -99,7 +100,7 @@ pub struct PlaylistItemHeader {
     /// Offset 82..138: Unknown 56 bytes.
     pub unk_82_138: Unknown<[u8; 56]>,
     /// Offset 138..142: Playlist modification date (Apple timestamp).
-    pub date_modified: u32,
+    pub date_modified: AppleTimestamp,
     /// Offset 142..174: Unknown 32 bytes.
     pub unk_142_174: Unknown<[u8; 32]>,
     /// Offset 174..178: Playlist play count.
@@ -107,7 +108,7 @@ pub struct PlaylistItemHeader {
     /// Offset 178..182: Playlist true play count.
     pub true_play_count: u32,
     /// Offset 182..186: Playlist last played date (Apple timestamp).
-    pub date_last_played: u32,
+    pub date_last_played: AppleTimestamp,
     /// Offset 186..190: Unknown flags (typically `00 00 00 01` or `01 00 00 01`).
     pub unk_186_flags: Unknown<[u8; 4]>,
     /// Offset 190..192: Ownership / origin flags (`[1, 1]` = user-created playlist/folder, `[0, 0]` = subscribed external playlist, `[0, 1]` = system smart playlist, `[1, 0]` = Favourite Songs).
@@ -145,7 +146,7 @@ pub struct PlaylistItemHeader {
     /// Offset 300..304: Cover artwork / template kind (5 = custom uploaded cover art, 8 = auto 2x2 grid or subscribed cover, 10 = Apple cover-artwork-recipe or single album cover).
     pub artwork_template_kind: u32,
     /// Offset 304..308: Cloud publish / artwork generation date (UTC Apple timestamp).
-    pub date_cloud_published: u32,
+    pub date_cloud_published: AppleTimestamp,
     /// Offset 308..312: Cloud share / visibility mode (0 = private user playlist, 2 = subscribed catalog playlist, 4 = public shared user playlist on profile).
     pub cloud_share_mode: u32,
     /// Offset 312..316: Unknown 4 bytes (0 on user playlists, sometimes non-zero on subscribed catalog playlists).
@@ -156,7 +157,7 @@ pub struct PlaylistItemHeader {
     pub artwork_image_format: u32,
     /// Offset 324..328: Cloud sync / suggestion flag modified date (present when `header_size >= 328`).
     #[br(if(header_size >= 328))]
-    pub date_suggestion_flag_modified: Option<u32>,
+    pub date_suggestion_flag_modified: Option<AppleTimestamp>,
     /// Offset 328..340: Unknown 12 bytes (present when `header_size >= 368`).
     #[br(if(header_size >= 368))]
     pub unk_328_340: Option<Unknown<[u8; 12]>>,
@@ -168,7 +169,7 @@ pub struct PlaylistItemHeader {
     pub unk_348_356: Option<Unknown<u64>>,
     /// Offset 356..360: Secondary cloud sync timestamp (UTC Apple timestamp, present when `header_size >= 368`).
     #[br(if(header_size >= 368))]
-    pub date_cloud_synced_2: Option<u32>,
+    pub date_cloud_synced_2: Option<AppleTimestamp>,
     /// Offset 360..368: Unknown 8 bytes (present when `header_size >= 368`).
     #[br(if(header_size >= 368))]
     pub unk_360_368: Option<Unknown<u64>>,
