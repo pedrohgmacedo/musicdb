@@ -5,6 +5,7 @@
 //! optional `adhoc` Cargo feature (`--features adhoc`).
 
 pub(crate) mod diff;
+pub(crate) mod query_unknowns;
 pub(crate) mod unknowns;
 pub(crate) mod xml_check;
 
@@ -12,6 +13,7 @@ pub(crate) mod xml_check;
 pub(crate) mod adhoc;
 
 pub(crate) use diff::{LibraryDiffReport, diff_libraries};
+pub(crate) use query_unknowns::{QueryUnknownsOptions, query_unknowns};
 pub(crate) use unknowns::{UnknownsReport, analyze_unknowns};
 pub(crate) use xml_check::{XmlComparisonReport, compare_with_itunes_xml};
 

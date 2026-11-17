@@ -12,8 +12,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 
 use crate::analysis::{
-    LibraryDiffReport, UnknownsReport, XmlComparisonReport, analyze_unknowns,
-    compare_with_itunes_xml, diff_libraries,
+    LibraryDiffReport, QueryUnknownsOptions, UnknownsReport, XmlComparisonReport, analyze_unknowns,
+    compare_with_itunes_xml, diff_libraries, query_unknowns,
 };
 use crate::donate::{
     DEFAULT_DONATED_LIBRARY_ARCHIVE, DEFAULT_DONATED_PREVIOUS_LIBRARIES_ARCHIVE,
@@ -47,6 +47,45 @@ enum Commands {
         /// Path to Library.musicdb or .musiclibrary directory (defaults to user Music library if omitted)
         path: Option<PathBuf>,
         /// Emit full report as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Query raw unknown binary fields and unhandled boma subtypes with entity context
+    QueryUnknowns {
+        /// Path to Library.musicdb or .musiclibrary directory (defaults to user Music library if omitted)
+        path: Option<PathBuf>,
+        /// Field or section selector in code notation (e.g. `iama.unk_28`, `AlbumItemHeader.unk_28`, `TrackNumerics.unk_200_shared_val`, `iama.*`, `boma:0x0042`)
+        #[arg(short, long, required_unless_present_any = ["entity", "list_fields"])]
+        field: Option<String>,
+        /// Filter by entity: `[album|artist|track|playlist|profile|library:]<persistent_id|substring>`
+        #[arg(short, long)]
+        entity: Option<String>,
+        /// Filter to instances matching a value (decimal/signed int, 0x... hex, byte-hex, or exact formatted value)
+        #[arg(short, long)]
+        value: Option<String>,
+        /// Exclude zero / all-zero values
+        #[arg(long, conflicts_with = "include_zero")]
+        nonzero: bool,
+        /// Include zero values even in multi-field or entity-only queries
+        #[arg(long, conflicts_with = "nonzero")]
+        include_zero: bool,
+        /// Maximum examples per distinct value bucket (default: 5 grouped, 50 --flat)
+        #[arg(long)]
+        examples: Option<usize>,
+        /// Show all matching entity examples and remove sample-track cap
+        #[arg(long)]
+        all: bool,
+        /// Maximum sample tracks included in Album / Artist / Playlist entity context
+        #[arg(long, default_value_t = 5)]
+        tracks: usize,
+        /// Print matching occurrences flat without grouping by distinct value
+        #[arg(long)]
+        flat: bool,
+        /// List all unknown field selectors and unhandled boma subtypes present in the file, then exit
+        #[arg(long)]
+        list_fields: bool,
+        /// Emit structured JSON
         #[arg(long)]
         json: bool,
     },
@@ -166,6 +205,35 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Info { path } => run_info(path),
         Commands::Unknowns { path, json } => run_unknowns(path, json),
+        Commands::QueryUnknowns {
+            path,
+            field,
+            entity,
+            value,
+            nonzero,
+            include_zero,
+            examples,
+            all,
+            tracks,
+            flat,
+            list_fields,
+            json,
+        } => run_query_unknowns(
+            path,
+            &QueryUnknownsOptions {
+                field,
+                entity,
+                value,
+                nonzero,
+                include_zero,
+                examples,
+                all,
+                tracks_limit: tracks,
+                flat,
+                list_fields,
+            },
+            json,
+        ),
         Commands::Diff {
             path_a,
             path_b,
@@ -379,6 +447,22 @@ fn run_unknowns(path: Option<PathBuf>, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print_unknowns_report(&path, &report);
+    }
+    Ok(())
+}
+
+fn run_query_unknowns(
+    path: Option<PathBuf>,
+    options: &QueryUnknownsOptions,
+    json: bool,
+) -> Result<()> {
+    let path = resolve_path(path)?;
+    let raw = RawLibraryFile::open(&path)?;
+    let report = query_unknowns(&raw, options)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{report}");
     }
     Ok(())
 }
@@ -974,5 +1058,105 @@ fn print_smart_rule_group(group: &musicdb::SmartRuleGroup, indent: usize) {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_query_unknowns_parsing() {
+        let cli = Cli::try_parse_from([
+            "musicdb",
+            "query-unknowns",
+            "-f",
+            "iama.unk_28",
+            "-v",
+            "2",
+            "--nonzero",
+            "--examples",
+            "10",
+            "--tracks",
+            "3",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::QueryUnknowns {
+                path,
+                field,
+                entity,
+                value,
+                nonzero,
+                include_zero,
+                examples,
+                all,
+                tracks,
+                flat,
+                list_fields,
+                json,
+            } => {
+                assert!(path.is_none());
+                assert_eq!(field.as_deref(), Some("iama.unk_28"));
+                assert!(entity.is_none());
+                assert_eq!(value.as_deref(), Some("2"));
+                assert!(nonzero);
+                assert!(!include_zero);
+                assert_eq!(examples, Some(10));
+                assert!(!all);
+                assert_eq!(tracks, 3);
+                assert!(!flat);
+                assert!(!list_fields);
+                assert!(json);
+            }
+            _ => panic!("expected QueryUnknowns"),
+        }
+    }
+
+    #[test]
+    fn cli_query_unknowns_validation() {
+        let cli_entity = Cli::try_parse_from([
+            "musicdb",
+            "query-unknowns",
+            "lib.musicdb",
+            "-e",
+            "album:Blue",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli_entity.command,
+            Commands::QueryUnknowns {
+                path: Some(_),
+                entity: Some(_),
+                ..
+            }
+        ));
+
+        let cli_list = Cli::try_parse_from(["musicdb", "query-unknowns", "--list-fields"]).unwrap();
+        assert!(matches!(
+            cli_list.command,
+            Commands::QueryUnknowns {
+                list_fields: true,
+                ..
+            }
+        ));
+
+        assert!(
+            Cli::try_parse_from(["musicdb", "query-unknowns"]).is_err(),
+            "bare query-unknowns without -f/-e/--list-fields must fail"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "musicdb",
+                "query-unknowns",
+                "-f",
+                "iama.unk_28",
+                "--nonzero",
+                "--include-zero"
+            ])
+            .is_err(),
+            "--nonzero and --include-zero must conflict"
+        );
     }
 }
