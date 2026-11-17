@@ -515,9 +515,15 @@ enum FieldSelector {
         field: String,
     },
     BomaPayload {
-        parent_section: Option<&'static str>,
+        parent_sections: Option<Vec<&'static str>>,
         subtype: BomaSubtypeFilter,
     },
+}
+
+fn section_matches_parent_boma(section: &str, parent_section: &str) -> bool {
+    section
+        .strip_suffix("::boma")
+        .is_some_and(|p| p == parent_section)
 }
 
 impl FieldSelector {
@@ -547,11 +553,17 @@ impl FieldSelector {
 
     fn matches_unhandled_boma(&self, parent_section: &str, subtype_val: u32) -> bool {
         match self {
+            Self::AllFields => true,
+            Self::SectionAll { sections } => sections
+                .iter()
+                .any(|s| section_matches_parent_boma(s, parent_section)),
             Self::BomaPayload {
-                parent_section: expected_parent,
+                parent_sections,
                 subtype,
             } => {
-                let parent_ok = expected_parent.is_none_or(|p| p == parent_section);
+                let parent_ok = parent_sections
+                    .as_ref()
+                    .is_none_or(|ps| ps.contains(&parent_section));
                 let subtype_ok = match subtype {
                     BomaSubtypeFilter::All => true,
                     BomaSubtypeFilter::Exact(s) => *s == subtype_val,
@@ -587,31 +599,40 @@ fn parse_boma_subtype(raw: &str) -> Result<BomaSubtypeFilter> {
     Ok(BomaSubtypeFilter::Exact(val))
 }
 
+fn find_boma_sep(raw: &str) -> Option<(usize, usize, char)> {
+    for (idx, _) in raw.match_indices("::") {
+        let after = raw.get(idx + 2..)?;
+        if after.len() >= 5 && after.get(..4)?.eq_ignore_ascii_case("boma") {
+            let delim = after.as_bytes().get(4).copied()?;
+            if delim == b'.' || delim == b':' {
+                return Some((idx, idx + 7, char::from(delim)));
+            }
+        }
+    }
+    None
+}
+
 fn parse_parent_boma_selector(raw: &str) -> Result<Option<FieldSelector>> {
-    let lower = raw.to_ascii_lowercase();
-    let split_pos = lower
-        .find("::boma.")
-        .map(|pos| (pos, "::boma.".len()))
-        .or_else(|| lower.find("::boma:").map(|pos| (pos, "::boma:".len())));
-    let Some((pos, sep_len)) = split_pos else {
+    let Some((pos, rest_start, delim)) = find_boma_sep(raw) else {
         return Ok(None);
     };
     let parent_raw = raw.get(..pos).unwrap_or_default();
-    let sub_raw = raw.get(pos + sep_len..).unwrap_or_default().trim();
-    let looks_like_subtype = sub_raw == "*"
-        || sub_raw.starts_with("0x")
-        || sub_raw.starts_with("0X")
-        || (!sub_raw.is_empty() && sub_raw.chars().all(|c| c.is_ascii_digit()));
-    if !looks_like_subtype {
+    let sub_raw = raw.get(rest_start..).unwrap_or_default().trim();
+    // Keep `parent::boma.*` routed to `SectionAll` so it covers both `unk_16_end`
+    // and unhandled `boma` payloads, while `parent::boma:*` scopes to payloads.
+    if sub_raw == "*" && delim == '.' {
         return Ok(None);
     }
-    let sections = resolve_section_or_alias(parent_raw)?;
-    let Some(&parent_section) = sections.first() else {
-        bail!("unknown parent section `{parent_raw}`");
+    let Ok(subtype) = parse_boma_subtype(sub_raw) else {
+        return Ok(None);
     };
-    let subtype = parse_boma_subtype(sub_raw)?;
+    let parent_sections = if parent_raw == "*" {
+        None
+    } else {
+        Some(resolve_section_or_alias(parent_raw)?)
+    };
     Ok(Some(FieldSelector::BomaPayload {
-        parent_section: Some(parent_section),
+        parent_sections,
         subtype,
     }))
 }
@@ -628,7 +649,7 @@ fn parse_field_selector(raw: &str) -> Result<FieldSelector> {
         .filter(|rest| !rest.starts_with(':'))
     {
         return Ok(FieldSelector::BomaPayload {
-            parent_section: None,
+            parent_sections: None,
             subtype: parse_boma_subtype(rest)?,
         });
     }
@@ -641,7 +662,7 @@ fn parse_field_selector(raw: &str) -> Result<FieldSelector> {
         && let Ok(sub) = u32::from_str_radix(hex_str, 16)
     {
         return Ok(FieldSelector::BomaPayload {
-            parent_section: None,
+            parent_sections: None,
             subtype: BomaSubtypeFilter::Exact(sub),
         });
     }
@@ -714,12 +735,15 @@ struct EntityFilter {
 }
 
 fn contains_ci(opt: Option<&str>, needle_lower: &str) -> bool {
-    !needle_lower.is_empty() && opt.is_some_and(|s| s.to_ascii_lowercase().contains(needle_lower))
+    !needle_lower.is_empty() && opt.is_some_and(|s| s.to_lowercase().contains(needle_lower))
 }
 
 impl EntityFilter {
-    fn from_query(raw: &str, lib: &Library) -> Self {
+    fn from_query(raw: &str, lib: &Library) -> Result<Self> {
         let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            bail!("entity filter cannot be empty");
+        }
         let (scope, query) = if trimmed.eq_ignore_ascii_case("library") {
             (EntityScope::Library, "")
         } else if let Some((prefix, rest)) = trimmed.split_once(':') {
@@ -737,8 +761,11 @@ impl EntityFilter {
         };
 
         let query_trimmed = query.trim();
+        if scope != EntityScope::Library && query_trimmed.is_empty() {
+            bail!("entity filter `{trimmed}` is missing a search query after `:`");
+        }
         let pid = PersistentId::from_str(query_trimmed).ok();
-        let needle_lower = query_trimmed.to_ascii_lowercase();
+        let needle_lower = query_trimmed.to_lowercase();
 
         let include_library = match scope {
             EntityScope::Library => {
@@ -777,7 +804,7 @@ impl EntityFilter {
             matching_profiles = Self::collect_profiles(lib, pid, &needle_lower);
         }
 
-        Self {
+        Ok(Self {
             scope,
             include_library,
             matching_albums,
@@ -785,7 +812,7 @@ impl EntityFilter {
             matching_tracks,
             matching_playlists,
             matching_profiles,
-        }
+        })
     }
 
     fn collect_albums(
@@ -890,14 +917,21 @@ impl EntityFilter {
         }
     }
 
-    fn matches_playlist_section(&self, playlist_id: PersistentId, track_ids: &[u64]) -> bool {
+    fn matches_playlist_section(&self, playlist_id: PersistentId, bomas: &[BomaSection]) -> bool {
         if self.matching_playlists.contains(&playlist_id) {
             return true;
         }
         matches!(self.scope, EntityScope::Any | EntityScope::Track)
-            && track_ids
-                .iter()
-                .any(|&tid| self.matching_tracks.contains(&PersistentId(tid)))
+            && !self.matching_tracks.is_empty()
+            && bomas.iter().any(|b| match &b.payload {
+                BomaPayload::PlaylistItem(ipfa) => self
+                    .matching_tracks
+                    .contains(&PersistentId(ipfa.track_persistent_id)),
+                BomaPayload::PlaylistItemCompact(ipfa) => self
+                    .matching_tracks
+                    .contains(&PersistentId(ipfa.track_persistent_id)),
+                _ => false,
+            })
     }
 }
 
@@ -1155,20 +1189,17 @@ impl<'a> LibraryContextBuilder<'a> {
 
     fn resolve_playlist(&self, id: PersistentId) -> EntityContext {
         let pl: Option<&Playlist> = self.lib.playlist_by_id(id);
-        let tracks: Vec<&Track> = pl.map_or_default(|p| {
+        let total = pl.map_or(0, |p| p.track_persistent_ids.len());
+        let limit = self.tracks_limit.unwrap_or(total);
+        let sample_tracks: Vec<TrackRefSummary> = pl.map_or_default(|p| {
             p.track_persistent_ids
                 .iter()
                 .filter_map(|&tid| self.lib.track_by_id(tid))
+                .take(limit)
+                .map(Self::track_summary)
                 .collect()
         });
-        let total = pl.map_or(0, |p| p.track_persistent_ids.len());
-        let limit = self.tracks_limit.unwrap_or(tracks.len());
-        let sample_tracks = tracks
-            .iter()
-            .take(limit)
-            .map(|t| Self::track_summary(t))
-            .collect();
-        let tracks_truncated = total.saturating_sub(limit);
+        let tracks_truncated = total.saturating_sub(sample_tracks.len());
         EntityContext::Playlist {
             persistent_id: id.to_string(),
             name: pl.and_then(|p| p.name.clone()),
@@ -1230,18 +1261,38 @@ struct FieldStats {
     field_name: String,
     span_start: usize,
     span_str: String,
+    min_payload_len: Option<usize>,
+    max_payload_len: Option<usize>,
     total_instances: usize,
     nonzero_instances: usize,
     distinct_nonzero: HashSet<String>,
 }
+
+impl FieldStats {
+    fn span_label(&self) -> String {
+        match (self.min_payload_len, self.max_payload_len) {
+            (Some(min), Some(max)) if min != max => format!("{min}..={max} bytes"),
+            _ => self.span_str.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CollectMode {
+    Query,
+    ListFields,
+    ProbeSelector,
+}
+
+type StatsMap = BTreeMap<String, BTreeMap<String, FieldStats>>;
 
 struct Collector<'a> {
     selector: Option<&'a FieldSelector>,
     entity_filter: Option<&'a EntityFilter>,
     value_filter: Option<&'a str>,
     exclude_zero: bool,
-    list_mode: bool,
-    stats: BTreeMap<(String, String), FieldStats>,
+    mode: CollectMode,
+    stats: StatsMap,
     hits: Vec<RawHit>,
 }
 
@@ -1261,50 +1312,90 @@ impl<'a> Collector<'a> {
         entity_filter: Option<&'a EntityFilter>,
         value_filter: Option<&'a str>,
         exclude_zero: bool,
-        list_mode: bool,
+        mode: CollectMode,
     ) -> Self {
         Self {
             selector,
             entity_filter,
             value_filter,
             exclude_zero,
-            list_mode,
+            mode,
             stats: BTreeMap::new(),
             hits: Vec::new(),
         }
     }
 
-    fn record_field(&mut self, meta: FieldVisitMeta<'_>, format_val: impl FnOnce() -> String) {
-        let span_str = meta.span.to_string();
-        let stat_key = (meta.section.to_string(), meta.field_name.to_string());
-        let stat = self.stats.entry(stat_key).or_insert_with(|| FieldStats {
-            section: meta.section.to_string(),
-            field_name: meta.field_name.to_string(),
-            span_start: meta.span.start(),
-            span_str: span_str.clone(),
-            total_instances: 0,
-            nonzero_instances: 0,
-            distinct_nonzero: HashSet::new(),
-        });
+    fn record_stat<'s>(
+        stats: &'s mut StatsMap,
+        section: &str,
+        field_name: &str,
+        span_start: usize,
+        make_span_str: impl FnOnce() -> String,
+        payload_len: Option<usize>,
+        is_zero: bool,
+    ) -> Option<&'s mut FieldStats> {
+        let already_exists = stats
+            .get(section)
+            .is_some_and(|m| m.contains_key(field_name));
+        if !already_exists {
+            stats.entry(section.to_string()).or_default().insert(
+                field_name.to_string(),
+                FieldStats {
+                    section: section.to_string(),
+                    field_name: field_name.to_string(),
+                    span_start,
+                    span_str: make_span_str(),
+                    min_payload_len: payload_len,
+                    max_payload_len: payload_len,
+                    total_instances: 0,
+                    nonzero_instances: 0,
+                    distinct_nonzero: HashSet::new(),
+                },
+            );
+        }
+        let stat = stats.get_mut(section)?.get_mut(field_name)?;
+        if let Some(len) = payload_len {
+            stat.min_payload_len = Some(stat.min_payload_len.map_or(len, |m| m.min(len)));
+            stat.max_payload_len = Some(stat.max_payload_len.map_or(len, |m| m.max(len)));
+        }
         stat.total_instances += 1;
-
-        if !meta.is_zero {
+        if !is_zero {
             stat.nonzero_instances += 1;
         }
+        Some(stat)
+    }
 
-        if self.list_mode {
-            if !meta.is_zero {
-                stat.distinct_nonzero.insert(format_val());
-            }
-            return;
-        }
-
+    fn record_field(&mut self, meta: FieldVisitMeta<'_>, format_val: impl FnOnce() -> String) {
         let selector_matches = self
             .selector
             .is_none_or(|sel| sel.matches_unknown_field(meta.section, meta.field_name));
-        if !selector_matches {
+        if self.mode != CollectMode::ListFields && !selector_matches {
             return;
         }
+
+        let stat = Self::record_stat(
+            &mut self.stats,
+            meta.section,
+            meta.field_name,
+            meta.span.start(),
+            || meta.span.to_string(),
+            None,
+            meta.is_zero,
+        );
+
+        match self.mode {
+            CollectMode::ProbeSelector => return,
+            CollectMode::ListFields => {
+                if !meta.is_zero
+                    && let Some(stat) = stat
+                {
+                    stat.distinct_nonzero.insert(format_val());
+                }
+                return;
+            }
+            CollectMode::Query => {}
+        }
+
         if self.exclude_zero && meta.is_zero {
             return;
         }
@@ -1324,7 +1415,7 @@ impl<'a> Collector<'a> {
             section: meta.section.to_string(),
             field_name: meta.field_name.to_string(),
             span_start: meta.span.start(),
-            offset_info: span_str,
+            offset_info: meta.span.to_string(),
             entity_key: meta.entity_key,
             subcontext: meta.subcontext.map(str::to_string),
             value: val_str,
@@ -1340,38 +1431,39 @@ impl<'a> Collector<'a> {
         subcontext: &str,
         raw_bytes: &[u8],
     ) {
+        let selector_matches = self
+            .selector
+            .is_none_or(|sel| sel.matches_unhandled_boma(parent_section, subtype));
+        if self.mode != CollectMode::ListFields && !selector_matches {
+            return;
+        }
+
         let sec = format!("{parent_section}::boma");
         let field = format!("0x{subtype:04X}");
         let is_zero = raw_bytes.iter().all(|&b| b == 0);
-        let span_str = format!("0..{}", raw_bytes.len());
+        let len = raw_bytes.len();
 
-        let stat_key = (sec.clone(), field.clone());
-        let stat = self.stats.entry(stat_key).or_insert_with(|| FieldStats {
-            section: sec.clone(),
-            field_name: field.clone(),
-            span_start: 0,
-            span_str: span_str.clone(),
-            total_instances: 0,
-            nonzero_instances: 0,
-            distinct_nonzero: HashSet::new(),
-        });
-        stat.total_instances += 1;
-        if !is_zero {
-            stat.nonzero_instances += 1;
-            if self.list_mode {
-                stat.distinct_nonzero.insert(hex::encode(raw_bytes));
+        let stat = Self::record_stat(
+            &mut self.stats,
+            &sec,
+            &field,
+            0,
+            || format!("0..{len}"),
+            Some(len),
+            is_zero,
+        );
+
+        match self.mode {
+            CollectMode::ProbeSelector => return,
+            CollectMode::ListFields => {
+                if !is_zero && let Some(stat) = stat {
+                    stat.distinct_nonzero.insert(hex::encode(raw_bytes));
+                }
+                return;
             }
+            CollectMode::Query => {}
         }
 
-        if self.list_mode {
-            return;
-        }
-        let Some(sel) = self.selector else {
-            return;
-        };
-        if !sel.matches_unhandled_boma(parent_section, subtype) {
-            return;
-        }
         if self.exclude_zero && is_zero {
             return;
         }
@@ -1391,7 +1483,7 @@ impl<'a> Collector<'a> {
             section: sec,
             field_name: field,
             span_start: 0,
-            offset_info: span_str,
+            offset_info: format!("0..{len}"),
             entity_key,
             subcontext: Some(subcontext.to_string()),
             value: val_str,
@@ -1558,19 +1650,11 @@ fn walk_playlist_list(
     }
     for playlist in &playlists.playlists {
         let pl_id = PersistentId(playlist.header.playlist_persistent_id);
-        if let Some(ef) = collector.entity_filter {
-            let track_ids: Vec<u64> = playlist
-                .bomas
-                .iter()
-                .filter_map(|b| match &b.payload {
-                    BomaPayload::PlaylistItem(ipfa) => Some(ipfa.track_persistent_id),
-                    BomaPayload::PlaylistItemCompact(ipfa) => Some(ipfa.track_persistent_id),
-                    _ => None,
-                })
-                .collect();
-            if !ef.matches_playlist_section(pl_id, &track_ids) {
-                continue;
-            }
+        if collector
+            .entity_filter
+            .is_some_and(|ef| !ef.matches_playlist_section(pl_id, &playlist.bomas))
+        {
+            continue;
         }
         if collector
             .entity_filter
@@ -1692,16 +1776,40 @@ fn walk_raw_library(raw: &RawLibraryFile, collector: &mut Collector<'_>) {
     }
 }
 
-fn validate_selector_matches(
-    selector: &FieldSelector,
-    stats: &BTreeMap<(String, String), FieldStats>,
-) -> Result<()> {
+fn stats_matching_keys<'a>(
+    stats: &'a StatsMap,
+    selector: &'a FieldSelector,
+) -> Vec<(&'a str, &'a str)> {
+    match selector {
+        FieldSelector::BareField { field } | FieldSelector::AnySectionField { field } => stats
+            .iter()
+            .filter_map(|(s, fields)| {
+                fields
+                    .contains_key(field.as_str())
+                    .then_some((s.as_str(), field.as_str()))
+            })
+            .collect(),
+        FieldSelector::SectionField { sections, field } => sections
+            .iter()
+            .filter_map(|&s| {
+                stats
+                    .get(s)
+                    .filter(|fields| fields.contains_key(field.as_str()))
+                    .map(|_| (s, field.as_str()))
+            })
+            .collect(),
+        FieldSelector::AllFields
+        | FieldSelector::SectionAll { .. }
+        | FieldSelector::BomaPayload { .. } => Vec::new(),
+    }
+}
+
+fn check_selector_keys(selector: &FieldSelector, stats: &StatsMap) -> Result<()> {
     match selector {
         FieldSelector::BareField { field } => {
-            let matching_sections: Vec<String> = stats
-                .keys()
-                .filter(|(_, f)| f == field)
-                .map(|(s, _)| format!("{s}.{field}"))
+            let matching_sections: Vec<String> = stats_matching_keys(stats, selector)
+                .into_iter()
+                .map(|(s, f)| format!("{s}.{f}"))
                 .collect();
             if matching_sections.is_empty() {
                 bail!(
@@ -1717,10 +1825,7 @@ fn validate_selector_matches(
             }
         }
         FieldSelector::SectionField { sections, field } => {
-            let exists = stats
-                .keys()
-                .any(|(s, f)| sections.contains(&s.as_str()) && f == field);
-            if !exists {
+            if stats_matching_keys(stats, selector).is_empty() {
                 bail!(
                     "unknown field `{field}` not found in section(s) {}; run with `--list-fields` to see available selectors",
                     sections.join(", ")
@@ -1728,8 +1833,7 @@ fn validate_selector_matches(
             }
         }
         FieldSelector::AnySectionField { field } => {
-            let exists = stats.keys().any(|(_, f)| f == field);
-            if !exists {
+            if stats_matching_keys(stats, selector).is_empty() {
                 bail!(
                     "no unknown field `{field}` found in any section; run with `--list-fields` to see available selectors"
                 );
@@ -1742,9 +1846,32 @@ fn validate_selector_matches(
     Ok(())
 }
 
+fn validate_selector_matches(
+    raw: &RawLibraryFile,
+    selector: &FieldSelector,
+    stats: &StatsMap,
+    has_entity_filter: bool,
+) -> Result<()> {
+    if !has_entity_filter || !stats_matching_keys(stats, selector).is_empty() {
+        return check_selector_keys(selector, stats);
+    }
+    // An active `--entity` filter may skip every item of the target section before
+    // `stats` records the field. Probe `raw` without the entity filter so valid
+    // combinations return empty matches while genuine field typos still error.
+    let mut probe = Collector::new(
+        Some(selector),
+        None,
+        None,
+        false,
+        CollectMode::ProbeSelector,
+    );
+    walk_raw_library(raw, &mut probe);
+    check_selector_keys(selector, &probe.stats)
+}
+
 fn build_grouped_by_value(
     hits: Vec<RawHit>,
-    stats: &BTreeMap<(String, String), FieldStats>,
+    stats: &StatsMap,
     ctx_builder: &mut LibraryContextBuilder<'_>,
     examples_limit: Option<usize>,
 ) -> Vec<FieldQueryGroup> {
@@ -1758,11 +1885,12 @@ fn build_grouped_by_value(
 
     let mut groups = Vec::new();
     for ((section, field_name), field_hits) in by_field {
-        let stat = stats.get(&(section.clone(), field_name.clone()));
-        let offset_info = field_hits
-            .first()
-            .map(|h| h.offset_info.clone())
-            .or_else(|| stat.map(|s| s.span_str.clone()))
+        let stat = stats
+            .get(section.as_str())
+            .and_then(|sec_map| sec_map.get(field_name.as_str()));
+        let offset_info = stat
+            .map(FieldStats::span_label)
+            .or_else(|| field_hits.first().map(|h| h.offset_info.clone()))
             .unwrap_or_default();
         let total_instances = stat.map_or(field_hits.len(), |s| s.total_instances);
         let nonzero_instances = stat.map_or(0, |s| s.nonzero_instances);
@@ -1858,8 +1986,11 @@ fn build_grouped_by_entity(
         .collect()
 }
 
-fn build_field_list(stats: BTreeMap<(String, String), FieldStats>) -> QueryResults {
-    let mut stats_vec: Vec<FieldStats> = stats.into_values().collect();
+fn build_field_list(stats: StatsMap) -> QueryResults {
+    let mut stats_vec: Vec<FieldStats> = stats
+        .into_values()
+        .flat_map(BTreeMap::into_values)
+        .collect();
     stats_vec.sort_by(|a, b| {
         a.section
             .cmp(&b.section)
@@ -1870,9 +2001,9 @@ fn build_field_list(stats: BTreeMap<(String, String), FieldStats>) -> QueryResul
         .into_iter()
         .map(|s| FieldListing {
             struct_aliases: struct_aliases_for_section(&s.section),
+            span: s.span_label(),
             section: s.section,
             field_name: s.field_name,
-            span: s.span_str,
             total_instances: s.total_instances,
             nonzero_instances: s.nonzero_instances,
             distinct_nonzero_count: s.distinct_nonzero.len(),
@@ -1915,6 +2046,29 @@ fn build_flat_results(
     }
 }
 
+fn resolve_zero_filter(
+    options: &QueryUnknownsOptions,
+    selector: Option<&FieldSelector>,
+) -> (bool, String) {
+    if options.list_fields {
+        return (false, "not applicable (--list-fields)".to_string());
+    }
+    if options.nonzero {
+        return (true, "exclude zeros (--nonzero)".to_string());
+    }
+    if options.include_zero {
+        return (false, "include zeros (--include-zero)".to_string());
+    }
+    if selector.is_some_and(FieldSelector::is_single_concrete_field) {
+        (false, "include zeros (single-field default)".to_string())
+    } else {
+        (
+            true,
+            "exclude zeros (multi-field/entity default)".to_string(),
+        )
+    }
+}
+
 pub(crate) fn query_unknowns(
     raw: &RawLibraryFile,
     options: &QueryUnknownsOptions,
@@ -1928,35 +2082,26 @@ pub(crate) fn query_unknowns(
         .as_deref()
         .map(parse_field_selector)
         .transpose()?;
-
-    let is_single_field = selector
-        .as_ref()
-        .is_some_and(FieldSelector::is_single_concrete_field);
-    let (exclude_zero, zero_filter_mode) = if options.nonzero {
-        (true, "exclude zeros (--nonzero)".to_string())
-    } else if options.include_zero {
-        (false, "include zeros (--include-zero)".to_string())
-    } else if is_single_field {
-        (false, "include zeros (single-field default)".to_string())
-    } else {
-        (
-            true,
-            "exclude zeros (multi-field/entity default)".to_string(),
-        )
-    };
+    let (exclude_zero, zero_filter_mode) = resolve_zero_filter(options, selector.as_ref());
 
     let lib = Library::from(raw);
     let entity_filter = options
         .entity
         .as_deref()
-        .map(|q| EntityFilter::from_query(q, &lib));
+        .map(|q| EntityFilter::from_query(q, &lib))
+        .transpose()?;
 
+    let mode = if options.list_fields {
+        CollectMode::ListFields
+    } else {
+        CollectMode::Query
+    };
     let mut collector = Collector::new(
         selector.as_ref(),
         entity_filter.as_ref(),
         options.value.as_deref(),
         exclude_zero,
-        options.list_fields,
+        mode,
     );
     walk_raw_library(raw, &mut collector);
 
@@ -1971,24 +2116,16 @@ pub(crate) fn query_unknowns(
     }
 
     if let Some(sel) = &selector {
-        validate_selector_matches(sel, &collector.stats)?;
+        validate_selector_matches(raw, sel, &collector.stats, entity_filter.is_some())?;
     }
 
-    let tracks_limit = if options.all {
-        None
-    } else {
-        Some(options.tracks_limit)
-    };
+    let tracks_limit = (!options.all).then_some(options.tracks_limit);
     let mut ctx_builder = LibraryContextBuilder::new(raw, &lib, tracks_limit);
 
     let results = if options.flat {
         build_flat_results(collector.hits, &mut ctx_builder, options)
     } else if selector.is_some() {
-        let examples_limit = if options.all {
-            None
-        } else {
-            Some(options.examples.unwrap_or(5))
-        };
+        let examples_limit = (!options.all).then(|| options.examples.unwrap_or(5));
         let fields = build_grouped_by_value(
             collector.hits,
             &collector.stats,
@@ -2025,47 +2162,9 @@ impl fmt::Display for EntityContext {
                 f,
                 "Library [{persistent_id}] app={app_version} fmt={format_version} ({tracks} tracks, {albums} albums, {artists} artists, {playlists} playlists)"
             ),
-            Self::Album {
-                persistent_id,
-                title,
-                artist,
-                is_compilation,
-                playlist_only,
-                track_count,
-                ..
-            } => write!(
-                f,
-                "Album [{persistent_id}] \"{}\" — {} ({track_count} tracks, compilation={is_compilation}, playlist_only={playlist_only})",
-                title.as_deref().unwrap_or("<untitled>"),
-                artist.as_deref().unwrap_or("<unknown artist>"),
-            ),
-            Self::Track {
-                persistent_id,
-                title,
-                artist,
-                album,
-                disc_number,
-                track_number,
-                cloud_status,
-                ..
-            } => write!(
-                f,
-                "Track [{persistent_id}] \"{}\" — {} (album: {}, D{disc_number}T{track_number}, {cloud_status})",
-                title.as_deref().unwrap_or("<untitled>"),
-                artist.as_deref().unwrap_or("<unknown artist>"),
-                album.as_deref().unwrap_or("<unknown album>"),
-            ),
-            Self::Artist {
-                persistent_id,
-                name,
-                album_count,
-                track_count,
-                ..
-            } => write!(
-                f,
-                "Artist [{persistent_id}] \"{}\" ({album_count} albums, {track_count} tracks)",
-                name.as_deref().unwrap_or("<unnamed>"),
-            ),
+            Self::Album { .. } => self.fmt_album(f),
+            Self::Track { .. } => self.fmt_track(f),
+            Self::Artist { .. } => self.fmt_artist(f),
             Self::Playlist { .. } | Self::PlaylistTrack { .. } | Self::SocialProfile { .. } => {
                 self.fmt_secondary(f)
             }
@@ -2074,17 +2173,130 @@ impl fmt::Display for EntityContext {
 }
 
 impl EntityContext {
+    fn fmt_album(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self::Album {
+            persistent_id,
+            title,
+            artist,
+            album_artist,
+            is_compilation,
+            playlist_only,
+            star_rating,
+            apple_music_store_album_id,
+            track_count,
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        let display_artist = artist
+            .as_deref()
+            .or(album_artist.as_deref())
+            .unwrap_or("<unknown artist>");
+        let aa_note = match (artist.as_deref(), album_artist.as_deref()) {
+            (Some(a), Some(aa)) if a != aa => format!(", album_artist={aa:?}"),
+            _ => String::new(),
+        };
+        let rating_note = if *star_rating > 0 {
+            format!(", rating={star_rating}")
+        } else {
+            String::new()
+        };
+        let store_note =
+            apple_music_store_album_id.map_or(String::new(), |id| format!(", store_id={id}"));
+        write!(
+            f,
+            "Album [{persistent_id}] \"{}\" — {display_artist} ({track_count} tracks, compilation={is_compilation}, playlist_only={playlist_only}{rating_note}{store_note}{aa_note})",
+            title.as_deref().unwrap_or("<untitled>"),
+        )
+    }
+
+    fn fmt_track(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self::Track {
+            persistent_id,
+            title,
+            artist,
+            album,
+            genre,
+            year,
+            track_number,
+            disc_number,
+            media_type,
+            cloud_status,
+            downloaded_state,
+            playlist_only,
+            stars,
+            play_count,
+            skip_count,
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        let year_note = if *year > 0 {
+            format!(", {year}")
+        } else {
+            String::new()
+        };
+        let genre_note = genre
+            .as_deref()
+            .filter(|g| !g.is_empty())
+            .map_or(String::new(), |g| format!(", genre={g:?}"));
+        let plays = play_count.map_or_else(|| "-".to_string(), |n| n.to_string());
+        let skips = skip_count.map_or_else(|| "-".to_string(), |n| n.to_string());
+        write!(
+            f,
+            "Track [{persistent_id}] \"{}\" — {} (album: {}, D{disc_number}T{track_number}{year_note}{genre_note}) [media={media_type}, cloud={cloud_status}, local={downloaded_state}, playlist_only={playlist_only}, stars={stars}, plays={plays}, skips={skips}]",
+            title.as_deref().unwrap_or("<untitled>"),
+            artist.as_deref().unwrap_or("<unknown artist>"),
+            album.as_deref().unwrap_or("<unknown album>"),
+        )
+    }
+
+    fn fmt_artist(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self::Artist {
+            persistent_id,
+            name,
+            sort_name,
+            apple_music_store_artist_id,
+            album_count,
+            track_count,
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        let sort_note = match (name.as_deref(), sort_name.as_deref()) {
+            (n, Some(s)) if n != Some(s) && !s.is_empty() => format!(" [sort: {s:?}]"),
+            _ => String::new(),
+        };
+        let store_note = if *apple_music_store_artist_id > 0 {
+            format!(", store_id={apple_music_store_artist_id}")
+        } else {
+            String::new()
+        };
+        write!(
+            f,
+            "Artist [{persistent_id}] \"{}\"{sort_note} ({album_count} albums, {track_count} tracks{store_note})",
+            name.as_deref().unwrap_or("<unnamed>"),
+        )
+    }
+
     fn fmt_secondary(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Playlist {
                 persistent_id,
                 name,
                 kind,
+                share_mode,
+                is_master,
+                is_folder,
+                is_smart,
                 track_count,
                 ..
             } => write!(
                 f,
-                "Playlist [{persistent_id}] \"{}\" ({kind}, {track_count} tracks)",
+                "Playlist [{persistent_id}] \"{}\" ({kind}, {track_count} tracks, smart={is_smart}, folder={is_folder}, master={is_master}, share={share_mode})",
                 name.as_deref().unwrap_or("<unnamed>"),
             ),
             Self::PlaylistTrack {
@@ -2139,9 +2351,14 @@ fn fmt_sample_tracks(f: &mut fmt::Formatter<'_>, entity: &EntityContext) -> fmt:
         _ => return Ok(()),
     };
     for t in sample_tracks {
+        let pl_only = if t.playlist_only {
+            ", playlist_only"
+        } else {
+            ""
+        };
         writeln!(
             f,
-            "      • [{}] D{}T{} \"{}\" — {} ({})",
+            "      • [{}] D{}T{} \"{}\" — {} ({}{pl_only})",
             t.persistent_id,
             t.disc_number,
             t.track_number,
@@ -2184,12 +2401,18 @@ fn fmt_grouped_by_value(f: &mut fmt::Formatter<'_>, fields: &[FieldQueryGroup]) 
         return writeln!(f, "No matching occurrences found.");
     }
     for group in fields {
+        let aliases = if group.struct_aliases.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", group.struct_aliases.join(", "))
+        };
         writeln!(
             f,
-            "{}.{} (offset {}) — {}/{} matched ({} non-zero, {} distinct):",
+            "{}.{} (offset {}){} — {}/{} matched ({} non-zero, {} distinct):",
             group.section,
             group.field_name,
             group.offset_info,
+            aliases,
             group.matched_instances,
             group.total_instances,
             group.nonzero_instances,
@@ -2271,7 +2494,9 @@ fn fmt_flat(
 impl fmt::Display for QueryUnknownsReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "=== Unknowns Query ===")?;
-        writeln!(f, "Zero filter: {}", self.zero_filter_mode)?;
+        if !matches!(self.results, QueryResults::FieldList { .. }) {
+            writeln!(f, "Zero filter: {}", self.zero_filter_mode)?;
+        }
         if let Some(field) = &self.field_filter {
             writeln!(f, "Field filter: {field}")?;
         }
@@ -2495,10 +2720,27 @@ mod tests {
         hdr
     }
 
+    fn make_social_profile_item(pid: u64, unk_52: u32, name: &str, handle: &str) -> Vec<u8> {
+        let mut bomas = Vec::new();
+        bomas.extend_from_slice(&make_str_boma(0x0320, "p.SYNTH01", 0));
+        bomas.extend_from_slice(&make_str_boma(0x0321, name, 0));
+        bomas.extend_from_slice(&make_str_boma(0x0322, handle, 0));
+        let mut hdr = vec![0u8; 136];
+        hdr[0..4].copy_from_slice(b"isma");
+        put_u32(&mut hdr, 4, 136);
+        put_u32(&mut hdr, 8, 136 + u32::try_from(bomas.len()).unwrap());
+        put_u32(&mut hdr, 12, 3);
+        put_u64(&mut hdr, 16, pid);
+        put_u32(&mut hdr, 52, unk_52);
+        hdr.extend_from_slice(&bomas);
+        hdr
+    }
+
     fn make_list_section(magic: [u8; 4], items: &[Vec<u8>]) -> Vec<u8> {
-        let mut hdr = vec![0u8; 48];
+        let header_size = if magic == *b"Lsma" { 92 } else { 48 };
+        let mut hdr = vec![0u8; header_size];
         hdr[0..4].copy_from_slice(&magic);
-        put_u32(&mut hdr, 4, 48);
+        put_u32(&mut hdr, 4, u32::try_from(header_size).unwrap());
         put_u32(&mut hdr, 8, u32::try_from(items.len()).unwrap());
         for item in items {
             hdr.extend_from_slice(item);
@@ -2515,7 +2757,14 @@ mod tests {
             "Miles Davis",
             &[make_raw_boma(0x004A, &[0xAA, 0xBB, 0xCC])],
         );
-        let album_b = make_album_item(0xAA02, 2, 1, "Blue Train", "John Coltrane", &[]);
+        let album_b = make_album_item(
+            0xAA02,
+            2,
+            1,
+            "Blue Train",
+            "John Coltrane",
+            &[make_raw_boma(0x004A, &[0x11, 0x22, 0x33, 0x44, 0x55])],
+        );
         let album_c = make_album_item(0xAA03, 2, 2, "A Love Supreme", "John Coltrane", &[]);
         let album_list = make_list_section(*b"lama", &[album_a, album_b, album_c]);
 
@@ -2563,6 +2812,9 @@ mod tests {
         );
         let playlist_list = make_list_section(*b"lPma", &[playlist_1]);
 
+        let profile_1 = make_social_profile_item(0xEE01, 5, "Björk Fan", "bjorkfan");
+        let social_list = make_list_section(*b"Lsma", &[profile_1]);
+
         let mut plma = vec![0u8; 160];
         plma[0..4].copy_from_slice(b"plma");
         put_u32(&mut plma, 4, 160);
@@ -2574,6 +2826,7 @@ mod tests {
         raw_bytes.extend_from_slice(&wrap_hsma(5, &artist_list));
         raw_bytes.extend_from_slice(&wrap_hsma(1, &track_list));
         raw_bytes.extend_from_slice(&wrap_hsma(2, &playlist_list));
+        raw_bytes.extend_from_slice(&wrap_hsma(15, &social_list));
 
         RawLibraryFile::from_raw_bytes(&raw_bytes).expect("synthetic raw library should parse")
     }
@@ -2888,6 +3141,187 @@ mod tests {
         let json = serde_json::to_string_pretty(&report).unwrap();
         assert!(json.contains("FieldList"));
         assert!(json.contains("0x004A"));
-        assert_ne!(report.to_string(), "");
+        let list_text = report.to_string();
+        assert!(!list_text.contains("Zero filter:"));
+        assert!(list_text.contains("3..=5 bytes"));
+    }
+
+    #[test]
+    fn field_and_disjoint_or_missing_entity_returns_empty_not_error() {
+        let raw = build_synthetic_raw_library();
+
+        let no_such_album = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                field: Some("iama.unk_28".into()),
+                entity: Some("ZZZ_NO_SUCH_ALBUM".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let QueryResults::GroupedByValue { fields } = &no_such_album.results else {
+            panic!("expected GroupedByValue");
+        };
+        assert!(fields.is_empty());
+        assert!(
+            no_such_album
+                .to_string()
+                .contains("No matching occurrences")
+        );
+
+        let disjoint_track = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                field: Some("iama.unk_28".into()),
+                entity: Some("track:So What".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            disjoint_track.results,
+            QueryResults::GroupedByValue { ref fields } if fields.is_empty()
+        ));
+
+        let genuine_typo = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                field: Some("iama.typo_field".into()),
+                entity: Some("album:Kind of Blue".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(genuine_typo.contains("unknown field `typo_field`"));
+    }
+
+    #[test]
+    fn boma_wildcard_and_hex_without_prefix_selectors() {
+        let raw = build_synthetic_raw_library();
+
+        let iama_boma_all = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                field: Some("iama::boma.*".into()),
+                include_zero: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let QueryResults::GroupedByValue { fields } = &iama_boma_all.results else {
+            panic!("expected GroupedByValue");
+        };
+        assert!(fields.iter().any(|f| f.field_name == "unk_16_end"));
+        let boma_004a = fields.iter().find(|f| f.field_name == "0x004A").unwrap();
+        assert_eq!(boma_004a.offset_info, "3..=5 bytes");
+
+        let all_parent_boma = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                field: Some("*::boma.*".into()),
+                include_zero: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let QueryResults::GroupedByValue {
+            fields: star_fields,
+        } = &all_parent_boma.results
+        else {
+            panic!("expected GroupedByValue");
+        };
+        assert!(star_fields.iter().any(|f| f.section == "itma::boma"));
+        assert!(star_fields.iter().any(|f| f.section == "iama::boma"));
+
+        let no_0x = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                field: Some("iama::boma:4A".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let QueryResults::GroupedByValue { fields: hex_fields } = &no_0x.results else {
+            panic!("expected GroupedByValue");
+        };
+        assert_eq!(hex_fields.len(), 1);
+        assert_eq!(hex_fields[0].matched_instances, 2);
+    }
+
+    #[test]
+    fn artist_social_profile_unicode_and_display_details() {
+        let raw = build_synthetic_raw_library();
+
+        let album_entity = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                entity: Some("album:Kind of Blue".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let QueryResults::GroupedByEntity { entities } = &album_entity.results else {
+            panic!("expected GroupedByEntity");
+        };
+        assert!(
+            entities[0]
+                .fields
+                .iter()
+                .any(|f| f.section == "iama::boma" && f.field_name == "0x004A")
+        );
+
+        let artist_res = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                field: Some("ArtistItemHeader.unk_24".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let artist_text = artist_res.to_string();
+        assert!(artist_text.contains("[ArtistItemHeader, ArtistItem]"));
+        assert!(artist_text.contains("Miles Davis"));
+
+        let track_res = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                entity: Some("track:So What".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let track_text = track_res.to_string();
+        assert!(track_text.contains("media="));
+        assert!(track_text.contains("cloud="));
+        assert!(track_text.contains("plays="));
+
+        let profile_res = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                entity: Some("profile:BJÖRK".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let QueryResults::GroupedByEntity { entities } = &profile_res.results else {
+            panic!("expected GroupedByEntity");
+        };
+        assert_eq!(entities.len(), 1);
+        assert!(matches!(
+            &entities[0].entity,
+            EntityContext::SocialProfile { name: Some(n), .. } if n == "Björk Fan"
+        ));
+
+        let empty_err = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                entity: Some("album:".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(empty_err.contains("missing a search query"));
     }
 }
