@@ -64,8 +64,8 @@ fn build_synthetic_musicdb_bytes() -> Vec<u8> {
     put_u32(&mut plma, 4, 160);
     put_u32(&mut plma, 8, 0);
 
-    let title_boma = make_str_boma(0x012C, "Synthetic Album");
-    let artist_boma = make_str_boma(0x012D, "Synthetic Artist");
+    let title_boma = make_str_boma(0x012C, "Moving Pictures");
+    let artist_boma = make_str_boma(0x012D, "Rush");
     let mut album_item = vec![0u8; 140];
     album_item[0..4].copy_from_slice(b"iama");
     put_u32(&mut album_item, 4, 140);
@@ -123,13 +123,13 @@ fn cli_query_unknowns_end_to_end() {
     );
     assert_eq!(
         json_field["results"]["fields"][0]["buckets"][0]["examples"][0]["entity"]["title"],
-        "Synthetic Album"
+        "Moving Pictures"
     );
 
     let out_entity = Command::new(bin)
         .args(["query-unknowns"])
         .arg(&db_path)
-        .args(["-e", "album:Synthetic", "--json"])
+        .args(["-e", "album:Moving", "--json"])
         .output()
         .unwrap();
     assert!(
@@ -141,7 +141,7 @@ fn cli_query_unknowns_end_to_end() {
     assert_eq!(json_entity["results"]["mode"], "GroupedByEntity");
     assert_eq!(
         json_entity["results"]["entities"][0]["entity"]["title"],
-        "Synthetic Album"
+        "Moving Pictures"
     );
 
     let out_list = Command::new(bin)

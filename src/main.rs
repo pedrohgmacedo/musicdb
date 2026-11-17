@@ -1121,7 +1121,7 @@ mod tests {
             "query-unknowns",
             "lib.musicdb",
             "-e",
-            "album:Blue",
+            "album:Moving",
         ])
         .unwrap();
         assert!(matches!(

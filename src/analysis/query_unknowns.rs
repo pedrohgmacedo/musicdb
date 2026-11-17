@@ -2753,22 +2753,22 @@ mod tests {
             0xAA01,
             2,
             0,
-            "Kind of Blue",
-            "Miles Davis",
+            "Moving Pictures",
+            "Rush",
             &[make_raw_boma(0x004A, &[0xAA, 0xBB, 0xCC])],
         );
         let album_b = make_album_item(
             0xAA02,
             2,
             1,
-            "Blue Train",
-            "John Coltrane",
+            "Permanent Waves",
+            "Rush",
             &[make_raw_boma(0x004A, &[0x11, 0x22, 0x33, 0x44, 0x55])],
         );
-        let album_c = make_album_item(0xAA03, 2, 2, "A Love Supreme", "John Coltrane", &[]);
+        let album_c = make_album_item(0xAA03, 2, 2, "Hemispheres", "Rush", &[]);
         let album_list = make_list_section(*b"lama", &[album_a, album_b, album_c]);
 
-        let artist_1 = make_artist_item(0xBB01, 77, "Miles Davis");
+        let artist_1 = make_artist_item(0xBB01, 77, "Rush");
         let artist_list = make_list_section(*b"lAma", &[artist_1]);
 
         let track_1 = make_track_item(
@@ -2778,9 +2778,9 @@ mod tests {
                 artist_pid: 0xBB01,
                 disc: 1,
                 track_num: 2,
-                title: "Freddie Freeloader",
-                artist: "Miles Davis",
-                album: "Kind of Blue",
+                title: "Red Barchetta",
+                artist: "Rush",
+                album: "Moving Pictures",
             },
             &[],
         );
@@ -2791,9 +2791,9 @@ mod tests {
                 artist_pid: 0xBB01,
                 disc: 1,
                 track_num: 1,
-                title: "So What",
-                artist: "Miles Davis",
-                album: "Kind of Blue",
+                title: "Tom Sawyer",
+                artist: "Rush",
+                album: "Moving Pictures",
             },
             &[
                 make_track_numerics_boma(1, 100),
@@ -2804,7 +2804,7 @@ mod tests {
 
         let playlist_1 = make_playlist_item(
             0xDD01,
-            "Jazz Classics",
+            "2112 Essentials",
             &[
                 make_ipfa_boma(0xCC02, 42),
                 make_compact_ipfa_boma(0xCC01, 99),
@@ -2812,7 +2812,7 @@ mod tests {
         );
         let playlist_list = make_list_section(*b"lPma", &[playlist_1]);
 
-        let profile_1 = make_social_profile_item(0xEE01, 5, "Björk Fan", "bjorkfan");
+        let profile_1 = make_social_profile_item(0xEE01, 5, "Rush Überfan", "rush2112");
         let social_list = make_list_section(*b"Lsma", &[profile_1]);
 
         let mut plma = vec![0u8; 160];
@@ -2909,7 +2909,7 @@ mod tests {
         assert_eq!(group.nonzero_instances, 2);
         assert_eq!(group.distinct_values, 3);
 
-        let kind_of_blue = group
+        let moving_pictures = group
             .buckets
             .iter()
             .find(|b| b.is_zero)
@@ -2920,18 +2920,15 @@ mod tests {
             track_count,
             sample_tracks,
             ..
-        } = &kind_of_blue.examples[0].entity
+        } = &moving_pictures.examples[0].entity
         else {
             panic!("expected Album context");
         };
-        assert_eq!(title.as_deref(), Some("Kind of Blue"));
-        assert_eq!(artist.as_deref(), Some("Miles Davis"));
+        assert_eq!(title.as_deref(), Some("Moving Pictures"));
+        assert_eq!(artist.as_deref(), Some("Rush"));
         assert_eq!(*track_count, 2);
-        assert_eq!(sample_tracks[0].title.as_deref(), Some("So What"));
-        assert_eq!(
-            sample_tracks[1].title.as_deref(),
-            Some("Freddie Freeloader")
-        );
+        assert_eq!(sample_tracks[0].title.as_deref(), Some("Tom Sawyer"));
+        assert_eq!(sample_tracks[1].title.as_deref(), Some("Red Barchetta"));
 
         let nonzero_report = query_unknowns(
             &raw,
@@ -2983,7 +2980,7 @@ mod tests {
         );
         assert!(matches.iter().all(|m| matches!(
             &m.entity,
-            EntityContext::Track { title: Some(t), .. } if t == "So What"
+            EntityContext::Track { title: Some(t), .. } if t == "Tom Sawyer"
         )));
     }
 
@@ -3012,9 +3009,9 @@ mod tests {
         else {
             panic!("expected PlaylistTrack");
         };
-        assert_eq!(playlist_name.as_deref(), Some("Jazz Classics"));
-        assert_eq!(track_title.as_deref(), Some("So What"));
-        assert_eq!(track_artist.as_deref(), Some("Miles Davis"));
+        assert_eq!(playlist_name.as_deref(), Some("2112 Essentials"));
+        assert_eq!(track_title.as_deref(), Some("Tom Sawyer"));
+        assert_eq!(track_artist.as_deref(), Some("Rush"));
 
         let compact_report = query_unknowns(
             &raw,
@@ -3037,7 +3034,7 @@ mod tests {
         let default_res = query_unknowns(
             &raw,
             &QueryUnknownsOptions {
-                entity: Some("album:Kind of Blue".into()),
+                entity: Some("album:Moving Pictures".into()),
                 tracks_limit: 5,
                 ..Default::default()
             },
@@ -3052,7 +3049,7 @@ mod tests {
         let with_zero = query_unknowns(
             &raw,
             &QueryUnknownsOptions {
-                entity: Some("album:Kind of Blue".into()),
+                entity: Some("album:Moving Pictures".into()),
                 include_zero: true,
                 tracks_limit: 5,
                 ..Default::default()
@@ -3173,7 +3170,7 @@ mod tests {
             &raw,
             &QueryUnknownsOptions {
                 field: Some("iama.unk_28".into()),
-                entity: Some("track:So What".into()),
+                entity: Some("track:Tom Sawyer".into()),
                 ..Default::default()
             },
         )
@@ -3187,7 +3184,7 @@ mod tests {
             &raw,
             &QueryUnknownsOptions {
                 field: Some("iama.typo_field".into()),
-                entity: Some("album:Kind of Blue".into()),
+                entity: Some("album:Moving Pictures".into()),
                 ..Default::default()
             },
         )
@@ -3256,7 +3253,7 @@ mod tests {
         let album_entity = query_unknowns(
             &raw,
             &QueryUnknownsOptions {
-                entity: Some("album:Kind of Blue".into()),
+                entity: Some("album:Moving Pictures".into()),
                 ..Default::default()
             },
         )
@@ -3281,12 +3278,12 @@ mod tests {
         .unwrap();
         let artist_text = artist_res.to_string();
         assert!(artist_text.contains("[ArtistItemHeader, ArtistItem]"));
-        assert!(artist_text.contains("Miles Davis"));
+        assert!(artist_text.contains("Rush"));
 
         let track_res = query_unknowns(
             &raw,
             &QueryUnknownsOptions {
-                entity: Some("track:So What".into()),
+                entity: Some("track:Tom Sawyer".into()),
                 ..Default::default()
             },
         )
@@ -3299,7 +3296,7 @@ mod tests {
         let profile_res = query_unknowns(
             &raw,
             &QueryUnknownsOptions {
-                entity: Some("profile:BJÖRK".into()),
+                entity: Some("profile:ÜBER".into()),
                 ..Default::default()
             },
         )
@@ -3310,7 +3307,7 @@ mod tests {
         assert_eq!(entities.len(), 1);
         assert!(matches!(
             &entities[0].entity,
-            EntityContext::SocialProfile { name: Some(n), .. } if n == "Björk Fan"
+            EntityContext::SocialProfile { name: Some(n), .. } if n == "Rush Überfan"
         ));
 
         let empty_err = query_unknowns(

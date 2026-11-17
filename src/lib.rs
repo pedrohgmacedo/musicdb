@@ -205,7 +205,7 @@ mod tests {
         inner_hfma.artist_count = 0;
         inner_hfma.max_crypt_size = 0;
 
-        let album_boma = make_utf16le_boma(0x012C, "Synthetic Album");
+        let album_boma = make_utf16le_boma(0x012C, "Moving Pictures");
         let album_item = AlbumItem {
             header: AlbumItemHeader {
                 header_size: 140,
@@ -243,7 +243,7 @@ mod tests {
             albums: vec![album_item],
         };
 
-        let artist_boma = make_utf16le_boma(0x0190, "Synthetic Artist");
+        let artist_boma = make_utf16le_boma(0x0190, "Rush");
         let artist_item = ArtistItem {
             header: ArtistItemHeader {
                 header_size: 132,
@@ -389,9 +389,9 @@ mod tests {
                     unk_44_52: Unknown::new([0; 8]),
                 }),
             },
-            make_utf16le_boma(0x0002, "Synthetic Song"),
-            make_utf16le_boma(0x0003, "Synthetic Album"),
-            make_utf16le_boma(0x0004, "Synthetic Artist"),
+            make_utf16le_boma(0x0002, "Tom Sawyer"),
+            make_utf16le_boma(0x0003, "Moving Pictures"),
+            make_utf16le_boma(0x0004, "Rush"),
             make_utf16le_boma(0x0005, "Progressive Rock"),
             make_utf16le_boma(0x0007, "#!#116#!#"),
         ];
@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(lib.artists.len(), 1);
 
         let t = &lib.tracks[0];
-        assert_eq!(t.title.as_deref(), Some("Synthetic Song"));
+        assert_eq!(t.title.as_deref(), Some("Tom Sawyer"));
         assert_eq!(t.file_type_fourcc.as_deref(), Some("M4A "));
         assert_eq!(t.codec_fourcc.as_deref(), Some("mp4a"));
         assert_eq!(t.suggestion_flag, SuggestionFlag::Favorite);
