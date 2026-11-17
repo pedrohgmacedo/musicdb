@@ -112,7 +112,7 @@ Much of the existing code predates these rules.
 
 ## Tests
 - **Never commit real Apple Music libraries or anything derived from them.** They contain personal data (purchaser names and emails, account IDs). Build fixtures **synthetically** in code (see the synthetic round-trip test in `src/lib.rs`).
-- **Synthetic test fixtures must use Rush metadata.** All synthetic corpus/library tests and fixtures must use examples related to the band Rush and its albums/songs.
+- **Synthetic test fixtures must use Rush metadata.** All synthetic corpus/library tests and fixtures must use examples related to the band Rush and its albums/songs where applicable.
 - Tests against the private corpus (`MUSICDB_CORPUS_DIR`) intentionally return early when it isn't present. **Keep that behavior.** Don't remove these tests or make them fail without the corpus.
 - **Every bug fix comes with a regression test.** For parser bugs, add the minimal malformed byte sequence as a test.
 - Use `tempfile::tempdir()` for filesystem tests. Never use fixed paths in `/tmp` or `std::env::temp_dir()`.
