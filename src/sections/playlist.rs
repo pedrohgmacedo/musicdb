@@ -95,8 +95,12 @@ pub struct PlaylistItemHeader {
     pub unk_58_70: Unknown<[u8; 12]>,
     /// Offset 70..78: iCloud Music Library Playlist `sagaId`.
     pub cloud_playlist_saga_id_1: u64,
-    /// Offset 78..82: Special / Distinguished Kind bytes (e.g. offset 79: 4=Music, 19=Purchases, 26=Genius, 47=Music Videos, 64=TV & Movies, 65=Downloaded).
-    pub distinguished_kind_bytes: [u8; 4],
+    /// Offset 78: Unknown byte (`0` across observed libraries).
+    pub unk_78: Unknown<u8>,
+    /// Offset 79..81: Special / Distinguished Kind (`4` = Music, `19` = Purchases, `26` = Genius, `47` = Music Videos, `61` = Favourite Songs, `64` = TV & Movies, `65` = Downloaded).
+    pub distinguished_kind: u16,
+    /// Offset 81: Unknown byte (`0` across observed libraries).
+    pub unk_81: Unknown<u8>,
     /// Offset 82..138: Unknown 56 bytes.
     pub unk_82_138: Unknown<[u8; 56]>,
     /// Offset 138..142: Playlist modification date (Apple timestamp).
@@ -205,6 +209,8 @@ impl VisitUnknowns for PlaylistItemHeader {
                 (self.unk_46_smart_flag, 46),
                 (self.unk_48, 48),
                 (self.unk_58_70, 58),
+                (self.unk_78, 78),
+                (self.unk_81, 81),
                 (self.unk_82_138, 82),
                 (self.unk_142_174, 142),
                 (self.unk_186_flags, 186),
@@ -363,9 +369,14 @@ impl VisitUnknowns for SmartPlaylistOptions {
     }
 }
 
+/// Maximum recursion depth when parsing nested `SLst` Smart Playlist rule groups.
+///
+/// Real Apple Music libraries typically nest at depth `1..=2`; deeper trees beyond
+/// this bound fall back to [`SmartRuleChild::Raw`] so untrusted inputs cannot trigger
+/// a stack overflow while 100% lossless round-tripping is preserved.
+pub(crate) const MAX_SLST_NESTING_DEPTH: usize = 32;
+
 /// Payload of `boma` subtype `0x00C9` (`SLst` Smart Playlist Rules List, 136-byte BIG-ENDIAN header + rules).
-#[binrw]
-#[brw(big, magic = b"SLst")]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -379,8 +390,104 @@ pub struct SlstSection {
     /// Offset 16..136: 120 bytes of header padding (typically zeros).
     pub unk_16_136: Unknown<[u8; 120]>,
     /// Child rules.
-    #[br(parse_with = read_bounded_vec, args(rule_count, 56, "SLst.rules"))]
     pub rules: Vec<SmartPlaylistRule>,
+}
+
+impl SlstSection {
+    fn read_be_with_depth<R: Read + Seek>(reader: &mut R, depth: usize) -> BinResult<Self> {
+        let pos = reader.stream_position()?;
+        let mut magic = [0u8; 4];
+        reader.read_exact(&mut magic)?;
+        if &magic != b"SLst" {
+            return Err(binrw::Error::BadMagic {
+                pos,
+                found: Box::new(magic),
+            });
+        }
+        let unk_4 = Unknown::<u32>::read_be(reader)?;
+        let rule_count = u32::read_be(reader)?;
+        let conjunction = u32::read_be(reader)?;
+        let unk_16_136 = Unknown::<[u8; 120]>::read_be(reader)?;
+
+        let rules_pos = reader.stream_position()?;
+        let remaining = remaining_stream_bytes(reader)?;
+        let min_needed =
+            u64::from(rule_count)
+                .checked_mul(56)
+                .ok_or_else(|| binrw::Error::Custom {
+                    pos: rules_pos,
+                    err: Box::new(MusicDbError::TruncatedSection {
+                        section: "SLst.rules".to_string(),
+                        offset: rules_pos,
+                        needed: u64::MAX,
+                        available: remaining,
+                    }),
+                })?;
+        if min_needed > remaining {
+            return Err(binrw::Error::Custom {
+                pos: rules_pos,
+                err: Box::new(MusicDbError::TruncatedSection {
+                    section: "SLst.rules".to_string(),
+                    offset: rules_pos,
+                    needed: min_needed,
+                    available: remaining,
+                }),
+            });
+        }
+        let cap = usize::try_from(rule_count).map_err(|_| binrw::Error::Custom {
+            pos: rules_pos,
+            err: Box::new(MusicDbError::TruncatedSection {
+                section: "SLst.rules".to_string(),
+                offset: rules_pos,
+                needed: min_needed,
+                available: remaining,
+            }),
+        })?;
+        let mut rules = Vec::with_capacity(cap);
+        for _ in 0..rule_count {
+            rules.push(SmartPlaylistRule::read_be_with_depth(reader, depth)?);
+        }
+        Ok(Self {
+            unk_4,
+            rule_count,
+            conjunction,
+            unk_16_136,
+            rules,
+        })
+    }
+}
+
+impl BinRead for SlstSection {
+    type Args<'a> = ();
+
+    fn read_options<R: Read + Seek>(
+        reader: &mut R,
+        _endian: Endian,
+        _args: Self::Args<'_>,
+    ) -> BinResult<Self> {
+        Self::read_be_with_depth(reader, 1)
+    }
+}
+
+impl BinWrite for SlstSection {
+    type Args<'a> = ();
+
+    fn write_options<W: Write + Seek>(
+        &self,
+        writer: &mut W,
+        _endian: Endian,
+        _args: Self::Args<'_>,
+    ) -> BinResult<()> {
+        writer.write_all(b"SLst")?;
+        self.unk_4.write_be(writer)?;
+        self.rule_count.write_be(writer)?;
+        self.conjunction.write_be(writer)?;
+        self.unk_16_136.write_be(writer)?;
+        for rule in &self.rules {
+            rule.write_be(writer)?;
+        }
+        Ok(())
+    }
 }
 
 impl VisitUnknowns for SlstSection {
@@ -476,32 +583,34 @@ pub struct SmartPlaylistRuleArguments {
     pub arg_4: i64,
     /// Offset 40..48: Secondary unit for upper bound (typically `1`).
     pub arg_5: i64,
-    /// Offset 48..56: Reserved / unknown 64-bit word (typically `0`).
-    pub arg_6: i64,
-    /// Offset 56..64: Reserved / unknown 64-bit word (typically `0`).
-    pub arg_7: i64,
+    /// Offset 48..56: Reserved / unknown 64-bit word (`0` across observed libraries).
+    pub unk_48_56: Unknown<i64>,
+    /// Offset 56..64: Reserved / unknown 64-bit word (`0` across observed libraries).
+    pub unk_56_64: Unknown<i64>,
     /// Offset 64..68: Trailing 32-bit word (typically `0`).
     pub unk_64: Unknown<u32>,
 }
 
 impl VisitUnknowns for SmartPlaylistRuleArguments {
     fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
-        visit_unknowns!(visitor, "SmartPlaylistRuleArguments", [(self.unk_64, 64)]);
+        visit_unknowns!(
+            visitor,
+            "SmartPlaylistRuleArguments",
+            [
+                (self.unk_48_56, 48),
+                (self.unk_56_64, 56),
+                (self.unk_64, 64),
+            ]
+        );
     }
 }
 
-impl BinRead for SmartPlaylistRule {
-    type Args<'a> = ();
-
+impl SmartPlaylistRule {
     #[expect(
         clippy::similar_names,
         reason = "unk_44 and unk_48 are named after their byte offsets in SmartPlaylistRule"
     )]
-    fn read_options<R: Read + Seek>(
-        reader: &mut R,
-        _endian: Endian,
-        _args: Self::Args<'_>,
-    ) -> BinResult<Self> {
+    fn read_be_with_depth<R: Read + Seek>(reader: &mut R, depth: usize) -> BinResult<Self> {
         let field_id = u32::read_be(reader)?;
         let comparison_method = u32::read_be(reader)?;
         let unk_8 = Unknown::<u32>::read_be(reader)?;
@@ -536,16 +645,42 @@ impl BinRead for SmartPlaylistRule {
         let mut child_bytes = vec![0u8; payload_len];
         reader.read_exact(&mut child_bytes)?;
 
-        // Determine how to parse `child_bytes`
-        let child = if child_bytes.len() >= 136 && child_bytes.get(0..4) == Some(b"SLst") {
+        let child = Self::parse_rule_child(comparison_method, child_bytes, depth)?;
+
+        Ok(Self {
+            field_id,
+            comparison_method,
+            unk_8,
+            unk_12_44,
+            unk_44,
+            unk_48,
+            child_size,
+            child,
+        })
+    }
+
+    fn parse_rule_child(
+        comparison_method: u32,
+        child_bytes: Vec<u8>,
+        depth: usize,
+    ) -> BinResult<SmartRuleChild> {
+        if depth < MAX_SLST_NESTING_DEPTH
+            && child_bytes.len() >= 136
+            && child_bytes.get(0..4) == Some(b"SLst")
+        {
             let mut cursor = Cursor::new(&child_bytes);
-            match SlstSection::read_be(&mut cursor) {
-                Ok(slst) if usize::try_from(cursor.position()).ok() == Some(child_bytes.len()) => {
-                    SmartRuleChild::Nested(Box::new(slst))
-                }
-                _ => SmartRuleChild::Raw(child_bytes),
-            }
-        } else if SmartOperatorFlags::from_bits_retain(comparison_method)
+            return Ok(
+                match SlstSection::read_be_with_depth(&mut cursor, depth + 1) {
+                    Ok(slst)
+                        if usize::try_from(cursor.position()).ok() == Some(child_bytes.len()) =>
+                    {
+                        SmartRuleChild::Nested(Box::new(slst))
+                    }
+                    _ => SmartRuleChild::Raw(child_bytes),
+                },
+            );
+        }
+        if SmartOperatorFlags::from_bits_retain(comparison_method)
             .contains(SmartOperatorFlags::STRING_MODE)
             && child_bytes.len().is_multiple_of(2)
         {
@@ -560,28 +695,29 @@ impl BinRead for SmartPlaylistRule {
             )
             .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
             .collect();
-            SmartRuleChild::StringUtf16Be {
+            return Ok(SmartRuleChild::StringUtf16Be {
                 text,
                 raw_bytes: child_bytes,
-            }
-        } else if child_bytes.len() == 68 {
+            });
+        }
+        if child_bytes.len() == 68 {
             let mut cursor = Cursor::new(&child_bytes);
             let args = SmartPlaylistRuleArguments::read_be(&mut cursor)?;
-            SmartRuleChild::Arguments(args)
-        } else {
-            SmartRuleChild::Raw(child_bytes)
-        };
+            return Ok(SmartRuleChild::Arguments(args));
+        }
+        Ok(SmartRuleChild::Raw(child_bytes))
+    }
+}
 
-        Ok(Self {
-            field_id,
-            comparison_method,
-            unk_8,
-            unk_12_44,
-            unk_44,
-            unk_48,
-            child_size,
-            child,
-        })
+impl BinRead for SmartPlaylistRule {
+    type Args<'a> = ();
+
+    fn read_options<R: Read + Seek>(
+        reader: &mut R,
+        _endian: Endian,
+        _args: Self::Args<'_>,
+    ) -> BinResult<Self> {
+        Self::read_be_with_depth(reader, 1)
     }
 }
 

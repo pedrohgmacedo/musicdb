@@ -119,6 +119,10 @@ fn create_tables(conn: &Connection) -> Result<()> {
             album_artist TEXT,
             cloud_album_id TEXT,
             editorial_notes TEXT,
+            catalog_genre TEXT,
+            motion_artwork_url TEXT,
+            motion_preview_frame_url TEXT,
+            motion_artwork_token TEXT,
             is_compilation INTEGER NOT NULL,
             star_rating INTEGER NOT NULL,
             stars INTEGER NOT NULL,
@@ -173,6 +177,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             sort_artist_mode TEXT NOT NULL,
             sort_album_artist_mode TEXT NOT NULL,
             sort_composer_mode TEXT NOT NULL,
+            sort_show_mode TEXT NOT NULL,
             track_number INTEGER NOT NULL,
             track_total INTEGER NOT NULL,
             disc_number INTEGER NOT NULL,
@@ -198,6 +203,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             star_rating INTEGER NOT NULL,
             stars INTEGER NOT NULL,
             suggestion_flag TEXT NOT NULL,
+            suggestion_locally_modified INTEGER NOT NULL,
             disabled INTEGER NOT NULL,
             skip_when_shuffling INTEGER NOT NULL,
             remember_playback_position INTEGER NOT NULL,
@@ -276,6 +282,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             distinguished_kind INTEGER NOT NULL,
             system_kind TEXT NOT NULL,
             suggestion_flag TEXT NOT NULL,
+            suggestion_locally_modified INTEGER NOT NULL,
             date_created_utc TEXT,
             date_modified_utc TEXT,
             date_last_played_utc TEXT,
@@ -399,13 +406,14 @@ fn insert_albums(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
         "INSERT INTO albums (
             persistent_id, itunes_persistent_id, first_track_persistent_id,
             title, artist, album_artist, cloud_album_id, editorial_notes,
-            is_compilation, star_rating, stars, star_rating_is_computed,
-            suggestion_flag, suggestion_locally_modified,
+            catalog_genre, motion_artwork_url, motion_preview_frame_url,
+            motion_artwork_token, is_compilation, star_rating, stars,
+            star_rating_is_computed, suggestion_flag, suggestion_locally_modified,
             date_suggestion_flag_modified_utc, date_last_played_utc,
             date_cloud_synced_utc, date_released_utc, apple_music_store_album_id
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
         )",
     )?;
     for a in &lib.albums {
@@ -418,6 +426,10 @@ fn insert_albums(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             a.album_artist,
             a.cloud_album_id,
             a.editorial_notes,
+            a.catalog_genre,
+            a.motion_artwork_url,
+            a.motion_preview_frame_url,
+            a.motion_artwork_token,
             i32::from(a.is_compilation),
             a.star_rating,
             a.stars(),
@@ -464,10 +476,10 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "full-row 113-column SQLite track binding"
+    reason = "full-row 115-column SQLite track binding"
 )]
 fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
-    let placeholders: Vec<String> = (1..=113).map(|i| format!("?{i}")).collect();
+    let placeholders: Vec<String> = (1..=115).map(|i| format!("?{i}")).collect();
     let sql = format!(
         "INSERT INTO tracks (
             persistent_id, title, album, artist, album_artist, composer, genre,
@@ -475,16 +487,16 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             movement_number, movement_total, sort_title, sort_album, sort_artist,
             sort_album_artist, sort_composer, sort_title_mode, sort_album_mode,
             sort_artist_mode, sort_album_artist_mode, sort_composer_mode,
-            track_number, track_total, disc_number, disc_total, year, bpm,
-            duration_ms, file_size, bit_rate, is_vbr, sample_rate,
+            sort_show_mode, track_number, track_total, disc_number, disc_total,
+            year, bpm, duration_ms, file_size, bit_rate, is_vbr, sample_rate,
             file_type_fourcc, codec_fourcc, volume_adjustment, normalization,
             gapless_encoder_delay, gapless_encoder_padding, gapless_total_samples,
             gapless_last_eight_frames_offset, equalizer_raw, equalizer_preset_id,
-            equalizer_name, star_rating, stars, suggestion_flag, disabled,
-            skip_when_shuffling, remember_playback_position,
-            show_composer_in_all_views, use_work_and_movement,
-            album_is_compilation, part_of_gapless_album, playlist_only,
-            purchased, has_custom_lyrics, has_local_custom_lyrics,
+            equalizer_name, star_rating, stars, suggestion_flag,
+            suggestion_locally_modified, disabled, skip_when_shuffling,
+            remember_playback_position, show_composer_in_all_views,
+            use_work_and_movement, album_is_compilation, part_of_gapless_album,
+            playlist_only, purchased, has_custom_lyrics, has_local_custom_lyrics,
             has_unsynced_local_changes, custom_lyrics_hash, is_itunes_matched,
             is_apple_music_catalog, cloud_saga_id, store_track_adam_id,
             apple_music_store_album_id, apple_music_store_artist_id,
@@ -537,6 +549,7 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             t.sort_modes.artist.to_string(),
             t.sort_modes.album_artist.to_string(),
             t.sort_modes.composer.to_string(),
+            t.sort_modes.show.to_string(),
             t.track_number,
             t.track_total,
             t.disc_number,
@@ -562,6 +575,7 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             t.star_rating,
             t.stars(),
             t.suggestion_flag.to_string(),
+            i32::from(t.suggestion_locally_modified),
             i32::from(t.disabled),
             i32::from(t.skip_when_shuffling),
             i32::from(t.remember_playback_position),
@@ -632,19 +646,19 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "full-row 46-column SQLite playlist binding"
+    reason = "full-row 47-column SQLite playlist binding"
 )]
 fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
-    let placeholders: Vec<String> = (1..=46).map(|i| format!("?{i}")).collect();
+    let placeholders: Vec<String> = (1..=47).map(|i| format!("?{i}")).collect();
     let sql = format!(
         "INSERT INTO playlists (
             persistent_id, parent_persistent_id, name, description, kind,
             is_master, is_folder, is_smart, show_in_profile_and_search,
             distinguished_kind, system_kind, suggestion_flag,
-            date_created_utc, date_modified_utc, date_last_played_utc,
-            date_cloud_published_utc, date_cloud_synced_utc, play_count,
-            true_play_count, refresh_interval_seconds, cloud_share_mode,
-            share_mode, artwork_template_kind, cloud_saga_id,
+            suggestion_locally_modified, date_created_utc, date_modified_utc,
+            date_last_played_utc, date_cloud_published_utc, date_cloud_synced_utc,
+            play_count, true_play_count, refresh_interval_seconds,
+            cloud_share_mode, share_mode, artwork_template_kind, cloud_saga_id,
             universal_library_id, cloud_uuid, subscribed_container_url,
             owner_name, owner_id, author_social_profile_persistent_id,
             cloud_artwork_url, cloud_artwork_token, artwork_uuid,
@@ -693,6 +707,7 @@ fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             p.system_kind.raw(),
             p.system_kind.to_string(),
             p.suggestion_flag.to_string(),
+            i32::from(p.suggestion_locally_modified),
             p.date_created.map(|d| d.to_string()),
             p.date_modified.map(|d| d.to_string()),
             p.date_last_played.map(|d| d.to_string()),
@@ -809,6 +824,7 @@ fn create_indexes_and_views(conn: &Connection) -> Result<()> {
         SELECT
             t.*,
             al.title AS linked_album_title,
+            al.catalog_genre AS album_catalog_genre,
             al.suggestion_flag AS album_suggestion_flag,
             ar.name AS linked_artist_name,
             ar.suggestion_flag AS artist_suggestion_flag

@@ -770,7 +770,7 @@ impl fmt::Display for SortMode {
     }
 }
 
-/// Decoded sort modes for a track's 5 sortable text fields (`itma` offset 66..71).
+/// Decoded sort modes for a track's 6 sortable text fields (`itma` offset 66..72).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -785,6 +785,8 @@ pub struct TrackSortModes {
     pub album_artist: SortMode,
     /// Sort mode for `sort_composer`.
     pub composer: SortMode,
+    /// Sort mode for `sort_show` (`SmartField::SortShow`, offset 71).
+    pub show: SortMode,
 }
 
 impl From<[u8; 6]> for TrackSortModes {
@@ -795,6 +797,7 @@ impl From<[u8; 6]> for TrackSortModes {
             artist: SortMode::from(bytes[2]),
             album_artist: SortMode::from(bytes[3]),
             composer: SortMode::from(bytes[4]),
+            show: SortMode::from(bytes[5]),
         }
     }
 }
@@ -915,7 +918,7 @@ impl fmt::Display for PlaylistShareMode {
     }
 }
 
-/// Built-in Apple Music system playlist kind (`lpma` offset 78..80).
+/// Built-in Apple Music system playlist kind (`lpma` offset 79..81).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -983,7 +986,7 @@ impl DistinguishedPlaylistKind {
             Self::RecentlyAdded => 44,
             Self::MusicVideos => 47,
             Self::ClassicalMusic => 48,
-            Self::FavoriteSongs => 49,
+            Self::FavoriteSongs => 61,
             Self::HiddenCloudPlaylistOnlyTracks => 63,
             Self::TvAndMovies => 64,
             Self::Downloaded => 65,
@@ -1800,7 +1803,7 @@ pub struct PlaylistViewPreferences {
 /// High-level Domain Model of a parsed `.musicdb` library.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Library {
     /// Library-wide metadata from `hfma`, `plma`, and `Preferences.plist`.
     pub metadata: LibraryMetadata,
@@ -1824,6 +1827,60 @@ pub struct Library {
     playlist_index: HashMap<PersistentId, usize>,
     #[cfg_attr(feature = "serde", serde(skip))]
     social_profile_index: HashMap<PersistentId, usize>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    tracks_by_album: HashMap<PersistentId, Vec<usize>>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    tracks_by_artist: HashMap<PersistentId, Vec<usize>>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    sidecar_warnings: Vec<String>,
+}
+
+impl PartialEq for Library {
+    fn eq(&self, other: &Self) -> bool {
+        self.metadata == other.metadata
+            && self.albums == other.albums
+            && self.artists == other.artists
+            && self.tracks == other.tracks
+            && self.playlists == other.playlists
+            && self.social_profiles == other.social_profiles
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Library {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct RawDeserializedLibrary {
+            #[serde(default)]
+            metadata: LibraryMetadata,
+            #[serde(default)]
+            albums: Vec<Album>,
+            #[serde(default)]
+            artists: Vec<Artist>,
+            #[serde(default)]
+            tracks: Vec<Track>,
+            #[serde(default)]
+            playlists: Vec<Playlist>,
+            #[serde(default)]
+            social_profiles: Vec<SocialProfile>,
+        }
+
+        let raw = RawDeserializedLibrary::deserialize(deserializer)?;
+        let mut lib = Self {
+            metadata: raw.metadata,
+            albums: raw.albums,
+            artists: raw.artists,
+            tracks: raw.tracks,
+            playlists: raw.playlists,
+            social_profiles: raw.social_profiles,
+            ..Self::default()
+        };
+        lib.rebuild_indexes();
+        Ok(lib)
+    }
 }
 
 /// Apple Music social profile record (`isma`, `hsma` subtype 15).
@@ -1917,6 +1974,14 @@ pub struct Album {
     pub cloud_album_id: Option<String>,
     /// Album editorial notes (`boma 0x0134`).
     pub editorial_notes: Option<String>,
+    /// Apple Music catalog genre (`boma 0x0136`). Note: user genre edits update [`Track::genre`], not this catalog field.
+    pub catalog_genre: Option<String>,
+    /// Animated motion artwork `.m3u8` URL from `boma 0x0135` binary plist.
+    pub motion_artwork_url: Option<String>,
+    /// Motion artwork static preview `.png` URL from `boma 0x0135` binary plist.
+    pub motion_preview_frame_url: Option<String>,
+    /// Motion artwork token from `boma 0x0135` binary plist.
+    pub motion_artwork_token: Option<String>,
     /// Compilation album flag (`iama` offset 25).
     pub is_compilation: bool,
     /// Raw star rating (`0..=100` in steps of 20).
@@ -2075,6 +2140,8 @@ pub struct Track {
     pub star_rating: u8,
     /// User suggestion / favorite flag (`itma` offset 62..64).
     pub suggestion_flag: SuggestionFlag,
+    /// Whether `suggestion_flag` has the `0x0100` locally-modified bit set.
+    pub suggestion_locally_modified: bool,
     /// Whether the track is unchecked/disabled (`itma` offset 42).
     pub disabled: bool,
     /// "Skip when shuffling" checkbox (`itma` offset 30).
@@ -2207,7 +2274,7 @@ impl Track {
 #[non_exhaustive]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "Playlists have 4 orthogonal boolean flags (is_master, is_folder, is_smart, show_in_profile_and_search)"
+    reason = "Playlists have 5 orthogonal boolean flags (is_master, is_folder, is_smart, show_in_profile_and_search, suggestion_locally_modified)"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -2234,6 +2301,8 @@ pub struct Playlist {
     pub system_kind: DistinguishedPlaylistKind,
     /// User suggestion / favorite flag (`lpma` offset 223..225).
     pub suggestion_flag: SuggestionFlag,
+    /// Whether `suggestion_flag` has the `0x0100` locally-modified bit set.
+    pub suggestion_locally_modified: bool,
     /// Creation timestamp (`lpma` offset 22..26).
     pub date_created: Option<Timestamp>,
     /// Modification timestamp (`lpma` offset 138..142).
@@ -2326,25 +2395,23 @@ impl Library {
         Self::open(path)
     }
 
-    /// Opens a `.musicdb` file or `.musiclibrary` bundle directory and converts it to a high-level [`Library`].
+    /// Opens a `.musicdb` file, `.musiclibrary` bundle directory, or parent folder containing a `.musiclibrary` bundle
+    /// and converts it to a high-level [`Library`].
     ///
     /// # Errors
     ///
     /// Returns [`MusicDbError`] if reading, decrypting, or parsing the `.musicdb` file fails.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let p = path.as_ref();
-        let raw = RawLibraryFile::open(p)?;
+        let mdb_path = RawLibraryFile::resolve_musicdb_path(path);
+        let raw = RawLibraryFile::open(&mdb_path)?;
         let mut lib = Self::from(&raw);
 
-        let bundle_dir = if p.is_dir() {
-            Some(p)
-        } else {
-            p.parent().filter(|parent| {
-                parent.extension().and_then(|e| e.to_str()) == Some("musiclibrary")
-                    || parent.join("Preferences.plist").exists()
-                    || parent.join("preferences").is_dir()
-            })
-        };
+        let bundle_dir = mdb_path.parent().filter(|parent| {
+            parent.extension().and_then(|e| e.to_str()) == Some("musiclibrary")
+                || parent.join("Preferences.plist").exists()
+                || parent.join("preferences").is_dir()
+                || parent.join("Preferences").is_dir()
+        });
 
         if let Some(dir) = bundle_dir {
             lib.load_sidecar_preferences(dir);
@@ -2353,7 +2420,7 @@ impl Library {
         Ok(lib)
     }
 
-    /// Rebuilds the internal $O(1)$ [`PersistentId`] lookup indexes.
+    /// Rebuilds the internal $O(1)$ [`PersistentId`] and track-relation lookup indexes.
     pub fn rebuild_indexes(&mut self) {
         self.track_index = self
             .tracks
@@ -2385,26 +2452,67 @@ impl Library {
             .enumerate()
             .map(|(idx, sp)| (sp.persistent_id, idx))
             .collect();
+
+        self.tracks_by_album.clear();
+        self.tracks_by_artist.clear();
+        for (idx, t) in self.tracks.iter().enumerate() {
+            if let Some(apid) = t.album_persistent_id {
+                self.tracks_by_album.entry(apid).or_default().push(idx);
+            }
+            if let Some(rpid) = t.artist_persistent_id {
+                self.tracks_by_artist.entry(rpid).or_default().push(idx);
+            }
+        }
+        for indices in self.tracks_by_album.values_mut() {
+            indices.sort_by_key(|&idx| {
+                self.tracks
+                    .get(idx)
+                    .map_or((u16::MAX, u16::MAX), |t| (t.disc_number, t.track_number))
+            });
+        }
+    }
+
+    /// Returns any non-fatal warnings encountered while reading optional sidecar `.plist` files.
+    #[must_use]
+    pub fn sidecar_warnings(&self) -> &[String] {
+        &self.sidecar_warnings
     }
 
     /// Loads optional sidecar `.plist` files from a `.musiclibrary` bundle directory (`Preferences.plist` and `preferences/*.plist`).
+    ///
+    /// Non-fatal `.plist` parse errors are recorded in [`Library::sidecar_warnings`].
     pub fn load_sidecar_preferences<P: AsRef<Path>>(&mut self, bundle_dir: P) {
         let dir = bundle_dir.as_ref();
+        self.sidecar_warnings.clear();
 
         let prefs_plist = dir.join("Preferences.plist");
-        if prefs_plist.is_file()
-            && let Ok(plist::Value::Dictionary(root)) = plist::Value::from_file(&prefs_plist)
-            && let Some(copy_flag) = root
-                .get("com.apple.Music")
-                .and_then(plist::Value::as_dictionary)
-                .and_then(|d| {
-                    d.get(" CopyFilesToMediaFolder")
-                        .or_else(|| d.get("CopyFilesToMediaFolder"))
-                })
-                .or_else(|| root.get("Copy files to Music Media folder when adding to library"))
-                .and_then(plist::Value::as_boolean)
-        {
-            self.metadata.copy_files_to_media_folder = Some(copy_flag);
+        if prefs_plist.is_file() {
+            match plist::Value::from_file(&prefs_plist) {
+                Ok(plist::Value::Dictionary(root)) => {
+                    if let Some(copy_flag) = root
+                        .get("com.apple.Music")
+                        .and_then(plist::Value::as_dictionary)
+                        .and_then(|d| {
+                            d.get(" CopyFilesToMediaFolder")
+                                .or_else(|| d.get("CopyFilesToMediaFolder"))
+                        })
+                        .or_else(|| {
+                            root.get("Copy files to Music Media folder when adding to library")
+                        })
+                        .and_then(plist::Value::as_boolean)
+                    {
+                        self.metadata.copy_files_to_media_folder = Some(copy_flag);
+                    }
+                }
+                Ok(_) => self.sidecar_warnings.push(format!(
+                    "sidecar {} root is not a dictionary",
+                    prefs_plist.display()
+                )),
+                Err(err) => self.sidecar_warnings.push(format!(
+                    "failed to parse sidecar {}: {err}",
+                    prefs_plist.display()
+                )),
+            }
         }
 
         let prefs_subdir = if dir.join("preferences").is_dir() {
@@ -2418,7 +2526,8 @@ impl Library {
 
         let songs_plist = prefs_subdir.join("Songs.plist");
         if songs_plist.is_file() {
-            self.metadata.songs_view_preferences = parse_playlist_view_plist(&songs_plist);
+            self.metadata.songs_view_preferences =
+                load_optional_view_plist(&songs_plist, &mut self.sidecar_warnings);
         }
 
         for pl in &mut self.playlists {
@@ -2427,9 +2536,11 @@ impl Library {
             let candidate_lower =
                 prefs_subdir.join(format!("Playlist_{}.plist", pid_str.to_lowercase()));
             if candidate_upper.is_file() {
-                pl.view_preferences = parse_playlist_view_plist(&candidate_upper);
+                pl.view_preferences =
+                    load_optional_view_plist(&candidate_upper, &mut self.sidecar_warnings);
             } else if candidate_lower.is_file() {
-                pl.view_preferences = parse_playlist_view_plist(&candidate_lower);
+                pl.view_preferences =
+                    load_optional_view_plist(&candidate_lower, &mut self.sidecar_warnings);
             }
         }
     }
@@ -2551,14 +2662,11 @@ impl Library {
         &self,
         album_id: impl IntoPersistentId,
     ) -> impl Iterator<Item = &Track> + '_ {
-        let pid = album_id.into_persistent_id();
-        let mut out: Vec<&Track> = self
-            .tracks
-            .iter()
-            .filter(move |t| pid.is_some() && t.album_persistent_id == pid)
-            .collect();
-        out.sort_by_key(|t| (t.disc_number, t.track_number));
-        out.into_iter()
+        let indices = album_id
+            .into_persistent_id()
+            .and_then(|pid| self.tracks_by_album.get(&pid))
+            .map_or(&[][..], Vec::as_slice);
+        indices.iter().filter_map(|&idx| self.tracks.get(idx))
     }
 
     /// Returns an iterator over all [`Track`] records belonging to an [`Artist`] by [`PersistentId`].
@@ -2566,10 +2674,11 @@ impl Library {
         &self,
         artist_id: impl IntoPersistentId,
     ) -> impl Iterator<Item = &Track> + '_ {
-        let pid = artist_id.into_persistent_id();
-        self.tracks
-            .iter()
-            .filter(move |t| pid.is_some() && t.artist_persistent_id == pid)
+        let indices = artist_id
+            .into_persistent_id()
+            .and_then(|pid| self.tracks_by_artist.get(&pid))
+            .map_or(&[][..], Vec::as_slice);
+        indices.iter().filter_map(|&idx| self.tracks.get(idx))
     }
 
     /// Serializes the library to a pretty-printed JSON string.
@@ -2583,9 +2692,16 @@ impl Library {
     }
 }
 
+impl From<RawLibraryFile> for Library {
+    fn from(raw: RawLibraryFile) -> Self {
+        Self::from(&raw)
+    }
+}
+
 impl From<&RawLibraryFile> for Library {
     fn from(raw: &RawLibraryFile) -> Self {
         let h = &raw.outer_header;
+        let tz = h.timezone_offset_seconds;
         let mut metadata = LibraryMetadata {
             persistent_id: PersistentId::new(h.library_persistent_id),
             itunes_persistent_id: (h.itunes_library_persistent_id != 0)
@@ -2624,13 +2740,13 @@ impl From<&RawLibraryFile> for Library {
                     populate_plma_metadata(plma, &mut metadata);
                 }
                 HsmaChild::AlbumList(lama) => {
-                    albums.extend(lama.albums.iter().map(Album::from));
+                    albums.extend(lama.albums.iter().map(|a| Album::from_raw_with_tz(a, tz)));
                 }
                 HsmaChild::ArtistList(l_ama) => {
                     artists.extend(l_ama.artists.iter().map(Artist::from));
                 }
                 HsmaChild::TrackList(ltma) => {
-                    tracks.extend(ltma.tracks.iter().map(Track::from));
+                    tracks.extend(ltma.tracks.iter().map(|t| Track::from_raw_with_tz(t, tz)));
                 }
                 HsmaChild::PlaylistList(l_pma) => {
                     playlists.extend(l_pma.playlists.iter().map(Playlist::from));
@@ -2736,21 +2852,39 @@ impl From<&SocialProfileItem> for SocialProfile {
 
 impl From<&AlbumItem> for Album {
     fn from(iama: &AlbumItem) -> Self {
+        Self::from_raw_with_tz(iama, 0)
+    }
+}
+
+impl Album {
+    pub(crate) fn from_raw_with_tz(iama: &AlbumItem, tz_offset_seconds: i32) -> Self {
         let h = &iama.header;
         let mut title = None;
         let mut artist = None;
         let mut album_artist = None;
         let mut cloud_album_id = None;
         let mut editorial_notes = None;
+        let mut catalog_genre = None;
+        let mut motion_artwork_url = None;
+        let mut motion_preview_frame_url = None;
+        let mut motion_artwork_token = None;
 
         for boma in &iama.bomas {
-            if let Some(s) = boma.as_str() {
+            if boma.subtype == 0x0135 {
+                apply_album_motion_artwork_plist(
+                    boma,
+                    &mut motion_artwork_url,
+                    &mut motion_preview_frame_url,
+                    &mut motion_artwork_token,
+                );
+            } else if let Some(s) = boma.as_str() {
                 match boma.subtype {
                     0x012C => title = Some(s.to_owned()),
                     0x012D => artist = Some(s.to_owned()),
                     0x012E => album_artist = Some(s.to_owned()),
                     0x0133 => cloud_album_id = Some(s.to_owned()),
                     0x0134 => editorial_notes = Some(s.to_owned()),
+                    0x0136 => catalog_genre = Some(s.to_owned()),
                     _ => {}
                 }
             }
@@ -2767,17 +2901,58 @@ impl From<&AlbumItem> for Album {
             album_artist,
             cloud_album_id,
             editorial_notes,
+            catalog_genre,
+            motion_artwork_url,
+            motion_preview_frame_url,
+            motion_artwork_token,
             is_compilation: h.is_compilation != 0,
             star_rating: h.star_rating,
             star_rating_is_computed: h.star_rating_inheritance == 0x20,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
             suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
             date_suggestion_flag_modified: h.date_suggestion_flag_modified.to_utc(),
-            date_last_played: h.date_last_played.to_utc(),
+            date_last_played: h.date_last_played.to_utc_with_offset(tz_offset_seconds),
             date_cloud_synced: h.date_cloud_synced.and_then(AppleTimestamp::to_utc),
             date_released: h.date_released.and_then(AppleTimestamp::to_utc),
             apple_music_store_album_id: h.apple_music_store_album_id.filter(|&id| id != 0),
         }
+    }
+}
+
+fn apply_album_motion_artwork_plist(
+    boma: &BomaSection,
+    motion_artwork_url: &mut Option<String>,
+    motion_preview_frame_url: &mut Option<String>,
+    motion_artwork_token: &mut Option<String>,
+) {
+    let raw_bytes = match &boma.payload {
+        BomaPayload::BinaryPlist { raw_bytes, .. }
+        | BomaPayload::RawStringUtf8 { raw_bytes, .. }
+        | BomaPayload::Unknown { raw_bytes, .. } => raw_bytes.as_slice(),
+        _ => return,
+    };
+    let Ok(plist::Value::Dictionary(dict)) =
+        plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
+    else {
+        return;
+    };
+    if let Some(v) = dict
+        .get("motion-artwork-url")
+        .and_then(plist::Value::as_string)
+    {
+        motion_artwork_url.get_or_insert_with(|| v.to_owned());
+    }
+    if let Some(v) = dict
+        .get("motion-preview-frame-url")
+        .and_then(plist::Value::as_string)
+    {
+        motion_preview_frame_url.get_or_insert_with(|| v.to_owned());
+    }
+    if let Some(v) = dict
+        .get("motion-artwork-token")
+        .and_then(plist::Value::as_string)
+    {
+        motion_artwork_token.get_or_insert_with(|| v.to_owned());
     }
 }
 
@@ -2825,6 +3000,12 @@ impl From<&ArtistItem> for Artist {
 
 impl From<&TrackItem> for Track {
     fn from(itma: &TrackItem) -> Self {
+        Self::from_raw_with_tz(itma, 0)
+    }
+}
+
+impl Track {
+    pub(crate) fn from_raw_with_tz(itma: &TrackItem, tz_offset_seconds: i32) -> Self {
         let h = &itma.header;
         let cloud_saga_id = (h.cloud_saga_id != 0 && h.cloud_saga_id != 0xFFFF_FFFF_FFFF_FFFD)
             .then_some(h.cloud_saga_id);
@@ -2843,6 +3024,7 @@ impl From<&TrackItem> for Track {
             volume_adjustment: h.volume_adjustment,
             star_rating: h.star_rating,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
+            suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
             disabled: h.checkbox_disabled != 0,
             skip_when_shuffling: h.checkbox_skip_when_shuffling != 0,
             remember_playback_position: h.checkbox_remember_playback_position != 0,
@@ -2873,18 +3055,18 @@ impl From<&TrackItem> for Track {
         };
 
         for boma in &itma.bomas {
-            apply_track_boma(&mut track, boma);
+            apply_track_boma(&mut track, boma, tz_offset_seconds);
         }
 
         track
     }
 }
 
-fn apply_track_boma(track: &mut Track, boma: &BomaSection) {
+fn apply_track_boma(track: &mut Track, boma: &BomaSection, tz_offset_seconds: i32) {
     match &boma.payload {
         BomaPayload::TrackNumerics(num) => {
             if track.duration_ms.is_none() {
-                apply_primary_track_numerics(track, num);
+                apply_primary_track_numerics(track, num, tz_offset_seconds);
             } else {
                 apply_secondary_track_numerics(track, num);
             }
@@ -2895,9 +3077,10 @@ fn apply_track_boma(track: &mut Track, boma: &BomaSection) {
                 track.true_play_count = Some(ps.true_play_count);
                 track.skip_count = Some(ps.skip_count);
                 track.true_skip_count = Some(ps.true_skip_count);
-                track.date_last_played = ps.date_last_played.to_utc();
+                track.date_last_played = ps.date_last_played.to_utc_with_offset(tz_offset_seconds);
                 track.date_first_played_utc = ps.date_first_played_utc.to_utc();
-                track.date_last_skipped = ps.date_last_skipped.to_utc();
+                track.date_last_skipped =
+                    ps.date_last_skipped.to_utc_with_offset(tz_offset_seconds);
             }
         }
         BomaPayload::Book { extracted_path, .. } => {
@@ -2913,7 +3096,7 @@ fn apply_track_boma(track: &mut Track, boma: &BomaSection) {
     }
 }
 
-fn apply_primary_track_numerics(track: &mut Track, num: &TrackNumerics) {
+fn apply_primary_track_numerics(track: &mut Track, num: &TrackNumerics, tz_offset_seconds: i32) {
     track.duration_ms = Some(num.duration_ms);
     track.file_size = Some(num.file_size);
     track.bit_rate = Some(num.bit_rate);
@@ -2932,8 +3115,8 @@ fn apply_primary_track_numerics(track: &mut Track, num: &TrackNumerics) {
         (num.gapless_last_eight_frames_offset != 0).then_some(num.gapless_last_eight_frames_offset);
     track.store_genre_id = (num.store_genre_id != 0).then_some(num.store_genre_id);
     track.custom_lyrics_hash = (num.custom_lyrics_hash != 0).then_some(num.custom_lyrics_hash);
-    track.date_added = num.date_added.to_utc();
-    track.date_modified = num.date_modified.to_utc();
+    track.date_added = num.date_added.to_utc_with_offset(tz_offset_seconds);
+    track.date_modified = num.date_modified.to_utc_with_offset(tz_offset_seconds);
     track.date_purchased = num.date_purchased.to_utc();
     if !num.date_purchased.is_zero()
         || (num.subrecord_kind == 1
@@ -3114,9 +3297,7 @@ impl From<&PlaylistItem> for Playlist {
 
         let is_master = h.is_master_playlist != 0;
         let is_folder = h.is_folder != 0;
-        let distinguished_kind =
-            u16::from_le_bytes([h.distinguished_kind_bytes[1], h.distinguished_kind_bytes[2]]);
-        let system_kind = DistinguishedPlaylistKind::from(distinguished_kind);
+        let system_kind = DistinguishedPlaylistKind::from(h.distinguished_kind);
         let share_mode = PlaylistShareMode::from(h.cloud_share_mode);
 
         let mut pl = Self {
@@ -3128,6 +3309,7 @@ impl From<&PlaylistItem> for Playlist {
             show_in_profile_and_search: h.checkbox_show_in_profile_and_search != 0,
             system_kind,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
+            suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
             date_created: h.date_created.to_utc(),
             date_modified: h.date_modified.to_utc(),
             date_last_played: h.date_last_played.to_utc(),
@@ -3172,7 +3354,7 @@ impl From<&PlaylistItem> for Playlist {
             PlaylistKind::Master
         } else if is_folder {
             PlaylistKind::Folder
-        } else if distinguished_kind != 0 {
+        } else if h.distinguished_kind != 0 {
             PlaylistKind::Distinguished
         } else if pl.is_smart {
             PlaylistKind::Smart
@@ -3523,9 +3705,25 @@ fn resolve_playlist_refs_in_group(
     }
 }
 
-fn parse_playlist_view_plist(path: &Path) -> Option<PlaylistViewPreferences> {
-    let val = plist::Value::from_file(path).ok()?;
-    let dict = val.as_dictionary()?;
+fn load_optional_view_plist(
+    path: &Path,
+    warnings: &mut Vec<String>,
+) -> Option<PlaylistViewPreferences> {
+    match parse_playlist_view_plist(path) {
+        Ok(vp) => Some(vp),
+        Err(msg) => {
+            warnings.push(msg);
+            None
+        }
+    }
+}
+
+fn parse_playlist_view_plist(path: &Path) -> std::result::Result<PlaylistViewPreferences, String> {
+    let val = plist::Value::from_file(path)
+        .map_err(|err| format!("failed to parse sidecar {}: {err}", path.display()))?;
+    let dict = val
+        .as_dictionary()
+        .ok_or_else(|| format!("sidecar {} root is not a dictionary", path.display()))?;
 
     let mut view_as = dict
         .get("LibraryPage_ViewAs")
@@ -3562,7 +3760,7 @@ fn parse_playlist_view_plist(path: &Path) -> Option<PlaylistViewPreferences> {
         extract_visible_columns(vd, &mut sort_ascending, &mut visible_columns);
     }
 
-    Some(PlaylistViewPreferences {
+    Ok(PlaylistViewPreferences {
         view_as,
         sort_field,
         sort_ascending,

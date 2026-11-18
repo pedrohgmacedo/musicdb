@@ -21,6 +21,12 @@ pub const MAX_DECOMPRESSED_SIZE: u64 = 2 * 1024 * 1024 * 1024;
 /// Minimum outer `hfma` header size required to read the encryption envelope fields (up to offset 92).
 const MIN_OUTER_HEADER_SIZE: u32 = 92;
 
+fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
+    let end = offset.checked_add(2)?;
+    let slice: [u8; 2] = bytes.get(offset..end)?.try_into().ok()?;
+    Some(u16::from_le_bytes(slice))
+}
+
 fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     let end = offset.checked_add(4)?;
     let slice: [u8; 4] = bytes.get(offset..end)?.try_into().ok()?;
@@ -30,6 +36,7 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
 struct OuterEnvelopeFields {
     header_size_u32: u32,
     file_size: u32,
+    major_version: u16,
     max_encrypted_size: usize,
 }
 
@@ -47,9 +54,10 @@ fn parse_outer_envelope(bytes: &[u8]) -> Result<OuterEnvelopeFields> {
         return Err(MusicDbError::InvalidSignature(sig));
     }
 
-    let (Some(header_size_u32), Some(file_size), Some(max_encrypted_size_u32)) = (
+    let (Some(header_size_u32), Some(file_size), Some(major_version), Some(max_encrypted_size_u32)) = (
         read_u32_le(bytes, 4),
         read_u32_le(bytes, 8),
+        read_u16_le(bytes, 12),
         read_u32_le(bytes, 84),
     ) else {
         return Err(MusicDbError::TruncatedSection {
@@ -72,6 +80,7 @@ fn parse_outer_envelope(bytes: &[u8]) -> Result<OuterEnvelopeFields> {
     Ok(OuterEnvelopeFields {
         header_size_u32,
         file_size,
+        major_version,
         max_encrypted_size,
     })
 }
@@ -129,36 +138,31 @@ pub fn decrypt_and_decompress_bytes(file_bytes: &[u8], key: &[u8; 16]) -> Result
         return Ok(raw_bytes);
     }
 
-    let mut decompressed = Vec::new();
+    let mut raw_bytes = Vec::with_capacity(header_slice.len());
+    raw_bytes.extend_from_slice(header_slice);
     let decoder = ZlibDecoder::new(payload.as_slice());
     let mut bounded_decoder = decoder.take(MAX_DECOMPRESSED_SIZE.saturating_add(1));
     bounded_decoder
-        .read_to_end(&mut decompressed)
+        .read_to_end(&mut raw_bytes)
         .map_err(MusicDbError::Decompression)?;
 
-    if u64::try_from(decompressed.len()).unwrap_or(u64::MAX) > MAX_DECOMPRESSED_SIZE {
+    let decompressed_len = raw_bytes.len().saturating_sub(header_slice.len());
+    if u64::try_from(decompressed_len).unwrap_or(u64::MAX) > MAX_DECOMPRESSED_SIZE {
         return Err(MusicDbError::DecompressionLimitExceeded {
             max_bytes: MAX_DECOMPRESSED_SIZE,
         });
     }
 
-    let mut raw_bytes = Vec::with_capacity(header_slice.len().saturating_add(decompressed.len()));
-    raw_bytes.extend_from_slice(header_slice);
-    raw_bytes.extend_from_slice(&decompressed);
     Ok(raw_bytes)
 }
 
-/// Loads a `.musicdb` file (or `.musiclibrary` bundle directory) from disk and returns the raw (decrypted + decompressed) bytes.
+/// Loads a `.musicdb` file, `.musiclibrary` bundle directory, or parent folder containing a `.musiclibrary` bundle
+/// from disk and returns the raw (decrypted + decompressed) bytes.
 ///
 /// # Errors
 /// Returns [`MusicDbError`] if the file cannot be read, decrypted, or decompressed.
 pub fn load_raw_musicdb(path: impl AsRef<Path>) -> Result<Vec<u8>> {
-    let p = path.as_ref();
-    let target = if p.is_dir() && p.join("Library.musicdb").exists() {
-        p.join("Library.musicdb")
-    } else {
-        p.to_path_buf()
-    };
+    let target = crate::sections::RawLibraryFile::resolve_musicdb_path(path);
     let bytes = fs::read(target)?;
     decrypt_and_decompress_bytes(&bytes, DEFAULT_MUSICDB_KEY)
 }
@@ -215,6 +219,11 @@ pub fn compress_and_encrypt_bytes(raw_bytes: &[u8], key: &[u8; 16]) -> Result<Ve
     out.extend_from_slice(header);
     if let Some(file_size_slot) = out.get_mut(8..12) {
         file_size_slot.copy_from_slice(&new_file_size.to_le_bytes());
+    }
+    if (env.major_version >= 23 || read_u32_le(header, 128).unwrap_or(0) != 0)
+        && let Some(mirror_slot) = out.get_mut(128..132)
+    {
+        mirror_slot.copy_from_slice(&new_file_size.to_le_bytes());
     }
     out.extend_from_slice(&compressed);
 

@@ -58,12 +58,36 @@ impl AppleTimestamp {
     }
 
     /// Converts this timestamp to a UTC [`Timestamp`], returning `None` for `0` or sentinel values `< 86_400`.
+    ///
+    /// Use [`Self::to_utc_with_offset`] for fields that Apple Music stores in local wall-clock seconds
+    /// (`TrackNumerics::date_added`, `TrackNumerics::date_modified`, `TrackPlaysSkips::date_last_played`,
+    /// `TrackPlaysSkips::date_last_skipped`, and `AlbumItemHeader::date_last_played`).
     #[must_use]
     pub fn to_utc(self) -> Option<Timestamp> {
+        self.to_utc_with_offset(0)
+    }
+
+    /// Converts a local-epoch Apple timestamp (`utc_seconds + timezone_offset_seconds`) to a true UTC
+    /// [`Timestamp`] by subtracting `timezone_offset_seconds` (from [`crate::sections::HfmaHeader::timezone_offset_seconds`]).
+    ///
+    /// Returns `None` for `0` or sentinel values `< 86_400`.
+    ///
+    /// # Examples
+    /// ```
+    /// use musicdb::AppleTimestamp;
+    ///
+    /// // 1970-01-01 15:00:00 local time in UTC-3 (-10_800s) is 1970-01-01 18:00:00Z
+    /// let local_ts = AppleTimestamp::new(2_082_844_800 + 15 * 3600);
+    /// let utc = local_ts.to_utc_with_offset(-10_800).unwrap();
+    /// assert_eq!(utc.to_string(), "1970-01-01T18:00:00Z");
+    /// ```
+    #[must_use]
+    pub fn to_utc_with_offset(self, timezone_offset_seconds: i32) -> Option<Timestamp> {
         if self.0 < 86_400 {
             return None;
         }
-        let unix_secs = i64::from(self.0) - APPLE_TO_UNIX_EPOCH_OFFSET;
+        let unix_secs =
+            i64::from(self.0) - APPLE_TO_UNIX_EPOCH_OFFSET - i64::from(timezone_offset_seconds);
         Timestamp::from_second(unix_secs).ok()
     }
 }

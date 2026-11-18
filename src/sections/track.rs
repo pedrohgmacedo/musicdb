@@ -123,7 +123,7 @@ pub struct TrackItemHeader {
     pub unk_64_store_flag: Unknown<u8>,
     /// Offset 65: Star rating (0..=100 in steps of 20).
     pub star_rating: u8,
-    /// Offset 66..72: Sort string mode flags for `[Title, Album, Artist, Album Artist, Composer, _]` (`0x80` = auto-generated sort string, `0x01` = user-overridden custom sort string).
+    /// Offset 66..72: Sort string mode flags for `[Title, Album, Artist, Album Artist, Composer, Show]` (`0x80` = auto-generated sort mode, `0x81` = auto-generated sort string present, `0x01` = default custom sort mode, `0x03` = user-overridden custom sort string).
     pub auto_sort_flags: [u8; 6],
     /// Offset 72..82: Unknown 10 bytes (all zeros).
     pub unk_72_82: Unknown<[u8; 10]>,
@@ -223,7 +223,7 @@ pub struct TrackItemHeader {
     pub artwork_size_kind: u32,
     /// Offset 348..352: Artwork cached image format in `artwork.sqlite` (`cache_items.extension`; 1 = `jpeg`, 2 = `png`, 0 = none).
     pub artwork_image_format: u32,
-    /// Offset 352..356: Date added of the most recently added track (only set on that track, else 0).
+    /// Offset 352..356: Secondary cloud/library UTC timestamp (populated across synced tracks, else 0).
     pub date_added_most_recent_track: AppleTimestamp,
     /// Offset 356..376: Unknown 20 bytes.
     pub unk_356_376: Unknown<[u8; 20]>,

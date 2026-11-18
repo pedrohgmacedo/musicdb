@@ -59,6 +59,7 @@ impl VisitUnknowns for BomaSection {
             BomaPayload::RawStringUtf8 { .. }
             | BomaPayload::RawStringUtf16Le { .. }
             | BomaPayload::Book { .. }
+            | BomaPayload::BinaryPlist { .. }
             | BomaPayload::Unknown { .. } => {}
         }
     }
@@ -135,6 +136,13 @@ pub enum BomaPayload {
         /// All decoded string components inside the bookmark record.
         components: Vec<String>,
         /// Exact raw bookmark payload bytes.
+        raw_bytes: Vec<u8>,
+    },
+    /// Binary property list (`bplist00`) payload (e.g., `0x0135` album motion artwork metadata).
+    BinaryPlist {
+        /// `boma` subtype identifier.
+        subtype: u32,
+        /// Exact raw binary plist bytes.
         raw_bytes: Vec<u8>,
     },
     /// Unrecognized or raw `boma` payload preserved losslessly.
@@ -219,6 +227,8 @@ pub fn boma_subtype_name(subtype: u32) -> &'static str {
         0x012F => "series_title_12f",
         0x0133 => "cloud_album_id",
         0x0134 => "album_editorial_notes",
+        0x0135 => "plist_album_motion_artwork",
+        0x0136 => "catalog_album_genre",
         0x0190 => "artist_name",
         0x0191 => "sort_artist_name",
         0x0192 => "plist_artist_artwork_url",
@@ -417,15 +427,15 @@ fn parse_structured_boma_payload(
         }
         0x00CE if payload_bytes.len() >= 52 && first_four == Some(b"ipfa") => {
             let mut cur = Cursor::new(payload_bytes);
-            Some(BomaPayload::PlaylistItem(PlaylistTrackItem::read_le(
-                &mut cur,
-            )?))
+            let item = PlaylistTrackItem::read_le(&mut cur)?;
+            (usize::try_from(cur.position()).ok() == Some(payload_bytes.len()))
+                .then_some(BomaPayload::PlaylistItem(item))
         }
         0x00DA if payload_bytes.len() >= 24 && first_four == Some(b"IPfa") => {
             let mut cur = Cursor::new(payload_bytes);
-            Some(BomaPayload::PlaylistItemCompact(
-                CompactPlaylistTrackItem::read_le(&mut cur)?,
-            ))
+            let item = CompactPlaylistTrackItem::read_le(&mut cur)?;
+            (usize::try_from(cur.position()).ok() == Some(payload_bytes.len()))
+                .then_some(BomaPayload::PlaylistItemCompact(item))
         }
         0x00CA if payload_bytes.len() == 112 => {
             let mut cur = Cursor::new(payload_bytes);
@@ -520,6 +530,13 @@ fn parse_boma_payload(subtype: u32, payload_bytes: Vec<u8>) -> BinResult<BomaPay
         _ => {}
     }
 
+    if payload_bytes.starts_with(b"bplist00") {
+        return Ok(BomaPayload::BinaryPlist {
+            subtype,
+            raw_bytes: payload_bytes,
+        });
+    }
+
     Ok(BomaPayload::Unknown {
         subtype,
         raw_bytes: payload_bytes,
@@ -574,6 +591,7 @@ impl BinWrite for BomaSection {
             BomaPayload::RawStringUtf8 { raw_bytes, .. }
             | BomaPayload::RawStringUtf16Le { raw_bytes, .. }
             | BomaPayload::Book { raw_bytes, .. }
+            | BomaPayload::BinaryPlist { raw_bytes, .. }
             | BomaPayload::Unknown { raw_bytes, .. } => writer.write_all(raw_bytes)?,
         }
 

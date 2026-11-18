@@ -205,12 +205,42 @@ mod tests {
         inner_hfma.artist_count = 0;
         inner_hfma.max_crypt_size = 0;
 
-        let album_boma = make_utf16le_boma(0x012C, "Moving Pictures");
+        let album_title_boma = make_utf16le_boma(0x012C, "Moving Pictures");
+        let album_catalog_genre_boma = make_utf16le_boma(0x0136, "Hard Rock");
+        let mut motion_dict = plist::Dictionary::new();
+        motion_dict.insert(
+            "motion-artwork-url".to_string(),
+            plist::Value::String("https://example.invalid/rush/moving-pictures.m3u8".to_string()),
+        );
+        motion_dict.insert(
+            "motion-preview-frame-url".to_string(),
+            plist::Value::String("https://example.invalid/rush/moving-pictures.png".to_string()),
+        );
+        motion_dict.insert(
+            "motion-artwork-token".to_string(),
+            plist::Value::String("rush-mp-40th".to_string()),
+        );
+        let mut motion_plist_bytes = Vec::new();
+        plist::Value::Dictionary(motion_dict)
+            .to_writer_binary(&mut motion_plist_bytes)
+            .expect("encode synthetic motion bplist00");
+        let motion_boma = BomaSection {
+            header_size: 20,
+            total_size: 20 + u32::try_from(motion_plist_bytes.len()).unwrap(),
+            subtype: 0x0135,
+            unk_16_end: Unknown(vec![0; 4]),
+            payload: BomaPayload::BinaryPlist {
+                subtype: 0x0135,
+                raw_bytes: motion_plist_bytes,
+            },
+        };
+        let album_bomas = vec![album_title_boma, motion_boma, album_catalog_genre_boma];
+        let album_boma_bytes: u32 = album_bomas.iter().map(|b| b.total_size).sum();
         let album_item = AlbumItem {
             header: AlbumItemHeader {
                 header_size: 140,
-                total_size: 140 + album_boma.total_size,
-                boma_count: 1,
+                total_size: 140 + album_boma_bytes,
+                boma_count: u32::try_from(album_bomas.len()).unwrap(),
                 album_persistent_id: 0xAA00_0000_0000_0001,
                 unk_24: Unknown(2),
                 is_compilation: 0,
@@ -232,7 +262,7 @@ mod tests {
                 date_released: Some(AppleTimestamp::new(3_700_000_000)),
                 unk_tail: Unknown(vec![0; 12]),
             },
-            bomas: vec![album_boma],
+            bomas: album_bomas,
         };
         let album_list = AlbumListSection {
             header: AlbumListHeader {
@@ -431,7 +461,7 @@ mod tests {
                 suggestion_flag: 0x0102,
                 unk_64_store_flag: Unknown::new(1),
                 star_rating: 100,
-                auto_sort_flags: [0x81, 0x80, 0x03, 0, 0, 0],
+                auto_sort_flags: [0x81, 0x80, 0x03, 0, 0, 0x80],
                 unk_72_82: Unknown::new([0; 10]),
                 bpm: 120,
                 disc_number: 1,
@@ -512,6 +542,14 @@ mod tests {
         let decrypted_raw = decrypt_and_decompress_bytes(&encrypted_musicdb, DEFAULT_MUSICDB_KEY)
             .expect("decrypt synthetic");
         let parsed_raw = RawLibraryFile::from_raw_bytes(&decrypted_raw).expect("parse synthetic");
+        assert_eq!(
+            parsed_raw.outer_header.file_size,
+            u32::try_from(encrypted_musicdb.len()).unwrap()
+        );
+        assert_eq!(
+            parsed_raw.outer_header.file_size_mirror,
+            parsed_raw.outer_header.file_size
+        );
         assert_eq!(parsed_raw.to_raw_bytes().unwrap(), decrypted_raw);
 
         // Verify filtered parsing preserves 100% lossless round-trip via HsmaChild::Skipped
@@ -533,15 +571,42 @@ mod tests {
         );
 
         let lib = Library::from(&parsed_raw);
+        assert_eq!(lib, Library::from(parsed_raw.clone()));
         assert_eq!(lib.tracks.len(), 1);
         assert_eq!(lib.albums.len(), 1);
         assert_eq!(lib.artists.len(), 1);
+        assert_eq!(lib.album_tracks("AA00000000000001").count(), 1);
+        assert_eq!(lib.artist_tracks("BB00000000000002").count(), 1);
+
+        let al = &lib.albums[0];
+        assert_eq!(al.title.as_deref(), Some("Moving Pictures"));
+        assert_eq!(al.catalog_genre.as_deref(), Some("Hard Rock"));
+        assert_eq!(al.motion_artwork_token.as_deref(), Some("rush-mp-40th"));
+        assert_eq!(
+            al.date_last_played,
+            AppleTimestamp::new(3_800_000_000).to_utc_with_offset(-10_800)
+        );
+        assert_eq!(
+            al.date_cloud_synced,
+            AppleTimestamp::new(3_800_000_000).to_utc()
+        );
 
         let t = &lib.tracks[0];
         assert_eq!(t.title.as_deref(), Some("Tom Sawyer"));
+        assert_eq!(t.genre.as_deref(), Some("Progressive Rock"));
         assert_eq!(t.file_type_fourcc.as_deref(), Some("M4A "));
         assert_eq!(t.codec_fourcc.as_deref(), Some("mp4a"));
         assert_eq!(t.suggestion_flag, SuggestionFlag::Favorite);
+        assert!(t.suggestion_locally_modified);
+        assert_eq!(t.sort_modes.show, SortMode::AutoGenerated);
+        assert_eq!(
+            t.date_added,
+            AppleTimestamp::new(3_800_000_000).to_utc_with_offset(-10_800)
+        );
+        assert_eq!(
+            t.date_first_played_utc,
+            AppleTimestamp::new(3_790_000_000).to_utc()
+        );
         assert_eq!(t.has_embedded_artwork, Some(true));
         assert!(t.purchased);
         assert_eq!(
@@ -549,12 +614,50 @@ mod tests {
             Some("Rock")
         );
 
+        // Verify directory bundle resolution and non-fatal sidecar warning collection
+        {
+            let tmp_bundle_root = tempfile::tempdir().expect("create bundle tempdir");
+            let nested_bundle = tmp_bundle_root.path().join("Rush Library.musiclibrary");
+            std::fs::create_dir_all(&nested_bundle).expect("create nested .musiclibrary");
+            std::fs::write(nested_bundle.join("Library.musicdb"), &encrypted_musicdb)
+                .expect("write synthetic Library.musicdb");
+            std::fs::write(nested_bundle.join("Preferences.plist"), b"not-valid-plist")
+                .expect("write invalid sidecar plist");
+
+            let opened_from_parent =
+                Library::open(tmp_bundle_root.path()).expect("open parent of .musiclibrary");
+            assert_eq!(opened_from_parent, lib);
+            assert_eq!(opened_from_parent.sidecar_warnings().len(), 1);
+        }
+
+        #[cfg(all(feature = "serde", any(feature = "sqlite", feature = "cli")))]
+        {
+            let json = lib.to_json_pretty().expect("serialize Library to JSON");
+            let deser: Library = serde_json::from_str(&json).expect("deserialize Library");
+            assert_eq!(deser, lib);
+            assert!(deser.track_by_id("DD00000000000004").is_some());
+            assert_eq!(deser.album_tracks("AA00000000000001").count(), 1);
+            assert_eq!(deser.artist_tracks("BB00000000000002").count(), 1);
+        }
+
         #[cfg(feature = "sqlite")]
         {
             let tmp_dir = tempfile::tempdir().expect("create tempdir");
             let tmp_sqlite = tmp_dir.path().join("musicdb_synthetic_test.sqlite");
             lib.export_sqlite(&tmp_sqlite).expect("export_sqlite");
             assert!(tmp_sqlite.is_file());
+
+            let conn = rusqlite::Connection::open(&tmp_sqlite).expect("open exported sqlite");
+            let (track_genre, catalog_genre, local_mod): (String, String, i64) = conn
+                .query_row(
+                    "SELECT genre, album_catalog_genre, suggestion_locally_modified FROM v_tracks_enriched",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("query v_tracks_enriched");
+            assert_eq!(track_genre, "Progressive Rock");
+            assert_eq!(catalog_genre, "Hard Rock");
+            assert_eq!(local_mod, 1);
         }
     }
 
@@ -584,6 +687,7 @@ mod tests {
             fav_songs.system_kind,
             DistinguishedPlaylistKind::FavoriteSongs
         );
+        assert_eq!(fav_songs.system_kind.raw(), 61);
         let hidden_cloud = lib
             .playlist_by_name("Hidden Cloud PlaylistOnly Tracks")
             .expect("Hidden Cloud PlaylistOnly Tracks");
@@ -715,13 +819,26 @@ mod tests {
         huge_hsma[168..172].copy_from_slice(&0u32.to_le_bytes());
         huge_hsma[172..176].copy_from_slice(&1u32.to_le_bytes());
         huge_hsma[176..184].copy_from_slice(&(u64::MAX / 2).to_le_bytes());
-        assert!(RawLibraryFile::from_raw_bytes(&huge_hsma).is_err());
+        assert!(matches!(
+            RawLibraryFile::from_raw_bytes(&huge_hsma),
+            Err(MusicDbError::TruncatedSection {
+                ref section,
+                ..
+            }) if section == "hsma(subtype=1)"
+        ));
 
         // Probe 3: HfmaHeader with header_size = 100 (< 160 minimum)
         let mut short_hfma = vec![0u8; 160];
         short_hfma[0..4].copy_from_slice(b"hfma");
         short_hfma[4..8].copy_from_slice(&100u32.to_le_bytes());
-        assert!(RawLibraryFile::from_raw_bytes(&short_hfma).is_err());
+        assert!(matches!(
+            RawLibraryFile::from_raw_bytes(&short_hfma),
+            Err(MusicDbError::InvalidHeaderSize {
+                section: "hfma",
+                header_size: 100,
+                min_size: 160
+            })
+        ));
 
         // Probe 4: ltma section claiming u32::MAX tracks inside a small hsma buffer
         let mut huge_track_count = vec![0u8; 160 + 56 + 92];
@@ -734,7 +851,13 @@ mod tests {
         huge_track_count[216..220].copy_from_slice(b"ltma");
         huge_track_count[220..224].copy_from_slice(&92u32.to_le_bytes());
         huge_track_count[224..228].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(RawLibraryFile::from_raw_bytes(&huge_track_count).is_err());
+        assert!(matches!(
+            RawLibraryFile::from_raw_bytes(&huge_track_count),
+            Err(MusicDbError::TruncatedSection {
+                ref section,
+                ..
+            }) if section == "ltma.tracks"
+        ));
     }
 
     struct SpanInvariantChecker {
@@ -1173,8 +1296,8 @@ mod tests {
                 arg_3: 30,
                 arg_4: 40,
                 arg_5: 50,
-                arg_6: 60,
-                arg_7: 70,
+                unk_48_56: Unknown::new(60),
+                unk_56_64: Unknown::new(70),
                 unk_64: Unknown::new(0xDEAD_BEEF),
             }),
         };
@@ -1194,6 +1317,66 @@ mod tests {
         assert_eq!(parsed, slst);
         let mut visitor = CountVisitor(0);
         parsed.visit_unknowns("slst", &mut visitor);
-        assert_eq!(visitor.0, 7);
+        assert_eq!(visitor.0, 9);
+    }
+
+    #[test]
+    fn test_deeply_nested_slst_and_trailing_ipfa_roundtrip_without_overflow() {
+        use std::io::Cursor;
+
+        use binrw::{BinRead, BinWrite};
+
+        let rush_utf16be: Vec<u8> = "Rush".encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let mut payload = vec![0u8; 136 + 56 + rush_utf16be.len()];
+        payload[0..4].copy_from_slice(b"SLst");
+        payload[8..12].copy_from_slice(&1u32.to_be_bytes());
+        payload[136..140].copy_from_slice(&0x04u32.to_be_bytes()); // Artist
+        payload[140..144].copy_from_slice(&0x0100_0001u32.to_be_bytes()); // STRING_MODE | IS
+        let leaf_len = u32::try_from(rush_utf16be.len()).unwrap();
+        payload[188..192].copy_from_slice(&leaf_len.to_be_bytes());
+        payload[192..].copy_from_slice(&rush_utf16be);
+
+        for _ in 0..256 {
+            let child_len = u32::try_from(payload.len()).unwrap();
+            let mut outer = vec![0u8; 136 + 56];
+            outer[0..4].copy_from_slice(b"SLst");
+            outer[8..12].copy_from_slice(&1u32.to_be_bytes());
+            outer[188..192].copy_from_slice(&child_len.to_be_bytes());
+            outer.extend_from_slice(&payload);
+            payload = outer;
+        }
+
+        let parsed_slst =
+            SlstSection::read_be(&mut Cursor::new(&payload)).expect("parse 256-deep SLst");
+        let mut reserialized_slst = Vec::new();
+        parsed_slst
+            .write_be(&mut Cursor::new(&mut reserialized_slst))
+            .expect("write 256-deep SLst");
+        assert_eq!(reserialized_slst, payload);
+
+        // Verify boma 0x00CE (ipfa) and 0x00DA (IPfa) do not drop bytes if section_size < payload len
+        for (subtype, magic, declared_sec_size, payload_len) in [
+            (0x00CEu32, b"ipfa", 52u32, 68usize),
+            (0x00DAu32, b"IPfa", 24u32, 32usize),
+        ] {
+            let total_size = 20u32 + u32::try_from(payload_len).unwrap();
+            let mut boma_bytes = vec![0u8; 20 + payload_len];
+            boma_bytes[0..4].copy_from_slice(b"boma");
+            boma_bytes[4..8].copy_from_slice(&20u32.to_le_bytes());
+            boma_bytes[8..12].copy_from_slice(&total_size.to_le_bytes());
+            boma_bytes[12..16].copy_from_slice(&subtype.to_le_bytes());
+            boma_bytes[20..24].copy_from_slice(magic);
+            boma_bytes[24..28].copy_from_slice(&declared_sec_size.to_le_bytes());
+            boma_bytes[20 + payload_len - 1] = 0xAB;
+
+            let parsed_boma = BomaSection::read_le(&mut Cursor::new(&boma_bytes))
+                .expect("parse trailing-byte ipfa/IPfa boma");
+            assert!(matches!(parsed_boma.payload, BomaPayload::Unknown { .. }));
+            let mut out = Vec::new();
+            parsed_boma
+                .write_le(&mut Cursor::new(&mut out))
+                .expect("write boma");
+            assert_eq!(out, boma_bytes);
+        }
     }
 }

@@ -429,16 +429,15 @@ pub struct RawLibraryFile {
 }
 
 impl RawLibraryFile {
-    /// Resolves either a `.musiclibrary` bundle directory or a direct `.musicdb` file path
-    /// to the underlying `.musicdb` file path.
+    /// Resolves a `.musicdb` file path, `.musiclibrary` bundle directory, or parent folder containing
+    /// a `.musiclibrary` bundle to the underlying `.musicdb` file path.
     #[must_use]
     pub fn resolve_musicdb_path(path: impl AsRef<Path>) -> std::path::PathBuf {
         let p = path.as_ref();
-        if p.is_dir() {
-            let candidate = p.join("Library.musicdb");
-            if candidate.exists() {
-                return candidate;
-            }
+        if p.is_dir()
+            && let Some(bundle) = find_musiclibrary_bundle_dir(p)
+        {
+            return bundle.join("Library.musicdb");
         }
         p.to_path_buf()
     }
@@ -597,6 +596,62 @@ impl VisitUnknowns for RawLibraryFile {
             section.visit_unknowns("hsma", visitor);
         }
     }
+}
+
+/// Locates a `.musiclibrary` directory (containing `Library.musicdb`) inside `dir` when `dir`
+/// is either the bundle itself or a parent directory containing one.
+pub(crate) fn find_musiclibrary_bundle_dir(dir: &Path) -> Option<std::path::PathBuf> {
+    if !dir.is_dir() {
+        return None;
+    }
+    if dir.join("Library.musicdb").is_file() {
+        return Some(dir.to_path_buf());
+    }
+
+    let well_known = [
+        dir.join("Apple Music Library.musiclibrary"),
+        dir.join("Music Library.musiclibrary"),
+        dir.join("Apple Music")
+            .join("Apple Music Library.musiclibrary"),
+        dir.join("Music").join("Music Library.musiclibrary"),
+    ];
+    for candidate in well_known {
+        if candidate.join("Library.musicdb").is_file() {
+            return Some(candidate);
+        }
+    }
+
+    // Best-effort scan of direct subdirectories (ignoring symlinks and unreadable entries)
+    // to find a `.musiclibrary` bundle when a wrapper/snapshot directory is passed.
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut subdirs = Vec::new();
+    for entry_res in entries {
+        if let Ok(entry) = entry_res
+            && entry.file_type().is_ok_and(|ft| ft.is_dir())
+        {
+            subdirs.push(entry.path());
+        }
+    }
+    subdirs.sort();
+
+    for subdir in &subdirs {
+        if subdir.extension().and_then(|e| e.to_str()) == Some("musiclibrary")
+            && subdir.join("Library.musicdb").is_file()
+        {
+            return Some(subdir.clone());
+        }
+    }
+    for subdir in subdirs {
+        let name = subdir.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if matches!(name, "Previous Libraries" | "Media" | "Media.localized") {
+            continue;
+        }
+        if subdir.join("Library.musicdb").is_file() {
+            return Some(subdir);
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]

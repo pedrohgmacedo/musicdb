@@ -12,7 +12,7 @@ pub enum MusicDbError {
 
     /// Binary structure parsing or serialization error from `binrw`.
     #[error("binary parsing error")]
-    BinRw(#[from] binrw::Error),
+    BinRw(#[source] binrw::Error),
 
     /// File does not begin with the expected 4-byte `"hfma"` signature.
     #[error("invalid file signature: expected 'hfma', got {0:?}")]
@@ -107,6 +107,32 @@ pub enum MusicDbError {
     #[cfg(any(feature = "sqlite", feature = "cli"))]
     #[error("json serialization error")]
     Json(#[from] serde_json::Error),
+}
+
+impl From<binrw::Error> for MusicDbError {
+    fn from(err: binrw::Error) -> Self {
+        match extract_musicdb_error(err) {
+            Ok(mdb_err) => mdb_err,
+            Err(other) => Self::BinRw(other),
+        }
+    }
+}
+
+fn extract_musicdb_error(err: binrw::Error) -> std::result::Result<MusicDbError, binrw::Error> {
+    match err {
+        binrw::Error::Custom { pos, err: custom } => match custom.downcast::<MusicDbError>() {
+            Ok(mdb_err) => Ok(*mdb_err),
+            Err(other) => Err(binrw::Error::Custom { pos, err: other }),
+        },
+        binrw::Error::Backtrace(mut bt) => match extract_musicdb_error(*bt.error) {
+            Ok(mdb_err) => Ok(mdb_err),
+            Err(restored) => {
+                *bt.error = restored;
+                Err(binrw::Error::Backtrace(bt))
+            }
+        },
+        other => Err(other),
+    }
 }
 
 /// Convenience result alias using [`MusicDbError`].
