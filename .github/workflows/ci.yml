@@ -71,11 +71,21 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --no-default-features -- -D warnings
+      - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --no-default-features
       - run: cargo doc --no-deps --no-default-features
       - run: cargo clippy --all-targets --no-default-features --features serde -- -D warnings
       - run: cargo test --no-default-features --features serde
       - run: cargo test --no-default-features --features sqlite
+
+  msrv:
+    name: MSRV (1.99)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --all-features
 
   deny:
     name: Cargo Deny
