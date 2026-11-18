@@ -21,7 +21,7 @@ cargo install musicdb
 To use `musicdb` as a library in a Rust project without pulling in CLI dependencies or bundled SQLite:
 
 ```sh
-cargo add --no-default-features musicdb
+cargo add musicdb --no-default-features
 ```
 
 ### Cargo features
