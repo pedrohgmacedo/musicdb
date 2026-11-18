@@ -22,7 +22,7 @@ To use `musicdb` as a library in a Rust project without pulling in CLI dependenc
 
 ```toml
 [dependencies]
-musicdb = { version = "0.5", default-features = false }
+musicdb = { version = "0.6", default-features = false }
 ```
 
 ### Cargo features
