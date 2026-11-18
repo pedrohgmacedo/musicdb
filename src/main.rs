@@ -24,6 +24,32 @@ use crate::donate::{
 use musicdb::sections::{HsmaChild, HsmaSection};
 use musicdb::{Library, Playlist, RawLibraryFile, discover_default_library_path, load_raw_musicdb};
 
+fn write_stdout_or_exit(args: std::fmt::Arguments<'_>) {
+    if let Err(err) = io::stdout().write_fmt(args) {
+        if err.kind() == io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        // Best-effort diagnostic to stderr before exiting on non-BrokenPipe stdout error.
+        let _ = writeln!(io::stderr(), "error: failed printing to stdout: {err}");
+        std::process::exit(1);
+    }
+}
+
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        $crate::write_stdout_or_exit(format_args!($($arg)*));
+    }};
+}
+
+macro_rules! println {
+    () => {{
+        $crate::write_stdout_or_exit(format_args!("\n"));
+    }};
+    ($($arg:tt)*) => {{
+        $crate::write_stdout_or_exit(format_args!("{}\n", format_args!($($arg)*)));
+    }};
+}
+
 #[derive(Parser)]
 #[command(
     name = "musicdb",
@@ -198,11 +224,38 @@ enum Commands {
         /// Target shell
         shell: Shell,
     },
+
+    /// Run ad-hoc corpus verification across .musicdb snapshots and optional iTunes XML
+    #[cfg(feature = "adhoc")]
+    CorpusAudit {
+        /// Directories or .musicdb files to scan recursively
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Optional path to iTunes Music Library.xml for timestamp verification
+        #[arg(long)]
+        xml: Option<PathBuf>,
+        /// Optional pair of snapshots across a timezone change (`A` then `B`)
+        #[arg(long, num_args = 2)]
+        tz_pair: Option<Vec<PathBuf>>,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command {
+    if let Err(err) = dispatch_command(cli.command) {
+        if err
+            .downcast_ref::<io::Error>()
+            .is_some_and(|io_err| io_err.kind() == io::ErrorKind::BrokenPipe)
+        {
+            return Ok(());
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn dispatch_command(command: Commands) -> Result<()> {
+    match command {
         Commands::Info { path } => run_info(path),
         Commands::Unknowns { path, json } => run_unknowns(path, json),
         Commands::QueryUnknowns {
@@ -262,7 +315,25 @@ fn main() -> Result<()> {
             run_completions(shell);
             Ok(())
         }
+        #[cfg(feature = "adhoc")]
+        Commands::CorpusAudit {
+            paths,
+            xml,
+            tz_pair,
+        } => run_corpus_audit_cmd(&paths, xml.as_deref(), tz_pair.as_deref()),
     }
+}
+
+#[cfg(feature = "adhoc")]
+fn run_corpus_audit_cmd(
+    paths: &[PathBuf],
+    xml: Option<&Path>,
+    tz_pair: Option<&[PathBuf]>,
+) -> Result<()> {
+    let pair = tz_pair.and_then(|v| Some((v.first()?.as_path(), v.get(1)?.as_path())));
+    let report = crate::analysis::adhoc::corpus_audit::run_corpus_audit(paths, xml, pair)?;
+    print!("{report}");
+    Ok(())
 }
 
 fn prompt_yes_no(question: &str) -> Result<bool> {
@@ -469,6 +540,18 @@ fn run_query_unknowns(
 
 fn print_unknowns_report(path: &Path, report: &UnknownsReport) {
     println!("=== Unknowns & Invariant Analysis: {} ===", path.display());
+    if !report.unknown_hsma_sections.is_empty() {
+        println!(
+            "\n0. Unhandled hsma sections: {}",
+            report.unknown_hsma_sections.len()
+        );
+        for (subtype, sig, len) in &report.unknown_hsma_sections {
+            println!(
+                "   - subtype={subtype} ({}) sig={sig:?} ({len} bytes)",
+                musicdb::SectionKind::from(*subtype)
+            );
+        }
+    }
     println!(
         "\n1. Unhandled boma subtypes: {}",
         report.unknown_boma_subtypes.len()
@@ -520,6 +603,10 @@ fn print_unknowns_report(path: &Path, report: &UnknownsReport) {
         println!("     ! {ex}");
     }
 
+    print_unknown_field_summaries(report);
+}
+
+fn print_unknown_field_summaries(report: &UnknownsReport) {
     println!(
         "\n5. Unknown Fields with Non-Zero Data ({} fields):",
         report.nonzero_unknown_fields.len()
@@ -927,23 +1014,30 @@ fn run_donate_library(path: Option<&Path>, output: &Path, yes: bool) -> Result<(
             )
         })?
     } else {
-        let discovered = discover_default_library_path().ok_or_else(|| {
+        discover_default_library_path().ok_or_else(|| {
             anyhow::anyhow!(
                 "Could not auto-discover a default Apple Music Library in your Music directory. Please specify a path."
             )
-        })?;
-        if !yes
-            && !prompt_yes_no(&format!(
-                "Found Apple Music Library at {:?}.\nNote: Library.musicdb contains purchaser names/emails and Apple account IDs.\nPackage metadata into {:?}?",
-                discovered.display(),
-                output.display()
-            ))?
-        {
-            println!("Aborted.");
-            return Ok(());
-        }
-        discovered
+        })?
     };
+
+    if !yes
+        && !prompt_yes_no(&format!(
+            "Found Apple Music Library at {:?}.\nNote: Library.musicdb contains purchaser names/emails and Apple account IDs.\nPackage metadata into {:?}?",
+            bundle_dir.display(),
+            output.display()
+        ))?
+    {
+        println!("Aborted.");
+        return Ok(());
+    }
+    if yes {
+        eprintln!(
+            "Note: Packaging library metadata from {} into {} (includes purchaser names/emails and Apple account IDs).",
+            bundle_dir.display(),
+            output.display()
+        );
+    }
 
     let report = package_donated_library(&bundle_dir, output)?;
     println!(
@@ -1006,24 +1100,31 @@ fn run_donate_previous_libraries(path: Option<&Path>, output: &Path, yes: bool) 
             )
         })?
     } else {
-        let discovered = discover_default_previous_libraries_path().ok_or_else(|| {
+        discover_default_previous_libraries_path().ok_or_else(|| {
             anyhow::anyhow!(
                 "Could not auto-discover a 'Previous Libraries' folder in your Music directory. Please specify a path."
             )
-        })?;
-        let count = list_previous_library_bundles(&discovered).len();
-        if !yes
-            && !prompt_yes_no(&format!(
-                "Found {count} previous library snapshot(s) in {:?}.\nNote: Library.musicdb contains purchaser names/emails and Apple account IDs.\nPackage metadata into {:?}?",
-                discovered.display(),
-                output.display()
-            ))?
-        {
-            println!("Aborted.");
-            return Ok(());
-        }
-        discovered
+        })?
     };
+
+    let count = list_previous_library_bundles(&prev_dir).len();
+    if !yes
+        && !prompt_yes_no(&format!(
+            "Found {count} previous library snapshot(s) in {:?}.\nNote: Library.musicdb contains purchaser names/emails and Apple account IDs.\nPackage metadata into {:?}?",
+            prev_dir.display(),
+            output.display()
+        ))?
+    {
+        println!("Aborted.");
+        return Ok(());
+    }
+    if yes {
+        eprintln!(
+            "Note: Packaging {count} previous library snapshot(s) from {} into {} (includes purchaser names/emails and Apple account IDs).",
+            prev_dir.display(),
+            output.display()
+        );
+    }
 
     let report = package_donated_previous_libraries(&prev_dir, output)?;
     println!(

@@ -1771,6 +1771,31 @@ fn walk_raw_library(raw: &RawLibraryFile, collector: &mut Collector<'_>) {
             HsmaChild::SocialProfileList(lsma) => {
                 walk_social_profile_list(lsma, lib_allowed, collector);
             }
+            HsmaChild::Unknown {
+                kind,
+                signature,
+                raw_bytes,
+            } if lib_allowed => {
+                let field_name = format!("unknown_child_{}", hsma.header.subtype);
+                let sub = format!(
+                    "hsma[{hsma_idx}] kind={kind} sig={}",
+                    hex::encode(signature)
+                );
+                collector.record_field(
+                    FieldVisitMeta {
+                        section: "hsma",
+                        field_name: &field_name,
+                        span: UnknownSpan::Tail {
+                            start: 0,
+                            len: raw_bytes.len(),
+                        },
+                        entity_key: EntityKey::Library,
+                        subcontext: Some(&sub),
+                        is_zero: raw_bytes.iter().all(|&b| b == 0),
+                    },
+                    || format!("{} ({} bytes)", hex::encode(raw_bytes), raw_bytes.len()),
+                );
+            }
             _ => {}
         }
     }
