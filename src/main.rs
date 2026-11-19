@@ -238,6 +238,13 @@ enum Commands {
         #[arg(long, num_args = 2)]
         tz_pair: Option<Vec<PathBuf>>,
     },
+
+    /// Run ad-hoc sandwiched-unknown field probes across a corpus directory
+    #[cfg(feature = "adhoc")]
+    UnknownsProbe {
+        /// Corpus directory to inspect
+        corpus_dir: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -321,6 +328,10 @@ fn dispatch_command(command: Commands) -> Result<()> {
             xml,
             tz_pair,
         } => run_corpus_audit_cmd(&paths, xml.as_deref(), tz_pair.as_deref()),
+        #[cfg(feature = "adhoc")]
+        Commands::UnknownsProbe { corpus_dir } => {
+            crate::analysis::adhoc::unknowns_probe::run_unknowns_probe(&corpus_dir)
+        }
     }
 }
 
@@ -399,7 +410,7 @@ fn run_info(path: Option<PathBuf>) -> Result<()> {
         "App Version           : {} (format {}.{})",
         m.app_version, m.format_major_version, m.format_minor_version
     );
-    println!("File Type             : {}", m.file_type);
+    println!("HSMA Sections         : {}", m.hsma_count);
     println!("Library Persistent ID : {}", m.persistent_id);
     println!(
         "iTunes Persistent ID  : {}",
@@ -487,6 +498,11 @@ fn describe_hsma_child(child: &HsmaChild) -> String {
             "lPma PlaylistList (header_size={}, playlists={})",
             l.header.header_size,
             l.playlists.len()
+        ),
+        HsmaChild::PendingCloudDeletions(d) => format!(
+            "DCma PendingCloudDeletions (header_size={}, items={})",
+            d.header.header_size,
+            d.items.len()
         ),
         HsmaChild::SocialProfileList(s) => format!(
             "Lsma SocialProfileList (header_size={}, profiles={})",

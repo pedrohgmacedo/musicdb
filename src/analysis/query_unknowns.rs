@@ -2628,10 +2628,10 @@ mod tests {
         buf
     }
 
-    fn make_track_numerics_boma(subrecord_kind: u32, unk_200_shared_val: i32) -> Vec<u8> {
+    fn make_track_numerics_boma(subrecord_kind: u32, unk_300_val: i32) -> Vec<u8> {
         let mut payload = vec![0u8; 364];
         put_u32(&mut payload, 4, subrecord_kind);
-        payload[200..204].copy_from_slice(&unk_200_shared_val.to_le_bytes());
+        payload[300..304].copy_from_slice(&unk_300_val.to_le_bytes());
         make_raw_boma(0x0001, &payload)
     }
 
@@ -2710,12 +2710,12 @@ mod tests {
         hdr
     }
 
-    fn make_ipfa_boma(track_pid: u64, unk_40_counter: u32) -> Vec<u8> {
+    fn make_ipfa_boma(track_pid: u64, unk_28_val: u32) -> Vec<u8> {
         let mut payload = vec![0u8; 68];
         payload[0..4].copy_from_slice(b"ipfa");
         put_u32(&mut payload, 4, 68);
         put_u64(&mut payload, 20, track_pid);
-        put_u32(&mut payload, 40, unk_40_counter);
+        put_u32(&mut payload, 28, unk_28_val);
         make_raw_boma(0x00CE, &payload)
     }
 
@@ -2890,7 +2890,7 @@ mod tests {
         let unique_res = query_unknowns(
             &raw,
             &QueryUnknownsOptions {
-                field: Some("unk_200_shared_val".into()),
+                field: Some("unk_300".into()),
                 ..Default::default()
             },
         )
@@ -2978,7 +2978,7 @@ mod tests {
         let report = query_unknowns(
             &raw,
             &QueryUnknownsOptions {
-                field: Some("TrackNumerics.unk_200_shared_val".into()),
+                field: Some("TrackNumerics.unk_300".into()),
                 flat: true,
                 ..Default::default()
             },
@@ -3015,7 +3015,7 @@ mod tests {
         let ipfa_report = query_unknowns(
             &raw,
             &QueryUnknownsOptions {
-                field: Some("PlaylistTrackItem.unk_40_counter".into()),
+                field: Some("PlaylistTrackItem.unk_28_40".into()),
                 ..Default::default()
             },
         )

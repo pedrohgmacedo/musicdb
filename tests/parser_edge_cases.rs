@@ -149,4 +149,29 @@ fn test_deeply_nested_slst_and_trailing_ipfa_roundtrip_without_overflow() {
             .expect("write boma");
         assert_eq!(out, boma_bytes);
     }
+
+    // Verify DCma / dCma malformed header_size, section_size, and huge item_count produce Err cleanly
+    let mut bad_dcma_hdr = vec![0u8; 16];
+    bad_dcma_hdr[0..4].copy_from_slice(b"DCma");
+    bad_dcma_hdr[4..8].copy_from_slice(&8u32.to_le_bytes()); // < min 12
+    assert!(
+        musicdb::sections::CloudDeletionListSection::read_le(&mut Cursor::new(&bad_dcma_hdr))
+            .is_err()
+    );
+
+    let mut huge_dcma_count = vec![0u8; 92];
+    huge_dcma_count[0..4].copy_from_slice(b"DCma");
+    huge_dcma_count[4..8].copy_from_slice(&92u32.to_le_bytes());
+    huge_dcma_count[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(
+        musicdb::sections::CloudDeletionListSection::read_le(&mut Cursor::new(&huge_dcma_count))
+            .is_err()
+    );
+
+    let mut bad_item_size = vec![0u8; 24];
+    bad_item_size[0..4].copy_from_slice(b"dCma");
+    bad_item_size[4..8].copy_from_slice(&16u32.to_le_bytes()); // < min 24
+    assert!(
+        musicdb::sections::CloudDeletionItem::read_le(&mut Cursor::new(&bad_item_size)).is_err()
+    );
 }

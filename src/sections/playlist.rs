@@ -121,20 +121,24 @@ pub struct PlaylistItemHeader {
     pub unk_192: Unknown<u32>,
     /// Offset 196..204: iCloud Music Library Playlist `sagaId` repeated.
     pub cloud_playlist_saga_id_2: u64,
-    /// Offset 204..214: Unknown 10 bytes.
-    pub unk_204_214: Unknown<[u8; 10]>,
+    /// Offset 204..212: Signed-in Apple Store account ID (`dsid`, matches `hfma.apple_store_account_id`; 0 on system playlists or signed-out libraries).
+    pub apple_store_account_id: u64,
+    /// Offset 212..214: Unknown 2 bytes (`[0x00, 0x01]` on non-master/non-system playlists).
+    pub unk_212_214: Unknown<[u8; 2]>,
     /// Offset 214..222: iCloud Music Library Playlist `sagaId` repeated.
     pub cloud_playlist_saga_id_3: u64,
-    /// Offset 222: Unknown byte.
-    pub unk_222: Unknown<u8>,
+    /// Offset 222: Cloud shared flag (`1` iff `cloud_share_mode != 0`, i.e., subscribed catalog or publicly shared playlist).
+    pub is_cloud_shared: u8,
     /// Offset 223..225: Suggestion/like flag (0 = none, 1 = removed, 2 = favorite, 3 = suggest less).
     pub suggestion_flag: u16,
-    /// Offset 225..256: Unknown 31 bytes.
+    /// Offset 225..256: Unknown 31 bytes (offsets 232..256 hold three `u64` Apple Music catalog engagement counters on subscribed playlists).
     pub unk_225_256: Unknown<[u8; 31]>,
     /// Offset 256..260: Cloud refresh interval in seconds (7200 = 2 hours on subscribed playlists, 0 on user playlists).
     pub refresh_interval_seconds: u32,
-    /// Offset 260..262: Unknown 2 bytes.
-    pub unk_260_262: Unknown<[u8; 2]>,
+    /// Offset 260: Subscribed external playlist flag (`1` = subscribed Apple Music catalog playlist, `0` = user or system playlist).
+    pub is_subscribed_playlist: u8,
+    /// Offset 261: Unknown byte (typically `0`).
+    pub unk_261: Unknown<u8>,
     /// Offset 262: Checkbox "Show in My Profile and in Search" (1 = checked/public, 0 = unchecked/private).
     pub checkbox_show_in_profile_and_search: u8,
     /// Offset 263..279: Artwork UUID in `artwork.sqlite` (16 bytes).
@@ -143,7 +147,7 @@ pub struct PlaylistItemHeader {
     pub unk_279: Unknown<u8>,
     /// Offset 280..288: Secondary Playlist Persistent ID.
     pub playlist_persistent_id_2: u64,
-    /// Offset 288..296: Unknown 8 bytes (typically zeros).
+    /// Offset 288..296: Unknown 8 bytes (64-bit artwork content hash on macOS; 0 on Windows).
     pub unk_288_296: Unknown<[u8; 8]>,
     /// Offset 296..300: Artwork source kind in `artwork.sqlite` (`item_to_artwork.source_kind`; 63 = Cloud Playlist Cover Recipe, 102 = Custom/Uploaded Playlist Cover Artwork).
     pub artwork_source_kind: u32,
@@ -153,7 +157,7 @@ pub struct PlaylistItemHeader {
     pub date_cloud_published: AppleTimestamp,
     /// Offset 308..312: Cloud share / visibility mode (0 = private user playlist, 2 = subscribed catalog playlist, 4 = public shared user playlist on profile).
     pub cloud_share_mode: u32,
-    /// Offset 312..316: Unknown 4 bytes (0 on user playlists, sometimes non-zero on subscribed catalog playlists).
+    /// Offset 312..316: Uninitialized 4-byte padding (preserved losslessly for round-tripping).
     pub unk_312: Unknown<u32>,
     /// Offset 316..320: Artwork cache size kind in `artwork.sqlite` (`cache_items.size_kind`; 1 = `_sk1` when artwork is present, 0 otherwise).
     pub artwork_size_kind: u32,
@@ -215,10 +219,9 @@ impl VisitUnknowns for PlaylistItemHeader {
                 (self.unk_142_174, 142),
                 (self.unk_186_flags, 186),
                 (self.unk_192, 192),
-                (self.unk_204_214, 204),
-                (self.unk_222, 222),
+                (self.unk_212_214, 212),
                 (self.unk_225_256, 225),
-                (self.unk_260_262, 260),
+                (self.unk_261, 261),
                 (self.unk_279, 279),
                 (self.unk_288_296, 288),
                 (self.unk_312, 312),
@@ -271,8 +274,8 @@ pub struct PlaylistTrackItem {
     pub track_persistent_id: u64,
     /// Offset 28..40: Unknown 12 bytes.
     pub unk_28_40: Unknown<[u8; 12]>,
-    /// Offset 40..44: Sequential order / counter value.
-    pub unk_40_counter: Unknown<u32>,
+    /// Offset 40..44: Original insertion-time `global_counter` / persistent container item ID (`container_item_id`).
+    pub container_item_id: u32,
     /// Offset 44..52: Repeated `item_persistent_id` (often non-zero on last track in playlist).
     pub item_persistent_id_2: u64,
     /// Offset 52..`section_size`: Remaining bytes (16 bytes `52..68` when `section_size == 68`).
@@ -285,11 +288,7 @@ impl VisitUnknowns for PlaylistTrackItem {
         visit_unknowns!(
             visitor,
             "ipfa",
-            [
-                (self.unk_28_40, 28),
-                (self.unk_40_counter, 40),
-                (tail: self.unk_52_end, 52),
-            ]
+            [(self.unk_28_40, 28), (tail: self.unk_52_end, 52)]
         );
     }
 }

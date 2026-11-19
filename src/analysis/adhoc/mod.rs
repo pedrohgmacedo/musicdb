@@ -4,3 +4,4 @@
 //! general-purpose user builds (without `--features adhoc`) do not compile them.
 
 pub(crate) mod corpus_audit;
+pub(crate) mod unknowns_probe;

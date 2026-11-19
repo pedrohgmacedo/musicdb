@@ -66,6 +66,7 @@ impl Library {
         insert_tracks(&tx, self)?;
         insert_playlists(&tx, self)?;
         insert_social_profiles(&tx, self)?;
+        insert_pending_cloud_deletions(&tx, self)?;
         tx.commit()?;
 
         create_indexes_and_views(&conn)?;
@@ -93,7 +94,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             app_version TEXT NOT NULL,
             format_major_version INTEGER NOT NULL,
             format_minor_version INTEGER NOT NULL,
-            file_type INTEGER NOT NULL,
+            hsma_count INTEGER NOT NULL,
             declared_track_count INTEGER NOT NULL,
             declared_album_count INTEGER NOT NULL,
             declared_artist_count INTEGER NOT NULL,
@@ -101,6 +102,10 @@ fn create_tables(conn: &Connection) -> Result<()> {
             timezone_offset_seconds INTEGER NOT NULL,
             apple_store_account_id INTEGER NOT NULL,
             date_modified_utc TEXT,
+            date_cloud_synced_utc TEXT,
+            date_last_modified_utc TEXT,
+            cloud_database_revision INTEGER,
+            date_cloud_lease_expires_utc TEXT,
             show_song_list_checkboxes INTEGER,
             keep_media_folder_organized INTEGER,
             copy_files_to_media_folder INTEGER,
@@ -124,6 +129,9 @@ fn create_tables(conn: &Connection) -> Result<()> {
             motion_preview_frame_url TEXT,
             motion_artwork_token TEXT,
             is_compilation INTEGER NOT NULL,
+            playlist_only INTEGER NOT NULL,
+            catalog_album_type_raw INTEGER NOT NULL,
+            catalog_album_type TEXT NOT NULL,
             star_rating INTEGER NOT NULL,
             stars INTEGER NOT NULL,
             star_rating_is_computed INTEGER NOT NULL,
@@ -142,6 +150,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             name TEXT,
             sort_name TEXT,
             cloud_artist_id TEXT,
+            playlist_only INTEGER NOT NULL,
             suggestion_flag TEXT NOT NULL,
             suggestion_locally_modified INTEGER NOT NULL,
             date_suggestion_flag_modified_utc TEXT,
@@ -206,6 +215,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             suggestion_locally_modified INTEGER NOT NULL,
             disabled INTEGER NOT NULL,
             skip_when_shuffling INTEGER NOT NULL,
+            has_ever_been_played INTEGER NOT NULL,
             remember_playback_position INTEGER NOT NULL,
             show_composer_in_all_views INTEGER NOT NULL,
             use_work_and_movement INTEGER NOT NULL,
@@ -219,6 +229,13 @@ fn create_tables(conn: &Connection) -> Result<()> {
             custom_lyrics_hash INTEGER,
             is_itunes_matched INTEGER,
             is_apple_music_catalog INTEGER,
+            is_apple_digital_master INTEGER,
+            is_cloud_unavailable INTEGER,
+            is_available_in_catalog INTEGER,
+            audio_traits_raw INTEGER NOT NULL,
+            audio_traits TEXT NOT NULL,
+            purchaser_account_id INTEGER,
+            drm_account_id INTEGER,
             cloud_saga_id INTEGER,
             store_track_adam_id INTEGER,
             apple_music_store_album_id INTEGER,
@@ -278,6 +295,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             is_master INTEGER NOT NULL,
             is_folder INTEGER NOT NULL,
             is_smart INTEGER NOT NULL,
+            is_subscribed INTEGER NOT NULL,
             show_in_profile_and_search INTEGER NOT NULL,
             distinguished_kind INTEGER NOT NULL,
             system_kind TEXT NOT NULL,
@@ -348,6 +366,12 @@ fn create_tables(conn: &Connection) -> Result<()> {
             avatar_id TEXT,
             avatar_url TEXT
         );
+
+        CREATE TABLE pending_cloud_deletions (
+            cloud_saga_id INTEGER NOT NULL,
+            deletion_kind_raw INTEGER NOT NULL,
+            deletion_kind TEXT NOT NULL
+        );
         ",
     )?;
     Ok(())
@@ -363,15 +387,17 @@ fn insert_library_metadata(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
     tx.execute(
         "INSERT INTO library_metadata (
             persistent_id, itunes_persistent_id, revision_hash, file_size_mirror,
-            app_version, format_major_version, format_minor_version, file_type,
+            app_version, format_major_version, format_minor_version, hsma_count,
             declared_track_count, declared_album_count, declared_artist_count,
             declared_playlist_count, timezone_offset_seconds, apple_store_account_id,
-            date_modified_utc, show_song_list_checkboxes, keep_media_folder_organized,
+            date_modified_utc, date_cloud_synced_utc, date_last_modified_utc,
+            cloud_database_revision, date_cloud_lease_expires_utc,
+            show_song_list_checkboxes, keep_media_folder_organized,
             copy_files_to_media_folder, media_folder_uri, media_folder_path,
             imported_itl_path, songs_view_preferences_json
         ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-            ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+            ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
         )",
         params![
             m.persistent_id.to_string(),
@@ -381,7 +407,7 @@ fn insert_library_metadata(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             m.app_version,
             m.format_major_version,
             m.format_minor_version,
-            m.file_type,
+            m.hsma_count,
             m.declared_track_count,
             m.declared_album_count,
             m.declared_artist_count,
@@ -389,6 +415,10 @@ fn insert_library_metadata(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             m.timezone_offset_seconds,
             u64_to_sqlite_i64(m.apple_store_account_id),
             m.date_modified.map(|d| d.to_string()),
+            m.date_cloud_synced.map(|d| d.to_string()),
+            m.date_last_modified.map(|d| d.to_string()),
+            m.cloud_database_revision,
+            m.date_cloud_lease_expires.map(|d| d.to_string()),
             m.show_song_list_checkboxes.map(i32::from),
             m.keep_media_folder_organized.map(i32::from),
             m.copy_files_to_media_folder.map(i32::from),
@@ -407,13 +437,14 @@ fn insert_albums(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             persistent_id, itunes_persistent_id, first_track_persistent_id,
             title, artist, album_artist, cloud_album_id, editorial_notes,
             catalog_genre, motion_artwork_url, motion_preview_frame_url,
-            motion_artwork_token, is_compilation, star_rating, stars,
+            motion_artwork_token, is_compilation, playlist_only,
+            catalog_album_type_raw, catalog_album_type, star_rating, stars,
             star_rating_is_computed, suggestion_flag, suggestion_locally_modified,
             date_suggestion_flag_modified_utc, date_last_played_utc,
             date_cloud_synced_utc, date_released_utc, apple_music_store_album_id
         ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+            ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
         )",
     )?;
     for a in &lib.albums {
@@ -431,6 +462,9 @@ fn insert_albums(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             a.motion_preview_frame_url,
             a.motion_artwork_token,
             i32::from(a.is_compilation),
+            i32::from(a.playlist_only),
+            a.catalog_album_type.raw(),
+            a.catalog_album_type.to_string(),
             a.star_rating,
             a.stars(),
             i32::from(a.star_rating_is_computed),
@@ -450,10 +484,11 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
     let mut stmt = tx.prepare(
         "INSERT INTO artists (
             persistent_id, itunes_persistent_id, name, sort_name,
-            cloud_artist_id, suggestion_flag, suggestion_locally_modified,
-            date_suggestion_flag_modified_utc, date_cloud_synced_utc,
-            apple_music_store_artist_id, artwork_uuid, artwork_url_plist
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            cloud_artist_id, playlist_only, suggestion_flag,
+            suggestion_locally_modified, date_suggestion_flag_modified_utc,
+            date_cloud_synced_utc, apple_music_store_artist_id, artwork_uuid,
+            artwork_url_plist
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
     )?;
     for a in &lib.artists {
         stmt.execute(params![
@@ -462,6 +497,7 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             a.name,
             a.sort_name,
             a.cloud_artist_id,
+            i32::from(a.playlist_only),
             a.suggestion_flag.to_string(),
             i32::from(a.suggestion_locally_modified),
             a.date_suggestion_flag_modified.map(|d| d.to_string()),
@@ -476,10 +512,10 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "full-row 115-column SQLite track binding"
+    reason = "full-row 123-column SQLite track binding"
 )]
 fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
-    let placeholders: Vec<String> = (1..=115).map(|i| format!("?{i}")).collect();
+    let placeholders: Vec<String> = (1..=123).map(|i| format!("?{i}")).collect();
     let sql = format!(
         "INSERT INTO tracks (
             persistent_id, title, album, artist, album_artist, composer, genre,
@@ -494,19 +530,22 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             gapless_last_eight_frames_offset, equalizer_raw, equalizer_preset_id,
             equalizer_name, star_rating, stars, suggestion_flag,
             suggestion_locally_modified, disabled, skip_when_shuffling,
-            remember_playback_position, show_composer_in_all_views,
-            use_work_and_movement, album_is_compilation, part_of_gapless_album,
-            playlist_only, purchased, has_custom_lyrics, has_local_custom_lyrics,
+            has_ever_been_played, remember_playback_position,
+            show_composer_in_all_views, use_work_and_movement,
+            album_is_compilation, part_of_gapless_album, playlist_only, purchased,
+            has_custom_lyrics, has_local_custom_lyrics,
             has_unsynced_local_changes, custom_lyrics_hash, is_itunes_matched,
-            is_apple_music_catalog, cloud_saga_id, store_track_adam_id,
-            apple_music_store_album_id, apple_music_store_artist_id,
-            apple_music_store_album_artist_id, storefront_id, purchaser_email,
-            purchaser_name, downloaded_status, downloaded_state, cloud_status,
-            cloud_status_raw, cloud_album_id, cloud_artist_id,
-            cloud_artwork_token, cloud_lyrics_token, content_rating,
-            content_advisory, media_kind, media_type, playback_start_ms,
-            playback_stop_ms, play_count, true_play_count, skip_count,
-            true_skip_count, date_added_utc, date_modified_utc,
+            is_apple_music_catalog, is_apple_digital_master,
+            is_cloud_unavailable, is_available_in_catalog, audio_traits_raw,
+            audio_traits, purchaser_account_id, drm_account_id, cloud_saga_id,
+            store_track_adam_id, apple_music_store_album_id,
+            apple_music_store_artist_id, apple_music_store_album_artist_id,
+            storefront_id, purchaser_email, purchaser_name, downloaded_status,
+            downloaded_state, cloud_status, cloud_status_raw, cloud_album_id,
+            cloud_artist_id, cloud_artwork_token, cloud_lyrics_token,
+            content_rating, content_advisory, media_kind, media_type,
+            playback_start_ms, playback_stop_ms, play_count, true_play_count,
+            skip_count, true_skip_count, date_added_utc, date_modified_utc,
             date_last_played_utc, date_first_played_utc, date_last_skipped_utc,
             date_released_utc, date_purchased_utc, date_cloud_synced_utc,
             file_url, legacy_file_path, book_path, album_persistent_id,
@@ -578,6 +617,7 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             i32::from(t.suggestion_locally_modified),
             i32::from(t.disabled),
             i32::from(t.skip_when_shuffling),
+            i32::from(t.has_ever_been_played),
             i32::from(t.remember_playback_position),
             i32::from(t.show_composer_in_all_views),
             i32::from(t.use_work_and_movement),
@@ -591,6 +631,13 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             t.custom_lyrics_hash,
             t.is_itunes_matched.map(i32::from),
             t.is_apple_music_catalog.map(i32::from),
+            t.is_apple_digital_master.map(i32::from),
+            t.is_cloud_unavailable.map(i32::from),
+            t.is_available_in_catalog.map(i32::from),
+            t.audio_traits.bits(),
+            t.audio_traits.to_string(),
+            t.purchaser_account_id.map(u64_to_sqlite_i64),
+            t.drm_account_id.map(u64_to_sqlite_i64),
             t.cloud_saga_id.map(u64_to_sqlite_i64),
             t.store_track_adam_id.map(u64_to_sqlite_i64),
             t.apple_music_store_album_id.map(u64_to_sqlite_i64),
@@ -646,23 +693,24 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "full-row 47-column SQLite playlist binding"
+    reason = "full-row 48-column SQLite playlist binding"
 )]
 fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
-    let placeholders: Vec<String> = (1..=47).map(|i| format!("?{i}")).collect();
+    let placeholders: Vec<String> = (1..=48).map(|i| format!("?{i}")).collect();
     let sql = format!(
         "INSERT INTO playlists (
             persistent_id, parent_persistent_id, name, description, kind,
-            is_master, is_folder, is_smart, show_in_profile_and_search,
-            distinguished_kind, system_kind, suggestion_flag,
-            suggestion_locally_modified, date_created_utc, date_modified_utc,
-            date_last_played_utc, date_cloud_published_utc, date_cloud_synced_utc,
-            play_count, true_play_count, refresh_interval_seconds,
-            cloud_share_mode, share_mode, artwork_template_kind, cloud_saga_id,
-            universal_library_id, cloud_uuid, subscribed_container_url,
-            owner_name, owner_id, author_social_profile_persistent_id,
-            cloud_artwork_url, cloud_artwork_token, artwork_uuid,
-            declared_track_count, smart_live_updating, smart_match_rules,
+            is_master, is_folder, is_smart, is_subscribed,
+            show_in_profile_and_search, distinguished_kind, system_kind,
+            suggestion_flag, suggestion_locally_modified, date_created_utc,
+            date_modified_utc, date_last_played_utc, date_cloud_published_utc,
+            date_cloud_synced_utc, play_count, true_play_count,
+            refresh_interval_seconds, cloud_share_mode, share_mode,
+            artwork_template_kind, cloud_saga_id, universal_library_id,
+            cloud_uuid, subscribed_container_url, owner_name, owner_id,
+            author_social_profile_persistent_id, cloud_artwork_url,
+            cloud_artwork_token, artwork_uuid, declared_track_count,
+            smart_live_updating, smart_match_rules,
             smart_match_only_checked_items, smart_limit_count,
             smart_limit_unit, smart_limit_selection, smart_conjunction,
             smart_playlist_json, view_as, sort_field, sort_ascending,
@@ -703,6 +751,7 @@ fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             i32::from(p.is_master),
             i32::from(p.is_folder),
             i32::from(p.is_smart),
+            i32::from(p.is_subscribed),
             i32::from(p.show_in_profile_and_search),
             p.system_kind.raw(),
             p.system_kind.to_string(),
@@ -774,6 +823,22 @@ fn insert_social_profiles(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             s.handle,
             s.avatar_id,
             s.avatar_url,
+        ])?;
+    }
+    Ok(())
+}
+
+fn insert_pending_cloud_deletions(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
+    let mut stmt = tx.prepare(
+        "INSERT INTO pending_cloud_deletions (
+            cloud_saga_id, deletion_kind_raw, deletion_kind
+        ) VALUES (?1, ?2, ?3)",
+    )?;
+    for d in &lib.pending_cloud_deletions {
+        stmt.execute(params![
+            u64_to_sqlite_i64(d.cloud_saga_id),
+            d.kind.raw(),
+            d.kind.to_string(),
         ])?;
     }
     Ok(())

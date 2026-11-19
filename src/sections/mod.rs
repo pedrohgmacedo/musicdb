@@ -1,10 +1,12 @@
-//! Layer-1 lossless binary AST for Apple Music `.musicdb` files (`hfma`, `hsma`, `plma`, `lama`, `lAma`, `ltma`, `lPma`, `Lsma`, `boma`).
+//! Layer-1 lossless binary AST for Apple Music `.musicdb` files (`hfma`, `hsma`, `plma`, `lama`, `lAma`, `ltma`, `lPma`, `DCma`, `Lsma`, `boma`).
 
 /// `lama` and `iama` album list and album item binary structures.
 pub mod album;
 /// `lAma` and `iAma` artist list and artist item binary structures.
 pub mod artist;
 pub mod boma;
+/// `DCma` and `dCma` pending offline cloud deletion binary structures.
+pub mod cloud_deletion;
 pub mod header;
 /// `plma` library master section binary structures.
 pub mod library_master;
@@ -29,6 +31,7 @@ use crate::error::{MusicDbError, Result};
 pub use album::{AlbumItem, AlbumItemHeader, AlbumListHeader, AlbumListSection};
 pub use artist::{ArtistItem, ArtistItemHeader, ArtistListHeader, ArtistListSection};
 pub use boma::{BomaPayload, BomaSection, BomaStringSection};
+pub use cloud_deletion::{CloudDeletionItem, CloudDeletionListHeader, CloudDeletionListSection};
 pub use header::{HfmaHeader, HsmaHeader, SectionKind};
 pub use library_master::{LibraryMasterHeader, LibraryMasterSection, PlmaSub1F6, PlmaSub1FF};
 pub use playlist::{
@@ -199,6 +202,8 @@ pub enum HsmaChild {
     TrackList(TrackListSection),
     /// Subtype 2: `lPma` Playlist List.
     PlaylistList(PlaylistListSection),
+    /// Subtype 8: `DCma` Pending Offline Cloud Deletions.
+    PendingCloudDeletions(CloudDeletionListSection),
     /// Subtype 15: `Lsma` Social Profile List.
     SocialProfileList(SocialProfileListSection),
     /// Subtype 17: `LPma` Padding / Footer.
@@ -346,6 +351,9 @@ impl HsmaSection {
             (SectionKind::PlaylistList, Some(b"lPma")) if child_bytes.len() >= 12 => {
                 Some(HsmaChild::PlaylistList(PlaylistListSection::read_le(cur)?))
             }
+            (SectionKind::PendingCloudDeletions, Some(b"DCma")) if child_bytes.len() >= 12 => Some(
+                HsmaChild::PendingCloudDeletions(CloudDeletionListSection::read_le(cur)?),
+            ),
             (SectionKind::SocialProfileList, Some(b"Lsma")) if child_bytes.len() >= 12 => Some(
                 HsmaChild::SocialProfileList(SocialProfileListSection::read_le(cur)?),
             ),
@@ -387,6 +395,7 @@ impl BinWrite for HsmaSection {
             HsmaChild::ArtistList(l) => l.write_le(writer)?,
             HsmaChild::TrackList(l) => l.write_le(writer)?,
             HsmaChild::PlaylistList(l) => l.write_le(writer)?,
+            HsmaChild::PendingCloudDeletions(d) => d.write_le(writer)?,
             HsmaChild::SocialProfileList(s) => s.write_le(writer)?,
             HsmaChild::Padding(p) => p.write_le(writer)?,
             HsmaChild::Unknown { raw_bytes, .. } | HsmaChild::Skipped { raw_bytes, .. } => {
@@ -407,6 +416,7 @@ impl VisitUnknowns for HsmaSection {
             HsmaChild::ArtistList(artists) => artists.visit_unknowns("lAma", visitor),
             HsmaChild::TrackList(ltma) => ltma.visit_unknowns("ltma", visitor),
             HsmaChild::PlaylistList(playlists) => playlists.visit_unknowns("lPma", visitor),
+            HsmaChild::PendingCloudDeletions(dcma) => dcma.visit_unknowns("DCma", visitor),
             HsmaChild::SocialProfileList(lsma) => lsma.visit_unknowns("Lsma", visitor),
             HsmaChild::Padding(pad) => pad.visit_unknowns("LPma", visitor),
             HsmaChild::Unknown { .. } | HsmaChild::Skipped { .. } => {}

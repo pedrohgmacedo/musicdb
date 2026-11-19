@@ -24,11 +24,11 @@ pub struct HfmaHeader {
     pub version_bytes: [u8; 32],
     /// Offset 48..56: Library Persistent ID.
     pub library_persistent_id: u64,
-    /// Offset 56..60: musicdb file type (e.g. 6 or 7 = Library.musicdb, 2 = Library Preferences.musicdb).
-    pub musicdb_file_type: u32,
+    /// Offset 56..60: Number of `hsma` major sections in the decrypted payload (0 in inner `hfma`).
+    pub hsma_count: u32,
     /// Offset 60..64: Unknown (typically 20).
     pub unk_60: Unknown<u32>,
-    /// Offset 64..68: Unknown flags (differs between outer and inner `hfma`).
+    /// Offset 64..68: Platform / envelope flags (byte 64 = platform/schema, bytes 65..66 = `[1, 1]` in outer encrypted+compressed `hfma` vs `[0, 0]` in inner `hfma`).
     pub unk_64_flags: Unknown<[u8; 4]>,
     /// Offset 68..72: Total track count (0 in inner `hfma`).
     pub track_count: u32,
@@ -113,8 +113,9 @@ pub struct HsmaHeader {
     /// - 4: `lama` (Albums)
     /// - 5: `lAma` (Artists)
     /// - 6: `plma` (Library Master)
-    /// - 10: Trailer signature / hash
-    /// - 15: `Lsma`
+    /// - 8: `DCma` (Pending Offline Cloud Deletions)
+    /// - 10: `FairPlay` / computer authorization trailer signature / hash
+    /// - 15: `Lsma` (Social Profiles)
     /// - 17: `LPma` (Padding / Footer)
     pub subtype: u32,
     /// Offset 16..24: 64-bit total size used in format >= 23 (Apple Music 1.7+) when `total_size == 0` (0 in older formats).
@@ -180,7 +181,9 @@ pub enum SectionKind {
     ArtistList,
     /// Subtype 6: Library master (`plma`).
     LibraryMaster,
-    /// Subtype 10: Trailer signature / hash.
+    /// Subtype 8: Pending offline cloud deletions (`DCma` / `dCma`).
+    PendingCloudDeletions,
+    /// Subtype 10: `FairPlay` / computer authorization trailer signature / hash.
     Trailer,
     /// Subtype 15: Social profile list (`Lsma`).
     SocialProfileList,
@@ -199,6 +202,7 @@ impl From<u32> for SectionKind {
             4 => Self::AlbumList,
             5 => Self::ArtistList,
             6 => Self::LibraryMaster,
+            8 => Self::PendingCloudDeletions,
             10 => Self::Trailer,
             15 => Self::SocialProfileList,
             17 => Self::Padding,
@@ -216,6 +220,7 @@ impl From<SectionKind> for u32 {
             SectionKind::AlbumList => 4,
             SectionKind::ArtistList => 5,
             SectionKind::LibraryMaster => 6,
+            SectionKind::PendingCloudDeletions => 8,
             SectionKind::Trailer => 10,
             SectionKind::SocialProfileList => 15,
             SectionKind::Padding => 17,
@@ -233,6 +238,7 @@ impl std::fmt::Display for SectionKind {
             Self::AlbumList => f.write_str("AlbumList"),
             Self::ArtistList => f.write_str("ArtistList"),
             Self::LibraryMaster => f.write_str("LibraryMaster"),
+            Self::PendingCloudDeletions => f.write_str("PendingCloudDeletions"),
             Self::Trailer => f.write_str("Trailer"),
             Self::SocialProfileList => f.write_str("SocialProfileList"),
             Self::Padding => f.write_str("Padding"),
@@ -254,6 +260,11 @@ mod tests {
             (4, SectionKind::AlbumList, "AlbumList"),
             (5, SectionKind::ArtistList, "ArtistList"),
             (6, SectionKind::LibraryMaster, "LibraryMaster"),
+            (
+                8,
+                SectionKind::PendingCloudDeletions,
+                "PendingCloudDeletions",
+            ),
             (10, SectionKind::Trailer, "Trailer"),
             (15, SectionKind::SocialProfileList, "SocialProfileList"),
             (17, SectionKind::Padding, "Padding"),

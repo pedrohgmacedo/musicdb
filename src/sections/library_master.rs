@@ -2,6 +2,7 @@ use binrw::binrw;
 
 use super::boma::BomaSection;
 use super::read_bounded_vec;
+use super::timestamp::AppleTimestamp;
 use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
 
 /// Library master header (`plma`, typically 194 bytes in modern Apple Music, 160 in Catalina).
@@ -15,8 +16,12 @@ pub struct LibraryMasterHeader {
     pub header_size: u32,
     /// Offset 8: Number of `boma` subsections that follow.
     pub boma_count: u32,
-    /// Offset 12..24: Unknown bytes.
-    pub unk_12_24: Unknown<[u8; 12]>,
+    /// Offset 12..16: Unknown 4 bytes (`1` on iCloud Music Library databases, `0` on signed-out local libraries).
+    pub unk_12: Unknown<u32>,
+    /// Offset 16..20: Last iCloud Music Library sync timestamp (UTC Apple timestamp).
+    pub date_cloud_synced: AppleTimestamp,
+    /// Offset 20..24: Last local mutation / sync-check timestamp (Apple timestamp).
+    pub date_last_modified: AppleTimestamp,
     /// Offset 24: Checkbox "Settings -> General -> Show -> Songs list checkboxes" (0 or 1).
     pub checkbox_show_song_list_checkboxes: u8,
     /// Offset 25..52: Unknown bytes.
@@ -27,8 +32,8 @@ pub struct LibraryMasterHeader {
     pub unk_56_58: Unknown<[u8; 2]>,
     /// Offset 58..66: Library Persistent ID.
     pub library_persistent_id: u64,
-    /// Offset 66..68: Unknown 2 bytes.
-    pub unk_66_68: Unknown<[u8; 2]>,
+    /// Offset 66..68: Monotonic iCloud Music Library database revision (0 when not synced to iCloud).
+    pub cloud_database_revision: u16,
     /// Offset 68..72: Unknown (e.g. 0x00080000).
     pub unk_68: Unknown<u32>,
     /// Offset 72..92: Unknown 20 bytes.
@@ -37,10 +42,14 @@ pub struct LibraryMasterHeader {
     pub library_persistent_id_2: u64,
     /// Offset 100..104: Unknown 4 bytes.
     pub unk_100: Unknown<u32>,
-    /// Offset 104..108: Shared 4-byte value (also seen in `itma` offset 244 and `TrackNumerics` 200, 280).
-    pub unk_104_shared_val: Unknown<u32>,
-    /// Offset 108..128: Unknown 20 bytes.
-    pub unk_108_128: Unknown<[u8; 20]>,
+    /// Offset 104..112: Signed-in Apple Store account ID (`dsid`, matches `hfma.apple_store_account_id`; 0 when signed out).
+    pub apple_store_account_id: u64,
+    /// Offset 112..120: Unknown 8 bytes.
+    pub unk_112_120: Unknown<[u8; 8]>,
+    /// Offset 120..124: Future iCloud refresh / lease expiration timestamp (typically +7 days UTC).
+    pub date_cloud_lease_expires: AppleTimestamp,
+    /// Offset 124..128: Unknown 4 bytes.
+    pub unk_124: Unknown<u32>,
     /// Offset 128..132: Unknown (typically 2).
     pub unk_128: Unknown<u32>,
     /// Offset 132..136: Unknown 4 bytes.
@@ -66,16 +75,15 @@ impl VisitUnknowns for LibraryMasterHeader {
             visitor,
             "plma",
             [
-                (self.unk_12_24, 12),
+                (self.unk_12, 12),
                 (self.unk_25_52, 25),
                 (self.unk_52, 52),
                 (self.unk_56_58, 56),
-                (self.unk_66_68, 66),
                 (self.unk_68, 68),
                 (self.unk_72_92, 72),
                 (self.unk_100, 100),
-                (self.unk_104_shared_val, 104),
-                (self.unk_108_128, 108),
+                (self.unk_112_120, 112),
+                (self.unk_124, 124),
                 (self.unk_128, 128),
                 (self.unk_132, 132),
                 (self.unk_136, 136),

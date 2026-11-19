@@ -105,7 +105,13 @@ pub struct AlbumItemHeader {
     /// Offset 124..128: Album release date (UTC Apple timestamp; present when `header_size >= 128`).
     #[br(if(header_size >= 128))]
     pub date_released: Option<AppleTimestamp>,
-    /// Remaining bytes up to `header_size` (`128..140` or `128..156`, all zeros).
+    /// Offset 128..136: Unknown 8 bytes (present when `header_size >= 136`).
+    #[br(if(header_size >= 136))]
+    pub unk_128_136: Option<Unknown<[u8; 8]>>,
+    /// Offset 136..140: Apple Music catalog album release/edition type (`0` = none/local, `1` = Standard Album, `3` = Bonus/Deluxe/Expanded Edition, `4` = EP, `5` = Single; present when `header_size >= 140`).
+    #[br(if(header_size >= 140))]
+    pub catalog_album_type: Option<u32>,
+    /// Remaining bytes up to `header_size` beyond 140 (e.g. `140..156`).
     #[br(parse_with = read_unknown_tail, args(header_size, AlbumItemHeader::tail_start_offset(header_size), "iama"))]
     pub unk_tail: Unknown<Vec<u8>>,
 }
@@ -114,7 +120,11 @@ impl AlbumItemHeader {
     /// Returns the minimum byte offset at which `unk_tail` begins for a given `header_size`.
     #[must_use]
     pub(crate) const fn tail_start_offset(header_size: u32) -> u32 {
-        if header_size >= 128 {
+        if header_size >= 140 {
+            140
+        } else if header_size >= 136 {
+            136
+        } else if header_size >= 128 {
             128
         } else if header_size >= 124 {
             124
@@ -140,6 +150,7 @@ impl VisitUnknowns for AlbumItemHeader {
                 (self.unk_28, 28),
                 (self.unk_44_64, 44),
                 (self.unk_72_96, 72),
+                (?self.unk_128_136, 128),
                 (tail: self.unk_tail, tail_start),
             ]
         );

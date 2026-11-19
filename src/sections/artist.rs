@@ -65,8 +65,12 @@ pub struct ArtistItemHeader {
     pub boma_count: u32,
     /// Offset 16..24: Artist Persistent ID.
     pub artist_persistent_id: u64,
-    /// Offset 24..28: Unknown (typically 2).
-    pub unk_24: Unknown<u32>,
+    /// Offset 24: Unknown byte (typically 2, matches `iama` offset 24).
+    pub unk_24: Unknown<u8>,
+    /// Offset 25: Artist playlist-only flag (`0` = artist in main library, `1` = referenced only by playlist-only tracks).
+    pub playlist_only: u8,
+    /// Offset 26..28: Unknown 2 bytes (typically `[0, 0]`).
+    pub unk_26_28: Unknown<[u8; 2]>,
     /// Offset 28..32: Unknown (typically 1).
     pub unk_28: Unknown<u32>,
     /// Offset 32..52: Unknown 20 bytes (all zeros).
@@ -119,6 +123,7 @@ impl VisitUnknowns for ArtistItemHeader {
             "iAma",
             [
                 (self.unk_24, 24),
+                (self.unk_26_28, 26),
                 (self.unk_28, 28),
                 (self.unk_32_52, 32),
                 (self.unk_88_96, 88),

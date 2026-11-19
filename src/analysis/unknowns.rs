@@ -221,7 +221,7 @@ impl UnknownsCollector {
                 num.is_itunes_matched[0],
                 num.is_itunes_matched[1],
                 num.is_apple_music_catalog,
-                num.unk_35_60.first().copied().unwrap_or_default(),
+                *num.unk_35,
             ],
         );
     }
@@ -237,12 +237,12 @@ impl UnknownsCollector {
                     .get(&ipfa.track_persistent_id)
                 {
                     self.matched_track_persistent_id += 1;
-                    if *ipfa.unk_40_counter == itma_gc {
+                    if ipfa.container_item_id == itma_gc {
                         self.matched_itma_global_counter += 1;
                     } else if self.mismatched_examples.len() < 10 {
                         self.mismatched_examples.push(format!(
-                            "track {:016X}: ipfa.unk_40={} != itma.global_counter={itma_gc}",
-                            ipfa.track_persistent_id, ipfa.unk_40_counter
+                            "track {:016X}: ipfa.container_item_id={} != itma.global_counter={itma_gc}",
+                            ipfa.track_persistent_id, ipfa.container_item_id
                         ));
                     }
                 }

@@ -13,14 +13,14 @@ pub use crypto::{
 };
 pub use error::{MusicDbError, Result};
 pub use model::{
-    Album, Artist, CloudStatus, ContentRating, DistinguishedPlaylistKind, DownloadedStatus,
-    EqualizerPreset, IntoPersistentId, Library, LibraryMetadata, MediaKind, MediaKindFlags,
-    ParsePersistentIdError, PersistentId, Playlist, PlaylistKind, PlaylistShareMode,
-    PlaylistViewPreferences, RelativeTimeUnit, SmartCondition, SmartConjunction, SmartField,
-    SmartLimitUnit, SmartOperator, SmartOperatorFlags, SmartPlaylistConfig, SmartPlaylistLimit,
-    SmartRuleGroup, SmartRuleNode, SmartRuleValue, SmartSelectionMethod, SocialProfile, SortMode,
-    SortModeFlags, SuggestionFlag, SuggestionFlags, Track, TrackSortModes,
-    discover_default_library_path,
+    Album, Artist, AudioTraits, CatalogAlbumType, CloudDeletionKind, CloudStatus, ContentRating,
+    DistinguishedPlaylistKind, DownloadedStatus, EqualizerPreset, IntoPersistentId, Library,
+    LibraryMetadata, MediaKind, MediaKindFlags, ParsePersistentIdError, PendingCloudDeletion,
+    PersistentId, Playlist, PlaylistKind, PlaylistShareMode, PlaylistViewPreferences,
+    RelativeTimeUnit, SmartCondition, SmartConjunction, SmartField, SmartLimitUnit, SmartOperator,
+    SmartOperatorFlags, SmartPlaylistConfig, SmartPlaylistLimit, SmartRuleGroup, SmartRuleNode,
+    SmartRuleValue, SmartSelectionMethod, SocialProfile, SortMode, SortModeFlags, SuggestionFlag,
+    SuggestionFlags, Track, TrackSortModes, discover_default_library_path,
 };
 pub use sections::{AppleTimestamp, RawLibraryFile, SectionKind};
 
@@ -113,6 +113,52 @@ mod tests {
     }
 
     #[test]
+    fn test_audio_traits_and_catalog_enums() {
+        let traits = AudioTraits::from_bits_retain(0x3D);
+        assert!(traits.contains(AudioTraits::DOLBY_ATMOS));
+        assert!(traits.contains(AudioTraits::HI_RES_LOSSLESS));
+        assert!(traits.contains(AudioTraits::LOSSLESS));
+        assert!(traits.contains(AudioTraits::LOSSY_STEREO));
+        assert!(traits.contains(AudioTraits::SPATIAL_AUDIO));
+        assert!(!traits.contains(AudioTraits::DOLBY_AUDIO));
+        assert_eq!(
+            traits.to_string(),
+            "DolbyAtmos, HiResLossless, Lossless, LossyStereo, SpatialAudio"
+        );
+        assert_eq!(AudioTraits::empty().to_string(), "None");
+
+        assert_eq!(CatalogAlbumType::from(0), CatalogAlbumType::None);
+        assert_eq!(CatalogAlbumType::from(1), CatalogAlbumType::StandardAlbum);
+        assert_eq!(CatalogAlbumType::from(3), CatalogAlbumType::BonusEdition);
+        assert_eq!(CatalogAlbumType::from(4), CatalogAlbumType::Ep);
+        assert_eq!(CatalogAlbumType::from(5), CatalogAlbumType::Single);
+        assert_eq!(CatalogAlbumType::from(99), CatalogAlbumType::Unknown(99));
+        assert_eq!(CatalogAlbumType::BonusEdition.raw(), 3);
+        assert_eq!(CatalogAlbumType::BonusEdition.to_string(), "BonusEdition");
+
+        assert_eq!(
+            CloudDeletionKind::from(0),
+            CloudDeletionKind::FullLibraryDeletion
+        );
+        assert_eq!(
+            CloudDeletionKind::from(2),
+            CloudDeletionKind::KeepPlaylistOnly
+        );
+        assert_eq!(CloudDeletionKind::from(7), CloudDeletionKind::Unknown(7));
+        assert_eq!(CloudDeletionKind::KeepPlaylistOnly.raw(), 2);
+
+        assert_eq!(
+            DownloadedStatus::from(5),
+            DownloadedStatus::NoLongerAvailable
+        );
+        assert_eq!(DownloadedStatus::NoLongerAvailable.raw(), 5);
+        assert_eq!(
+            DownloadedStatus::NoLongerAvailable.to_string(),
+            "NoLongerAvailable"
+        );
+    }
+
+    #[test]
     fn test_suggestion_flag_and_smart_mappings() {
         assert_eq!(SuggestionFlag::from(0x0000), SuggestionFlag::Neutral);
         assert_eq!(SuggestionFlag::from(0x0001), SuggestionFlag::Removed);
@@ -162,7 +208,7 @@ mod tests {
             minor_version: 1,
             version_bytes,
             library_persistent_id: 0xABCD_0123_4567_89EF,
-            musicdb_file_type: 9,
+            hsma_count: 5,
             unk_60: Unknown(20),
             unk_64_flags: Unknown([2, 1, 1, 0]),
             track_count: 1,
@@ -244,7 +290,9 @@ mod tests {
                 apple_music_store_album_id_2: Some(1_440_000_001),
                 date_cloud_synced: Some(AppleTimestamp::new(3_800_000_000)),
                 date_released: Some(AppleTimestamp::new(3_700_000_000)),
-                unk_tail: Unknown(vec![0; 12]),
+                unk_128_136: Some(Unknown([0; 8])),
+                catalog_album_type: Some(3),
+                unk_tail: Unknown(Vec::new()),
             },
             bomas: album_bomas,
         };
@@ -265,6 +313,8 @@ mod tests {
                 boma_count: 1,
                 artist_persistent_id: 0xBB00_0000_0000_0002,
                 unk_24: Unknown(2),
+                playlist_only: 0,
+                unk_26_28: Unknown([0; 2]),
                 unk_28: Unknown(1),
                 unk_32_52: Unknown([0; 20]),
                 apple_music_store_artist_id: 900_001,
@@ -298,13 +348,19 @@ mod tests {
             subrecord_kind: 1,
             track_data_id: 0x9000_0001,
             unk_16: Unknown::new(1),
-            unk_20_flags: Unknown::new([0, 1, 1, 0]),
+            is_cloud_unavailable: 0,
+            unk_21_24: Unknown::new([1, 1, 0]),
             unk_24_27: Unknown::new([0; 3]),
             is_vbr: 0,
             is_local_subrecord: 1,
             is_itunes_matched: [0, 0],
             is_apple_music_catalog: 0,
-            unk_35_60: Unknown::new([0; 25]),
+            unk_35: Unknown::new(0),
+            is_apple_digital_master: 1,
+            unk_37_39: Unknown::new([0; 2]),
+            is_available_in_catalog: 1,
+            is_local_mp3: 0,
+            unk_41_60: Unknown::new([0; 19]),
             sample_rate: 44100.0,
             file_type_fourcc: 0x4D34_4120, // "M4A "
             unk_68_file_type: Unknown::new(0),
@@ -334,16 +390,15 @@ mod tests {
             apple_music_store_album_id: 0,
             apple_music_store_artist_id: 0,
             unk_176_200: Unknown::new([0; 24]),
-            unk_200_shared_val: Unknown::new(0),
-            unk_204: Unknown::new(0),
+            apple_store_account_id: 0,
             apple_music_store_album_artist_id: 0,
-            unk_216_256: Unknown::new([0; 40]),
+            unk_216_248: Unknown::new([0; 32]),
+            drm_account_id: 0,
             gapless_total_samples: 10_804_500,
             store_genre_id: 21,
             unk_268_272: Unknown::new(0),
             gapless_last_eight_frames_offset: 0,
-            unk_280_shared_val: Unknown::new(0),
-            unk_284_288: Unknown::new(0),
+            purchaser_account_id: 0,
             cloud_saga_id_1: 0,
             file_size: 8_123_456,
             unk_300: Unknown::new(0),
@@ -419,7 +474,7 @@ mod tests {
                 global_counter: 9,
                 unk_28_30: Unknown::new([0; 2]),
                 checkbox_skip_when_shuffling: 0,
-                unk_31_played_flag: Unknown::new(1),
+                has_ever_been_played: 1,
                 unk_32_38: Unknown::new([0; 6]),
                 checkbox_album_is_compilation: 0,
                 playlist_only: 0,
@@ -472,8 +527,7 @@ mod tests {
                 cloud_saga_id_1: 0,
                 itunes_store_matched_id: 0,
                 cloud_saga_id: 0,
-                unk_244_shared_val: Unknown::new(0),
-                unk_248: Unknown::new(0),
+                apple_store_account_id: 0,
                 unk_252_254: Unknown::new(0),
                 cloud_sync_state: 2,
                 has_custom_lyrics: 0,
@@ -489,7 +543,11 @@ mod tests {
                 artwork_source_kind: 12,
                 unk_312_320: Unknown::new(0),
                 cloud_saga_id_2: 0,
-                unk_328: Unknown::new(3),
+                artwork_cache_state: 8,
+                unk_329_331: Unknown::new([0; 2]),
+                audio_traits: AudioTraits::HI_RES_LOSSLESS.bits()
+                    | AudioTraits::LOSSLESS.bits()
+                    | AudioTraits::LOSSY_STEREO.bits(),
                 unk_332: Unknown::new(0),
                 date_suggestion_flag_modified: AppleTimestamp::new(3_800_000_000),
                 unk_340: Unknown::new(0),
@@ -510,6 +568,34 @@ mod tests {
             tracks: vec![track_item],
         };
 
+        let cloud_deletions = CloudDeletionListSection {
+            header: CloudDeletionListHeader {
+                header_size: 92,
+                item_count: 2,
+                unk_12_end: Unknown::new(vec![0; 80]),
+            },
+            items: vec![
+                CloudDeletionItem {
+                    section_size: 40,
+                    cloud_saga_id: 198_102_112,
+                    deletion_kind: 0,
+                    unk_17: Unknown::new(2),
+                    unk_18_20: Unknown::new([0; 2]),
+                    unk_20: Unknown::new(1),
+                    unk_24_end: Unknown::new(vec![0; 16]),
+                },
+                CloudDeletionItem {
+                    section_size: 40,
+                    cloud_saga_id: 198_102_113,
+                    deletion_kind: 2,
+                    unk_17: Unknown::new(2),
+                    unk_18_20: Unknown::new([0; 2]),
+                    unk_20: Unknown::new(1),
+                    unk_24_end: Unknown::new(vec![0; 16]),
+                },
+            ],
+        };
+
         let raw_file = RawLibraryFile {
             outer_header,
             sections: vec![
@@ -517,6 +603,7 @@ mod tests {
                 wrap_hsma(4, HsmaChild::AlbumList(album_list)),
                 wrap_hsma(5, HsmaChild::ArtistList(artist_list)),
                 wrap_hsma(1, HsmaChild::TrackList(track_list)),
+                wrap_hsma(8, HsmaChild::PendingCloudDeletions(cloud_deletions)),
             ],
             trailing_bytes: Vec::new(),
         };
@@ -565,6 +652,8 @@ mod tests {
         let al = &lib.albums[0];
         assert_eq!(al.title.as_deref(), Some("Moving Pictures"));
         assert_eq!(al.catalog_genre.as_deref(), Some("Hard Rock"));
+        assert_eq!(al.catalog_album_type, CatalogAlbumType::BonusEdition);
+        assert!(!al.playlist_only);
         assert_eq!(al.motion_artwork_token.as_deref(), Some("rush-mp-40th"));
         assert_eq!(
             al.date_last_played,
@@ -575,11 +664,30 @@ mod tests {
             AppleTimestamp::new(3_800_000_000).to_utc()
         );
 
+        assert!(!lib.artists[0].playlist_only);
+        assert_eq!(lib.pending_cloud_deletions.len(), 2);
+        assert_eq!(lib.pending_cloud_deletions[0].cloud_saga_id, 198_102_112);
+        assert_eq!(
+            lib.pending_cloud_deletions[0].kind,
+            CloudDeletionKind::FullLibraryDeletion
+        );
+        assert_eq!(
+            lib.pending_cloud_deletions[1].kind,
+            CloudDeletionKind::KeepPlaylistOnly
+        );
+
         let t = &lib.tracks[0];
         assert_eq!(t.title.as_deref(), Some("Tom Sawyer"));
         assert_eq!(t.genre.as_deref(), Some("Progressive Rock"));
         assert_eq!(t.file_type_fourcc.as_deref(), Some("M4A "));
         assert_eq!(t.codec_fourcc.as_deref(), Some("mp4a"));
+        assert!(t.has_ever_been_played);
+        assert_eq!(t.is_apple_digital_master, Some(true));
+        assert_eq!(t.is_cloud_unavailable, Some(false));
+        assert_eq!(t.is_available_in_catalog, Some(true));
+        assert!(t.audio_traits.contains(AudioTraits::HI_RES_LOSSLESS));
+        assert!(t.audio_traits.contains(AudioTraits::LOSSLESS));
+        assert!(!t.audio_traits.contains(AudioTraits::DOLBY_ATMOS));
         assert_eq!(t.suggestion_flag, SuggestionFlag::Favorite);
         assert!(t.suggestion_locally_modified);
         assert_eq!(t.sort_modes.show, SortMode::AutoGenerated);

@@ -10,7 +10,7 @@ use jiff::Timestamp;
 
 use crate::error::{MusicDbError, Result};
 use crate::sections::{
-    AlbumItem, AppleTimestamp, ArtistItem, BomaPayload, BomaSection, HsmaChild,
+    AlbumItem, AppleTimestamp, ArtistItem, BomaPayload, BomaSection, CloudDeletionItem, HsmaChild,
     LibraryMasterSection, PlaylistItem, RawLibraryFile, SlstSection, SmartPlaylistOptions,
     SmartPlaylistRule, SmartRuleChild, SocialProfileItem, TrackItem, TrackNumerics,
 };
@@ -485,6 +485,8 @@ pub enum DownloadedStatus {
     DownloadedLocal,
     /// `3`: Stored in cloud / not downloaded locally.
     CloudOnly,
+    /// `5`: Track is no longer available in the Apple Music catalog.
+    NoLongerAvailable,
     /// Unrecognized raw `u8` value.
     Unknown(u8),
 }
@@ -496,6 +498,7 @@ impl DownloadedStatus {
         match self {
             Self::DownloadedLocal => 1,
             Self::CloudOnly => 3,
+            Self::NoLongerAvailable => 5,
             Self::Unknown(v) => v,
         }
     }
@@ -506,6 +509,7 @@ impl From<u8> for DownloadedStatus {
         match v {
             1 => Self::DownloadedLocal,
             3 => Self::CloudOnly,
+            5 => Self::NoLongerAvailable,
             other => Self::Unknown(other),
         }
     }
@@ -516,7 +520,189 @@ impl fmt::Display for DownloadedStatus {
         match self {
             Self::DownloadedLocal => f.write_str("DownloadedLocal"),
             Self::CloudOnly => f.write_str("CloudOnly"),
+            Self::NoLongerAvailable => f.write_str("NoLongerAvailable"),
             Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
+bitflags! {
+    /// Apple Music catalog `audioTraits` bitmask (`itma` offset 331).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct AudioTraits: u8 {
+        /// `0x01`: Dolby Atmos spatial audio (`atmos`).
+        const DOLBY_ATMOS     = 0x01;
+        /// `0x02`: Dolby Audio / Surround 5.1 (`surround`).
+        const DOLBY_AUDIO     = 0x02;
+        /// `0x04`: ALAC Lossless audio (`lossless`).
+        const LOSSLESS        = 0x04;
+        /// `0x08`: Lossy stereo / AAC audio (`lossy-stereo`).
+        const LOSSY_STEREO    = 0x08;
+        /// `0x10`: Hi-Res ALAC Lossless audio (`hi-res-lossless`).
+        const HI_RES_LOSSLESS = 0x10;
+        /// `0x20`: Spatial Audio capability flag (`spatial`, set with Dolby Atmos or Dolby Audio).
+        const SPATIAL_AUDIO   = 0x20;
+    }
+}
+
+impl fmt::Display for AudioTraits {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty() {
+            return f.write_str("None");
+        }
+        let mut first = true;
+        let known = [
+            (Self::DOLBY_ATMOS, "DolbyAtmos"),
+            (Self::DOLBY_AUDIO, "DolbyAudio"),
+            (Self::HI_RES_LOSSLESS, "HiResLossless"),
+            (Self::LOSSLESS, "Lossless"),
+            (Self::LOSSY_STEREO, "LossyStereo"),
+            (Self::SPATIAL_AUDIO, "SpatialAudio"),
+        ];
+        for (flag, name) in known {
+            if self.contains(flag) {
+                if !first {
+                    f.write_str(", ")?;
+                }
+                f.write_str(name)?;
+                first = false;
+            }
+        }
+        let unknown_bits = self.bits() & !Self::all().bits();
+        if unknown_bits != 0 {
+            if !first {
+                f.write_str(", ")?;
+            }
+            write!(f, "Unknown(0x{unknown_bits:02X})")?;
+        }
+        Ok(())
+    }
+}
+
+/// Apple Music catalog album release / edition type (`iama` offset 136..140).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CatalogAlbumType {
+    /// `0`: None / local album without catalog release type metadata.
+    #[default]
+    None,
+    /// `1`: Standard full-length album.
+    StandardAlbum,
+    /// `3`: Bonus, Deluxe, or Expanded Edition.
+    BonusEdition,
+    /// `4`: Extended Play (EP).
+    Ep,
+    /// `5`: Single.
+    Single,
+    /// Unrecognized raw `u32` catalog album type.
+    Unknown(u32),
+}
+
+impl CatalogAlbumType {
+    /// Returns the raw `u32` code stored at `iama` offset 136..140.
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::StandardAlbum => 1,
+            Self::BonusEdition => 3,
+            Self::Ep => 4,
+            Self::Single => 5,
+            Self::Unknown(v) => v,
+        }
+    }
+}
+
+impl From<u32> for CatalogAlbumType {
+    fn from(v: u32) -> Self {
+        match v {
+            0 => Self::None,
+            1 => Self::StandardAlbum,
+            3 => Self::BonusEdition,
+            4 => Self::Ep,
+            5 => Self::Single,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for CatalogAlbumType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("None"),
+            Self::StandardAlbum => f.write_str("StandardAlbum"),
+            Self::BonusEdition => f.write_str("BonusEdition"),
+            Self::Ep => f.write_str("Ep"),
+            Self::Single => f.write_str("Single"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
+/// Pending offline cloud deletion mode (`dCma` offset 16).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CloudDeletionKind {
+    /// `0`: Full deletion from the user's iCloud Music Library.
+    #[default]
+    FullLibraryDeletion,
+    /// `2`: Removed from main library while retained as a playlist-only track.
+    KeepPlaylistOnly,
+    /// Unrecognized raw `u8` deletion kind.
+    Unknown(u8),
+}
+
+impl CloudDeletionKind {
+    /// Returns the raw `u8` code stored at `dCma` offset 16.
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        match self {
+            Self::FullLibraryDeletion => 0,
+            Self::KeepPlaylistOnly => 2,
+            Self::Unknown(v) => v,
+        }
+    }
+}
+
+impl From<u8> for CloudDeletionKind {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => Self::FullLibraryDeletion,
+            2 => Self::KeepPlaylistOnly,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for CloudDeletionKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FullLibraryDeletion => f.write_str("FullLibraryDeletion"),
+            Self::KeepPlaylistOnly => f.write_str("KeepPlaylistOnly"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
+/// A pending offline iCloud Music Library track deletion queued in `DCma` / `dCma` (`hsma` subtype 8).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PendingCloudDeletion {
+    /// iCloud Music Library `sagaId` of the deleted track (`dCma` offset 8..16).
+    pub cloud_saga_id: u64,
+    /// Deletion mode (`dCma` offset 16).
+    pub kind: CloudDeletionKind,
+}
+
+impl From<&CloudDeletionItem> for PendingCloudDeletion {
+    fn from(item: &CloudDeletionItem) -> Self {
+        Self {
+            cloud_saga_id: item.cloud_saga_id,
+            kind: CloudDeletionKind::from(item.deletion_kind),
         }
     }
 }
@@ -1817,6 +2003,8 @@ pub struct Library {
     pub playlists: Vec<Playlist>,
     /// All Apple Music social profile records (`isma`) in the library.
     pub social_profiles: Vec<SocialProfile>,
+    /// Pending offline iCloud Music Library track deletions (`DCma` / `dCma`).
+    pub pending_cloud_deletions: Vec<PendingCloudDeletion>,
     #[cfg_attr(feature = "serde", serde(skip))]
     track_index: HashMap<PersistentId, usize>,
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -1843,6 +2031,7 @@ impl PartialEq for Library {
             && self.tracks == other.tracks
             && self.playlists == other.playlists
             && self.social_profiles == other.social_profiles
+            && self.pending_cloud_deletions == other.pending_cloud_deletions
     }
 }
 
@@ -1866,6 +2055,8 @@ impl<'de> serde::Deserialize<'de> for Library {
             playlists: Vec<Playlist>,
             #[serde(default)]
             social_profiles: Vec<SocialProfile>,
+            #[serde(default)]
+            pending_cloud_deletions: Vec<PendingCloudDeletion>,
         }
 
         let raw = RawDeserializedLibrary::deserialize(deserializer)?;
@@ -1876,6 +2067,7 @@ impl<'de> serde::Deserialize<'de> for Library {
             tracks: raw.tracks,
             playlists: raw.playlists,
             social_profiles: raw.social_profiles,
+            pending_cloud_deletions: raw.pending_cloud_deletions,
             ..Self::default()
         };
         lib.rebuild_indexes();
@@ -1921,8 +2113,8 @@ pub struct LibraryMetadata {
     pub format_major_version: u16,
     /// Binary format minor version (e.g. `2`, `20`, `40`, `1`).
     pub format_minor_version: u16,
-    /// `.musicdb` file type code (`6` or `7` for `Library.musicdb`, `2` for `Library Preferences.musicdb`).
-    pub file_type: u32,
+    /// Number of `hsma` major sections declared in `hfma` (`hfma` offset 56..60).
+    pub hsma_count: u32,
     /// Declared track count in `hfma`.
     pub declared_track_count: u32,
     /// Declared album count in `hfma`.
@@ -1937,6 +2129,14 @@ pub struct LibraryMetadata {
     pub apple_store_account_id: u64,
     /// Library modification timestamp from `hfma`.
     pub date_modified: Option<Timestamp>,
+    /// Last iCloud Music Library sync timestamp from `plma` (`plma` offset 16..20).
+    pub date_cloud_synced: Option<Timestamp>,
+    /// Last local mutation / sync-check timestamp from `plma` (`plma` offset 20..24).
+    pub date_last_modified: Option<Timestamp>,
+    /// Monotonic iCloud Music Library database revision from `plma` (`plma` offset 66..68).
+    pub cloud_database_revision: Option<u16>,
+    /// Future iCloud refresh / lease expiration timestamp from `plma` (`plma` offset 120..124).
+    pub date_cloud_lease_expires: Option<Timestamp>,
     /// "Settings -> General -> Show -> Songs list checkboxes" setting from `plma`.
     pub show_song_list_checkboxes: Option<bool>,
     /// "Settings -> Files -> Keep Music Media folder organized" setting from `plma`.
@@ -1955,6 +2155,10 @@ pub struct LibraryMetadata {
 
 /// Decoded Album record (`iama`).
 #[non_exhaustive]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Albums have 4 orthogonal boolean flags (is_compilation, playlist_only, star_rating_is_computed, suggestion_locally_modified)"
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Album {
@@ -1984,6 +2188,10 @@ pub struct Album {
     pub motion_artwork_token: Option<String>,
     /// Compilation album flag (`iama` offset 25).
     pub is_compilation: bool,
+    /// Whether this album is referenced only by playlist-only tracks (`iama` offset 26).
+    pub playlist_only: bool,
+    /// Apple Music catalog album release / edition type (`iama` offset 136..140).
+    pub catalog_album_type: CatalogAlbumType,
     /// Raw star rating (`0..=100` in steps of 20).
     pub star_rating: u8,
     /// Whether `star_rating` is computed from track ratings (`0x20`) rather than set directly (`0x01`).
@@ -2027,6 +2235,8 @@ pub struct Artist {
     pub sort_name: Option<String>,
     /// iCloud Music Library artist ID (`boma 0x0193`).
     pub cloud_artist_id: Option<String>,
+    /// Whether this artist is referenced only by playlist-only tracks (`iAma` offset 25).
+    pub playlist_only: bool,
     /// User suggestion / favorite flag (`iAma` offset 101..103).
     pub suggestion_flag: SuggestionFlag,
     /// Whether `suggestion_flag` has the `0x0100` locally-modified bit set.
@@ -2146,6 +2356,8 @@ pub struct Track {
     pub disabled: bool,
     /// "Skip when shuffling" checkbox (`itma` offset 30).
     pub skip_when_shuffling: bool,
+    /// Whether the track has ever been played (`itma` offset 31; persists across play-count resets).
+    pub has_ever_been_played: bool,
     /// "Remember playback position" checkbox (`itma` offset 50).
     pub remember_playback_position: bool,
     /// "Show composer in all views" checkbox (`itma` offset 51).
@@ -2172,6 +2384,18 @@ pub struct Track {
     pub is_itunes_matched: Option<bool>,
     /// Whether the track is an Apple Music subscription catalog item (`TrackNumerics` offset 34).
     pub is_apple_music_catalog: Option<bool>,
+    /// Whether the track is an Apple Digital Master (`TrackNumerics` offset 36).
+    pub is_apple_digital_master: Option<bool>,
+    /// Whether the track is currently unavailable in the Apple Music catalog (`TrackNumerics` offset 20).
+    pub is_cloud_unavailable: Option<bool>,
+    /// Whether the track is currently available in the Apple Music catalog (`TrackNumerics` offset 39).
+    pub is_available_in_catalog: Option<bool>,
+    /// Apple Music catalog `audioTraits` bitmask (`itma` offset 331).
+    pub audio_traits: AudioTraits,
+    /// Purchaser Apple Store account ID (`dsid`, `TrackNumerics` offset 280..288).
+    pub purchaser_account_id: Option<u64>,
+    /// `FairPlay` DRM authorized Apple Store account ID (`dsid`) on downloaded tracks (`TrackNumerics` offset 248..256).
+    pub drm_account_id: Option<u64>,
     /// iCloud Music Library `sagaId` (`itma` offset 236..244).
     pub cloud_saga_id: Option<u64>,
     /// 64-bit Apple Music / iTunes Store track `adamId` (`TrackNumerics` offset 304..312).
@@ -2274,7 +2498,7 @@ impl Track {
 #[non_exhaustive]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "Playlists have 5 orthogonal boolean flags (is_master, is_folder, is_smart, show_in_profile_and_search, suggestion_locally_modified)"
+    reason = "Playlists have 6 orthogonal boolean flags (is_master, is_folder, is_smart, is_subscribed, show_in_profile_and_search, suggestion_locally_modified)"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -2295,6 +2519,8 @@ pub struct Playlist {
     pub is_folder: bool,
     /// Whether this playlist is a user/system Smart Playlist (`boma 0x00C9` / `0x00CA`).
     pub is_smart: bool,
+    /// Whether this playlist is a subscribed external Apple Music catalog playlist (`lpma` offset 260).
+    pub is_subscribed: bool,
     /// "Show in My Profile and in Search" checkbox (`lpma` offset 262).
     pub show_in_profile_and_search: bool,
     /// Distinguished system playlist kind (`lpma` offset 79..81).
@@ -2711,7 +2937,7 @@ impl From<&RawLibraryFile> for Library {
             app_version: h.version_string(),
             format_major_version: h.major_version,
             format_minor_version: h.minor_version,
-            file_type: h.musicdb_file_type,
+            hsma_count: h.hsma_count,
             declared_track_count: h.track_count,
             declared_album_count: h.album_count,
             declared_artist_count: h.artist_count,
@@ -2719,6 +2945,10 @@ impl From<&RawLibraryFile> for Library {
             timezone_offset_seconds: h.timezone_offset_seconds,
             apple_store_account_id: h.apple_store_account_id,
             date_modified: h.date_modified.to_utc(),
+            date_cloud_synced: None,
+            date_last_modified: None,
+            cloud_database_revision: None,
+            date_cloud_lease_expires: None,
             show_song_list_checkboxes: None,
             keep_media_folder_organized: None,
             copy_files_to_media_folder: None,
@@ -2733,6 +2963,7 @@ impl From<&RawLibraryFile> for Library {
         let mut tracks = Vec::new();
         let mut playlists = Vec::new();
         let mut social_profiles = Vec::new();
+        let mut pending_cloud_deletions = Vec::new();
 
         for hsma in &raw.sections {
             match &hsma.child {
@@ -2750,6 +2981,10 @@ impl From<&RawLibraryFile> for Library {
                 }
                 HsmaChild::PlaylistList(l_pma) => {
                     playlists.extend(l_pma.playlists.iter().map(Playlist::from));
+                }
+                HsmaChild::PendingCloudDeletions(dcma) => {
+                    pending_cloud_deletions
+                        .extend(dcma.items.iter().map(PendingCloudDeletion::from));
                 }
                 HsmaChild::SocialProfileList(lsma) => {
                     social_profiles.extend(lsma.profiles.iter().map(SocialProfile::from));
@@ -2770,6 +3005,7 @@ impl From<&RawLibraryFile> for Library {
             tracks,
             playlists,
             social_profiles,
+            pending_cloud_deletions,
             ..Self::default()
         };
         lib.rebuild_indexes();
@@ -2778,6 +3014,11 @@ impl From<&RawLibraryFile> for Library {
 }
 
 fn populate_plma_metadata(plma: &LibraryMasterSection, meta: &mut LibraryMetadata) {
+    meta.date_cloud_synced = plma.header.date_cloud_synced.to_utc();
+    meta.date_last_modified = plma.header.date_last_modified.to_utc();
+    meta.cloud_database_revision =
+        (plma.header.cloud_database_revision != 0).then_some(plma.header.cloud_database_revision);
+    meta.date_cloud_lease_expires = plma.header.date_cloud_lease_expires.to_utc();
     meta.show_song_list_checkboxes = Some(plma.header.checkbox_show_song_list_checkboxes != 0);
     meta.keep_media_folder_organized = Some(plma.header.checkbox_keep_media_folder_organized != 0);
     for boma in &plma.bomas {
@@ -2906,6 +3147,10 @@ impl Album {
             motion_preview_frame_url,
             motion_artwork_token,
             is_compilation: h.is_compilation != 0,
+            playlist_only: h.playlist_only != 0,
+            catalog_album_type: h
+                .catalog_album_type
+                .map_or(CatalogAlbumType::None, CatalogAlbumType::from),
             star_rating: h.star_rating,
             star_rating_is_computed: h.star_rating_inheritance == 0x20,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
@@ -2983,6 +3228,7 @@ impl From<&ArtistItem> for Artist {
             name,
             sort_name,
             cloud_artist_id,
+            playlist_only: h.playlist_only != 0,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
             suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
             date_suggestion_flag_modified: h.date_suggestion_flag_modified.to_utc(),
@@ -3027,6 +3273,7 @@ impl Track {
             suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
             disabled: h.checkbox_disabled != 0,
             skip_when_shuffling: h.checkbox_skip_when_shuffling != 0,
+            has_ever_been_played: h.has_ever_been_played != 0,
             remember_playback_position: h.checkbox_remember_playback_position != 0,
             show_composer_in_all_views: h.checkbox_show_composer_in_all_views != 0,
             use_work_and_movement: h.checkbox_use_work_and_movement != 0,
@@ -3038,6 +3285,7 @@ impl Track {
             has_local_custom_lyrics: h.has_local_custom_lyrics != 0,
             has_unsynced_local_changes: h.has_unsynced_local_changes != 0,
             cloud_saga_id,
+            audio_traits: AudioTraits::from_bits_retain(h.audio_traits),
             apple_music_store_artist_id: (h.apple_music_store_artist_id != 0)
                 .then_some(u64::from(h.apple_music_store_artist_id)),
             downloaded_state: DownloadedStatus::from(h.downloaded_status),
@@ -3130,6 +3378,15 @@ fn apply_primary_track_numerics(track: &mut Track, num: &TrackNumerics, tz_offse
     track.date_cloud_synced = num.date_cloud_synced.to_utc();
     track.is_itunes_matched = Some(num.is_itunes_matched != [0, 0]);
     track.is_apple_music_catalog = Some(num.is_apple_music_catalog != 0);
+    track.is_apple_digital_master = Some(num.is_apple_digital_master != 0);
+    track.is_cloud_unavailable = Some(num.is_cloud_unavailable != 0);
+    track.is_available_in_catalog = Some(num.is_available_in_catalog != 0);
+    if num.purchaser_account_id != 0 {
+        track.purchaser_account_id = Some(num.purchaser_account_id);
+    }
+    if num.drm_account_id != 0 {
+        track.drm_account_id = Some(num.drm_account_id);
+    }
     if num.store_track_adam_id != 0 {
         track.store_track_adam_id = Some(num.store_track_adam_id);
     }
@@ -3200,6 +3457,21 @@ fn apply_secondary_track_numerics(track: &mut Track, num: &TrackNumerics) {
     }
     if num.is_apple_music_catalog != 0 {
         track.is_apple_music_catalog = Some(true);
+    }
+    if num.is_apple_digital_master != 0 {
+        track.is_apple_digital_master = Some(true);
+    }
+    if num.is_cloud_unavailable != 0 {
+        track.is_cloud_unavailable = Some(true);
+    }
+    if num.is_available_in_catalog != 0 {
+        track.is_available_in_catalog = Some(true);
+    }
+    if track.purchaser_account_id.is_none() && num.purchaser_account_id != 0 {
+        track.purchaser_account_id = Some(num.purchaser_account_id);
+    }
+    if track.drm_account_id.is_none() && num.drm_account_id != 0 {
+        track.drm_account_id = Some(num.drm_account_id);
     }
     if track.codec_fourcc.is_none() {
         track.codec_fourcc = num.codec_fourcc_str();
@@ -3306,6 +3578,7 @@ impl From<&PlaylistItem> for Playlist {
                 .then_some(PersistentId::new(h.parent_persistent_id)),
             is_master,
             is_folder,
+            is_subscribed: h.is_subscribed_playlist != 0,
             show_in_profile_and_search: h.checkbox_show_in_profile_and_search != 0,
             system_kind,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
@@ -3775,6 +4048,7 @@ fn decode_view_as_value(v: &plist::Value) -> Option<String> {
         v.as_signed_integer().map(|code| match code {
             1 => "Songs".to_owned(),
             7 => "Albums".to_owned(),
+            8 => "Artists".to_owned(),
             11 => "Playlist".to_owned(),
             other => format!("ViewAs({other})"),
         })

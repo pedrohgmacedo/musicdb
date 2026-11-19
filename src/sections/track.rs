@@ -71,8 +71,8 @@ pub struct TrackItemHeader {
     pub unk_28_30: Unknown<[u8; 2]>,
     /// Offset 30: Checkbox "Skip when shuffling" (0 or 1).
     pub checkbox_skip_when_shuffling: u8,
-    /// Offset 31: Unknown boolean flag (changes 0 -> 1 on first play).
-    pub unk_31_played_flag: Unknown<u8>,
+    /// Offset 31: Ever-played flag (`1` if the track has ever been played; persists across play-count resets).
+    pub has_ever_been_played: u8,
     /// Offset 32..38: Unknown 6 bytes (offsets 33, 35 are boolean-like flags).
     pub unk_32_38: Unknown<[u8; 6]>,
     /// Offset 38: Checkbox "Album is a compilation of songs by various artists" (0 or 1).
@@ -109,7 +109,7 @@ pub struct TrackItemHeader {
     pub has_playback_or_bounds_activity: u8,
     /// Offset 56: Unknown byte.
     pub unk_56: Unknown<u8>,
-    /// Offset 57: Downloaded status (1 = downloaded locally on disk, 3 = in cloud / not downloaded).
+    /// Offset 57: Downloaded status (`1` = downloaded locally on disk, `3` = in cloud / not downloaded, `5` = no longer available in catalog).
     pub downloaded_status: u8,
     /// Offset 58: iCloud Status (`cloud_status`, Smart Playlist field `0x86`: 2 = Matched, 3 = Uploaded, 5 = Error/Ineligible, 8 = Apple Music, 9 = No Longer Available).
     pub cloud_status: u8,
@@ -177,10 +177,8 @@ pub struct TrackItemHeader {
     pub itunes_store_matched_id: u64,
     /// Offset 236..244: Primary iCloud Music Library `sagaId` (matches `sagaId=` in `boma 0x0038` redownload-params).
     pub cloud_saga_id: u64,
-    /// Offset 244..248: Shared 4-byte value (matches `plma` offset 104).
-    pub unk_244_shared_val: Unknown<u32>,
-    /// Offset 248..252: Unknown 4 bytes.
-    pub unk_248: Unknown<u32>,
+    /// Offset 244..252: Signed-in Apple Store account ID (`dsid`, matches `hfma.apple_store_account_id`; 0 when signed out).
+    pub apple_store_account_id: u64,
     /// Offset 252..254: Unknown 2 bytes (typically 0).
     pub unk_252_254: Unknown<u16>,
     /// Offset 254: Cloud sync state (2 = synced to iCloud Music Library, 3 = purchased, 0 = unsynced local error).
@@ -207,12 +205,16 @@ pub struct TrackItemHeader {
     pub album_artist_or_artist_sort_order: u32,
     /// Offset 308..312: Artwork source kind in `artwork.sqlite` (`item_to_artwork.source_kind`; 6 = Local Embedded Artwork, 12 = Apple Music Catalog Artwork, 13 = Cloud Uploaded/Matched Artwork).
     pub artwork_source_kind: u32,
-    /// Offset 312..320: Unknown 8 bytes.
+    /// Offset 312..320: Unknown 8 bytes (64-bit artwork content hash / persistent ID on macOS; 0 on Windows).
     pub unk_312_320: Unknown<u64>,
     /// Offset 320..328: iCloud Music Library `sagaId` repeated (matches offset 220).
     pub cloud_saga_id_2: u64,
-    /// Offset 328..332: Unknown flag (typically 3, 5, 0, 7, 8).
-    pub unk_328: Unknown<u32>,
+    /// Offset 328: Artwork cache / source state (`0x00` = none, `0x03` = local embedded not in `artwork.sqlite`, `0x05` = embedded/catalog alternate state, `0x08` = cached in `artwork.sqlite`).
+    pub artwork_cache_state: u8,
+    /// Offset 329..331: Unknown 2 bytes (typically `[0, 0]`; `0x64` at offset 329 on purchased music videos).
+    pub unk_329_331: Unknown<[u8; 2]>,
+    /// Offset 331: Apple Music catalog `audioTraits` bitmask (`0x01` = Dolby Atmos, `0x02` = Dolby Audio / Surround 5.1, `0x04` = Lossless, `0x08` = Lossy Stereo / AAC, `0x10` = Hi-Res Lossless, `0x20` = Spatial Audio).
+    pub audio_traits: u8,
     /// Offset 332..336: Unknown 4 bytes.
     pub unk_332: Unknown<u32>,
     /// Offset 336..340: Suggestion flag modified date (Apple timestamp).
@@ -239,7 +241,6 @@ impl VisitUnknowns for TrackItemHeader {
             "itma",
             [
                 (self.unk_28_30, 28),
-                (self.unk_31_played_flag, 31),
                 (self.unk_32_38, 32),
                 (self.unk_40_42, 40),
                 (self.unk_43, 43),
@@ -257,11 +258,9 @@ impl VisitUnknowns for TrackItemHeader {
                 (self.unk_156, 156),
                 (self.unk_162_168, 162),
                 (self.unk_192_220, 192),
-                (self.unk_244_shared_val, 244),
-                (self.unk_248, 248),
                 (self.unk_252_254, 252),
                 (self.unk_312_320, 312),
-                (self.unk_328, 328),
+                (self.unk_329_331, 329),
                 (self.unk_332, 332),
                 (self.unk_340, 340),
                 (self.unk_356_376, 356),
@@ -310,8 +309,10 @@ pub struct TrackNumerics {
     pub track_data_id: u64,
     /// Offset 16..20: Unknown (typically 1).
     pub unk_16: Unknown<u32>,
-    /// Offset 20..24: Unknown flags (`00 01 01 00` or 0).
-    pub unk_20_flags: Unknown<[u8; 4]>,
+    /// Offset 20: Cloud catalog unavailability flag (`1` = track no longer available in Apple Music catalog, `0` = available/local).
+    pub is_cloud_unavailable: u8,
+    /// Offset 21..24: Unknown flags (`[1, 1, 0]` when Apple Digital Master / catalog traits present, else `[0, 0, 0]`).
+    pub unk_21_24: Unknown<[u8; 3]>,
     /// Offset 24..27: Unknown 3 bytes (typically 0).
     pub unk_24_27: Unknown<[u8; 3]>,
     /// Offset 27: Variable Bit Rate (VBR) flag (`1` = VBR audio track, `0` = CBR).
@@ -322,11 +323,21 @@ pub struct TrackNumerics {
     pub is_itunes_matched: [u8; 2],
     /// Offset 34: Apple Music catalog subscription flag (`1` = `<key>Apple Music</key><true/>` in iTunes XML).
     pub is_apple_music_catalog: u8,
-    /// Offset 35..60: Unknown 25 bytes.
-    pub unk_35_60: Unknown<[u8; 25]>,
+    /// Offset 35: Unknown byte.
+    pub unk_35: Unknown<u8>,
+    /// Offset 36: Apple Digital Master flag (`1` = Apple Digital Master, `0` = standard).
+    pub is_apple_digital_master: u8,
+    /// Offset 37..39: Unknown 2 bytes.
+    pub unk_37_39: Unknown<[u8; 2]>,
+    /// Offset 39: Catalog availability flag (`1` = available in Apple Music catalog, `0` = uploaded or no longer available).
+    pub is_available_in_catalog: u8,
+    /// Offset 40: Local MP3 flag (`1` iff `subrecord_kind == 1 && container_format_kind == 12`, `0` otherwise).
+    pub is_local_mp3: u8,
+    /// Offset 41..60: Unknown 19 bytes (offset 48 = `3` on downloaded HLS Dolby Atmos `.movpkg`; offsets 49..56 encode iCloud sync/origin/codec states).
+    pub unk_41_60: Unknown<[u8; 19]>,
     /// Offset 60..64: Sample rate in Hz (IEEE 754 f32, e.g. 44100.0).
     pub sample_rate: f32,
-    /// Offset 64..68: File type `FourCC` in little-endian (e.g. `0x4D503320` = `"MP3 "`, `0x4D344120` = `"M4A "`).
+    /// Offset 64..68: File type `FourCC` in little-endian (e.g. `0x4D503320` = `"MP3 "`, `0x4D344120` = `"M4A "`, `0x4D4F5650` = `"MOVP"`).
     pub file_type_fourcc: u32,
     /// Offset 68..72: Secondary file type / unknown.
     pub unk_68_file_type: Unknown<u32>,
@@ -336,7 +347,7 @@ pub struct TrackNumerics {
     pub library_folder_count: u16,
     /// Offset 76..78: Artwork count (matches iTunes XML `Artwork Count`).
     pub artwork_count: u16,
-    /// Offset 78..80: Container format kind (`12` / `0x000C` = MP3 audio, `51` / `0x0033` = MPEG-4 audio M4A/M4P, `3` / `0x0003` = MPEG-4 video M4V).
+    /// Offset 78..80: Container format kind (`3` / `0x0003` = MPEG-4 video M4V, `4` / `0x0004` = HLS media package `.movpkg`, `12` / `0x000C` = MP3 audio, `51` / `0x0033` = MPEG-4 audio M4A/M4P).
     pub container_format_kind: u16,
     /// Offset 80..82: Signed 16-bit artwork source/status indicator (`-1` / `0xFFFF` = embedded artwork scanned in local file, `1` = cloud/catalog artwork on `subrecord_kind == 3`, `0` = none/unscanned).
     pub has_embedded_artwork: i16,
@@ -348,7 +359,7 @@ pub struct TrackNumerics {
     pub bit_rate: u32,
     /// Offset 92..96: Date Added (Apple local timestamp; non-zero iff track is in Master Playlist `####!####`).
     pub date_added: AppleTimestamp,
-    /// Offset 96..108: Unknown 12 bytes.
+    /// Offset 96..108: Unknown 12 bytes (offset 100..104 = `1` on AAC-LC `.m4p`/Matched/Purchased; offset 105..108 = `[0x01, 0x01, 0x07]` on `FairPlay` DRM offline downloads).
     pub unk_96_108: Unknown<[u8; 12]>,
     /// Offset 108..112: Gapless playback encoder delay in samples (word 1 of `iTunSMPB`, e.g. 2112 for AAC or 576 for LAME MP3).
     pub gapless_encoder_delay: u32,
@@ -382,14 +393,14 @@ pub struct TrackNumerics {
     pub apple_music_store_artist_id: u64,
     /// Offset 176..200: Unknown 24 bytes.
     pub unk_176_200: Unknown<[u8; 24]>,
-    /// Offset 200..204: Shared 4-byte value (matches `plma` offset 104).
-    pub unk_200_shared_val: Unknown<u32>,
-    /// Offset 204..208: Unknown 4 bytes.
-    pub unk_204: Unknown<u32>,
+    /// Offset 200..208: Signed-in Apple Store account ID (`dsid`, matches `hfma.apple_store_account_id`; 0 when signed out).
+    pub apple_store_account_id: u64,
     /// Offset 208..216: 64-bit Apple Music Store Album Artist ID (exceeds `u32::MAX` for modern artists).
     pub apple_music_store_album_artist_id: u64,
-    /// Offset 216..256: Unknown 40 bytes.
-    pub unk_216_256: Unknown<[u8; 40]>,
+    /// Offset 216..248: Unknown 32 bytes (`FairPlay` DRM offline download tokens when downloaded as `.m4p` or `.movpkg`; zeros otherwise).
+    pub unk_216_248: Unknown<[u8; 32]>,
+    /// Offset 248..256: `FairPlay` DRM authorized Apple Store account ID (`dsid`) on downloaded `.m4p` / `.movpkg` tracks (0 otherwise).
+    pub drm_account_id: u64,
     /// Offset 256..264: Gapless playback total sample count (words 3..4 of `iTunSMPB`).
     pub gapless_total_samples: u64,
     /// Offset 264..268: Apple Store Genre ID (`geID` MP4 atom, e.g. 21 = Rock, 14 = Pop, 7 = Electronic, 18 = Hip-Hop/Rap).
@@ -398,10 +409,8 @@ pub struct TrackNumerics {
     pub unk_268_272: Unknown<u32>,
     /// Offset 272..280: Gapless playback byte offset to the 8th-from-last MPEG frame (word 5 of `iTunSMPB` for MP3s; 0 for M4A).
     pub gapless_last_eight_frames_offset: u64,
-    /// Offset 280..284: Shared 4-byte value (matches `plma` offset 104).
-    pub unk_280_shared_val: Unknown<u32>,
-    /// Offset 284..288: Unknown 4 bytes.
-    pub unk_284_288: Unknown<u32>,
+    /// Offset 280..288: Purchaser Apple Store account ID (`dsid`) on local purchased/matched `.m4a` files with `boma 0x003C` (`purchaser_name`; 0 otherwise).
+    pub purchaser_account_id: u64,
     /// Offset 288..296: iCloud Music Library `sagaId` (or `0xFFFFFFFFFFFFFFFD` = -3 for Apple Music catalog tracks).
     pub cloud_saga_id_1: u64,
     /// Offset 296..300: File size in bytes (`Size` in iTunes XML).
@@ -437,19 +446,17 @@ impl VisitUnknowns for TrackNumerics {
             "TrackNumerics",
             [
                 (self.unk_16, 16),
-                (self.unk_20_flags, 20),
+                (self.unk_21_24, 21),
                 (self.unk_24_27, 24),
-                (self.unk_35_60, 35),
+                (self.unk_35, 35),
+                (self.unk_37_39, 37),
+                (self.unk_41_60, 41),
                 (self.unk_68_file_type, 68),
                 (self.unk_96_108, 96),
                 (self.unk_152, 152),
                 (self.unk_176_200, 176),
-                (self.unk_200_shared_val, 200),
-                (self.unk_204, 204),
-                (self.unk_216_256, 216),
+                (self.unk_216_248, 216),
                 (self.unk_268_272, 268),
-                (self.unk_280_shared_val, 280),
-                (self.unk_284_288, 284),
                 (self.unk_300, 300),
                 (self.unk_316_320, 316),
                 (self.unk_336_340, 336),

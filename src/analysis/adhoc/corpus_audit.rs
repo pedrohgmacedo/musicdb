@@ -156,7 +156,7 @@ fn inspect_envelope(
             h.version_string(),
             h.major_version,
             h.minor_version,
-            h.musicdb_file_type,
+            h.hsma_count,
             h.timezone_offset_seconds,
             disk_len,
             h.file_size,
