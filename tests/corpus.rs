@@ -72,7 +72,7 @@ fn test_snapshot_library_and_smart_playlists() {
 
 #[test]
 fn test_historical_bundles_and_sidecar_plists() {
-    let bundle_2026 = corpus_path("library-data/Apple Music Library.musiclibrary.2026-11-01");
+    let bundle_2026 = corpus_path("library-data/2026-11-01/Apple Music Library.musiclibrary");
     if !bundle_2026.exists() {
         return;
     }
