@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/musicdb/badge.svg)](https://docs.rs/musicdb/latest/musicdb/)
 [![CI](https://img.shields.io/github/actions/workflow/status/pedrohgmacedo/musicdb/ci.yml?branch=master&label=CI)](https://github.com/pedrohgmacedo/musicdb/actions/workflows/ci.yml)
 
-**musicdb** is a Rust library and command-line tool for reading, decrypting, and exporting Apple Music library bundles (`.musiclibrary` and `Library.musicdb`) to SQLite and JSON on macOS and Windows.
+**musicdb** is a Rust library and command-line tool for reading, inspecting and exporting `Apple Music Library.musiclibrary` bundles to SQLite and JSON on macOS, Windows and Linux.
 
 Apple doesn't document the `.musicdb` format, and modern Apple Music no longer keeps an `iTunes Music Library.xml` file updated on disk. This crate decrypts and decompresses `Library.musicdb`, parses the binary sections, and builds a typed library model you can query from Rust or export to SQLite and JSON.
 
