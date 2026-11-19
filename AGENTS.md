@@ -27,7 +27,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --no-default-features
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 ```
 
-Running `cargo test --all-features` locally in this workspace exercises the private real-corpus regression tests in `src/lib.rs`, whereas CI skips those corpus tests and serves as the multi-OS, lint, doc, feature-matrix, and synthetic-test canary.
+Running `cargo test --all-features` locally in this workspace exercises the private real-corpus regression tests in `tests/corpus.rs`, whereas CI skips those corpus tests and serves as the multi-OS, lint, doc, feature-matrix, and synthetic-test canary.
 
 If you add or update a dependency, also run `cargo deny check` (see [Tooling configuration](#tooling-configuration-clippytoml-and-denytoml)).
 

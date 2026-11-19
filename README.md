@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/musicdb/badge.svg)](https://docs.rs/musicdb/latest/musicdb/)
 [![CI](https://img.shields.io/github/actions/workflow/status/pedrohgmacedo/musicdb/ci.yml?branch=master&label=CI)](https://github.com/pedrohgmacedo/musicdb/actions/workflows/ci.yml)
 
-`musicdb` is a Rust library and CLI for reading Apple Music `.musiclibrary` bundles (`Library.musicdb` and its sidecar `.plist` files) on macOS and Windows.
+**musicdb** is a Rust library and command-line tool for reading, decrypting, and exporting Apple Music library bundles (`.musiclibrary` and `Library.musicdb`) to SQLite and JSON on macOS and Windows.
 
 Apple doesn't document the `.musicdb` format, and modern Apple Music no longer keeps an `iTunes Music Library.xml` file updated on disk. This crate decrypts and decompresses `Library.musicdb`, parses the binary sections, and builds a typed library model you can query from Rust or export to SQLite and JSON.
 
@@ -145,10 +145,6 @@ musicdb donate-library
 | `social_profiles` | Apple Music social profiles (`isma`) referenced by shared playlists. |
 | `v_playlist_tracks` | View joining `playlists`, `playlist_items`, and `tracks` in playlist order (excluding the internal master playlist, folder unions, and hidden cloud-only container). |
 | `v_tracks_enriched` | View joining `tracks` with linked `albums` and `artists` fields. |
-
-## Privacy note
-
-`Library.musicdb` stores personal metadata alongside your music catalog, including your Apple Store account ID and purchaser names/emails on iTunes Store tracks. Any JSON/SQLite export or archive created by `donate-library` / `donate-previous-libraries` will include those fields.
 
 ## License
 
