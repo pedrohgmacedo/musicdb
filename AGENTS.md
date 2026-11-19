@@ -115,6 +115,7 @@ Much of the existing code predates these rules.
 - **Synthetic test fixtures must use Rush metadata.** All synthetic corpus/library tests and fixtures must use examples related to the band Rush and its albums/songs where applicable.
 - Tests against the private corpus (`MUSICDB_CORPUS_DIR`) intentionally return early when it isn't present. **Keep that behavior.** Don't remove these tests or make them fail without the corpus.
 - **Every bug fix comes with a regression test.** For parser bugs, add the minimal malformed byte sequence as a test.
+- **Confirm new tests fail before applying the fix.** After writing a new test, run it against the old code first to verify the test hypothesis fails for the expected reason; only then apply the fix and verify it passes.
 - Use `tempfile::tempdir()` for filesystem tests. Never use fixed paths in `/tmp` or `std::env::temp_dir()`.
 - Put unit tests next to the code they test (`#[cfg(test)] mod tests`). Put tests of the public API and the CLI under `tests/`.
 - Round-trip properties (`parse(serialize(x)) == x`) are good candidates for `proptest`.
