@@ -228,6 +228,79 @@ pub enum HsmaChild {
 }
 
 impl HsmaSection {
+    fn truncated_err(subtype: u32, offset: u64, needed: u64, available: u64) -> binrw::Error {
+        binrw::Error::Custom {
+            pos: offset,
+            err: Box::new(MusicDbError::TruncatedSection {
+                section: format!("hsma(subtype={subtype})"),
+                offset,
+                needed,
+                available,
+            }),
+        }
+    }
+
+    fn validated_child_len(header: &HsmaHeader, start_pos: u64) -> BinResult<u64> {
+        let total_size = header.effective_total_size();
+        let header_size_u64 = u64::from(header.header_size);
+        total_size
+            .checked_sub(header_size_u64)
+            .ok_or_else(|| binrw::Error::Custom {
+                pos: start_pos,
+                err: Box::new(MusicDbError::InvalidHeaderSize {
+                    section: "hsma.total_size",
+                    header_size: header.header_size,
+                    min_size: u32::try_from(total_size).unwrap_or(u32::MAX),
+                }),
+            })
+    }
+
+    /// Reads an `HsmaSection` directly from an in-memory byte slice cursor without copying the
+    /// child payload into a temporary `Vec<u8>` for parsed sections.
+    pub(crate) fn read_filtered_slice<F>(
+        cur: &mut Cursor<&[u8]>,
+        include_kind: &F,
+    ) -> BinResult<Self>
+    where
+        F: Fn(SectionKind) -> bool,
+    {
+        let start_pos = cur.position();
+        let header = HsmaHeader::read_le(cur)?;
+        let subtype = header.subtype;
+        let kind = header.kind();
+        let child_pos = cur.position();
+        let child_len_u64 = Self::validated_child_len(&header, start_pos)?;
+
+        let raw_bytes = *cur.get_ref();
+        let total_len_u64 = u64::try_from(raw_bytes.len()).unwrap_or(u64::MAX);
+        let remaining = total_len_u64.saturating_sub(child_pos);
+        let make_trunc = || Self::truncated_err(subtype, child_pos, child_len_u64, remaining);
+        if child_len_u64 > remaining {
+            return Err(make_trunc());
+        }
+
+        let child_start = usize::try_from(child_pos).map_err(|_| make_trunc())?;
+        let child_len = usize::try_from(child_len_u64).map_err(|_| make_trunc())?;
+        let child_end = child_start.checked_add(child_len).ok_or_else(make_trunc)?;
+        let child_slice = raw_bytes
+            .get(child_start..child_end)
+            .ok_or_else(make_trunc)?;
+
+        cur.set_position(child_pos.saturating_add(child_len_u64));
+
+        if !include_kind(kind) {
+            return Ok(Self {
+                header,
+                child: HsmaChild::Skipped {
+                    kind,
+                    raw_bytes: child_slice.to_vec(),
+                },
+            });
+        }
+
+        Self::parse_child_slice(header, start_pos, child_slice)
+    }
+
     /// Reads an `HsmaSection` from `reader`, parsing its child section when `include_kind(header.kind())`
     /// returns `true`, or preserving the child bytes inside [`HsmaChild::Skipped`] when `false`.
     pub(crate) fn read_filtered<R, F>(reader: &mut R, include_kind: &F) -> BinResult<Self>
@@ -239,44 +312,16 @@ impl HsmaSection {
         let header = HsmaHeader::read_le(reader)?;
         let subtype = header.subtype;
         let kind = header.kind();
-        let total_size = header.effective_total_size();
-        let header_size_u64 = u64::from(header.header_size);
         let child_pos = reader.stream_position()?;
-
-        let Some(child_len_u64) = total_size.checked_sub(header_size_u64) else {
-            return Err(binrw::Error::Custom {
-                pos: start_pos,
-                err: Box::new(MusicDbError::InvalidHeaderSize {
-                    section: "hsma.total_size",
-                    header_size: header.header_size,
-                    min_size: u32::try_from(total_size).unwrap_or(u32::MAX),
-                }),
-            });
-        };
+        let child_len_u64 = Self::validated_child_len(&header, start_pos)?;
 
         let remaining = remaining_stream_bytes(reader)?;
+        let make_trunc = || Self::truncated_err(subtype, child_pos, child_len_u64, remaining);
         if child_len_u64 > remaining {
-            return Err(binrw::Error::Custom {
-                pos: child_pos,
-                err: Box::new(MusicDbError::TruncatedSection {
-                    section: format!("hsma(subtype={subtype})"),
-                    offset: child_pos,
-                    needed: child_len_u64,
-                    available: remaining,
-                }),
-            });
+            return Err(make_trunc());
         }
 
-        let child_len = usize::try_from(child_len_u64).map_err(|_| binrw::Error::Custom {
-            pos: child_pos,
-            err: Box::new(MusicDbError::TruncatedSection {
-                section: format!("hsma(subtype={subtype})"),
-                offset: child_pos,
-                needed: child_len_u64,
-                available: remaining,
-            }),
-        })?;
-
+        let child_len = usize::try_from(child_len_u64).map_err(|_| make_trunc())?;
         let mut child_bytes = vec![0u8; child_len];
         reader.read_exact(&mut child_bytes)?;
 
@@ -290,11 +335,25 @@ impl HsmaSection {
             });
         }
 
+        Self::parse_child_slice(header, start_pos, &child_bytes)
+    }
+
+    fn parse_child_slice(
+        header: HsmaHeader,
+        start_pos: u64,
+        child_slice: &[u8],
+    ) -> BinResult<Self> {
+        let subtype = header.subtype;
+        let kind = header.kind();
+        let total_size = header.effective_total_size();
+        let header_size_u64 = u64::from(header.header_size);
+        let child_len_u64 = u64::try_from(child_slice.len()).unwrap_or(u64::MAX);
         let expected_end = start_pos.saturating_add(total_size);
-        let mut cur = Cursor::new(&child_bytes);
-        let Some(child) = Self::parse_known_child(kind, &child_bytes, &mut cur)? else {
+
+        let mut cur = Cursor::new(child_slice);
+        let Some(child) = Self::parse_known_child(kind, child_slice, &mut cur)? else {
             let mut sig = [0u8; 4];
-            if let Some(prefix) = child_bytes.get(0..4) {
+            if let Some(prefix) = child_slice.get(0..4) {
                 sig.copy_from_slice(prefix);
             }
             return Ok(Self {
@@ -302,12 +361,12 @@ impl HsmaSection {
                 child: HsmaChild::Unknown {
                     kind,
                     signature: sig,
-                    raw_bytes: child_bytes,
+                    raw_bytes: child_slice.to_vec(),
                 },
             });
         };
 
-        // Ensure the parsed child consumed every single byte of `child_bytes`!
+        // Ensure the parsed child consumed every single byte of `child_slice`!
         let consumed = cur.position();
         if consumed != child_len_u64 {
             let actual = start_pos
@@ -329,7 +388,7 @@ impl HsmaSection {
     fn parse_known_child(
         kind: SectionKind,
         child_bytes: &[u8],
-        cur: &mut Cursor<&Vec<u8>>,
+        cur: &mut Cursor<&[u8]>,
     ) -> BinResult<Option<HsmaChild>> {
         let first_four = child_bytes.get(0..4);
         let parsed = match (kind, first_four) {
@@ -558,7 +617,7 @@ impl RawLibraryFile {
                 break;
             };
             if next_four == b"hsma" {
-                let hsma = HsmaSection::read_filtered(&mut cur, &include_kind)?;
+                let hsma = HsmaSection::read_filtered_slice(&mut cur, &include_kind)?;
                 sections.push(hsma);
             } else {
                 break;
@@ -580,7 +639,15 @@ impl RawLibraryFile {
     /// # Errors
     /// Returns [`MusicDbError`] if binary serialization fails.
     pub fn to_raw_bytes(&self) -> Result<Vec<u8>> {
-        let mut cur = Cursor::new(Vec::new());
+        const MAX_PREALLOC_BYTES: usize = 512 * 1024 * 1024;
+        let mut estimated = usize::try_from(self.outer_header.header_size)
+            .unwrap_or(0)
+            .saturating_add(self.trailing_bytes.len());
+        for section in &self.sections {
+            let sec_len = usize::try_from(section.header.effective_total_size()).unwrap_or(0);
+            estimated = estimated.saturating_add(sec_len);
+        }
+        let mut cur = Cursor::new(Vec::with_capacity(estimated.min(MAX_PREALLOC_BYTES)));
         self.outer_header.write_le(&mut cur)?;
         for section in &self.sections {
             section.write_le(&mut cur)?;
