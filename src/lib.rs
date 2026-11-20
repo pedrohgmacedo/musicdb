@@ -38,7 +38,7 @@ mod tests {
             header_size: 20,
             total_size,
             subtype,
-            unk_16_end: Unknown(vec![0; 4]),
+            unk_16_end: Unknown(TailBytes::from([0; 4])),
             payload: BomaPayload::StringSection(BomaStringSection {
                 encoding: 1,
                 string_byte_len,
@@ -258,7 +258,7 @@ mod tests {
             header_size: 20,
             total_size: 20 + u32::try_from(motion_plist_bytes.len()).unwrap(),
             subtype: 0x0135,
-            unk_16_end: Unknown(vec![0; 4]),
+            unk_16_end: Unknown(TailBytes::from([0; 4])),
             payload: BomaPayload::BinaryPlist {
                 subtype: 0x0135,
                 raw_bytes: motion_plist_bytes,
@@ -330,7 +330,7 @@ mod tests {
                 artwork_image_format: 1,
                 apple_music_store_artist_id_2: 900_001,
                 date_cloud_synced: Some(AppleTimestamp::new(3_800_000_000)),
-                unk_tail: Unknown(vec![0; 8]),
+                unk_tail: Unknown(TailBytes::from([0; 8])),
             },
             bomas: vec![artist_boma],
         };
@@ -429,21 +429,21 @@ mod tests {
                 header_size: 20,
                 total_size: 20 + 364,
                 subtype: 0x0001,
-                unk_16_end: Unknown::new(vec![0; 4]),
+                unk_16_end: Unknown::new(TailBytes::from([0; 4])),
                 payload: BomaPayload::TrackNumerics(Box::new(num_local)),
             },
             BomaSection {
                 header_size: 20,
                 total_size: 20 + 364,
                 subtype: 0x0001,
-                unk_16_end: Unknown::new(vec![0; 4]),
+                unk_16_end: Unknown::new(TailBytes::from([0; 4])),
                 payload: BomaPayload::TrackNumerics(Box::new(num_cloud)),
             },
             BomaSection {
                 header_size: 20,
                 total_size: 20 + 52,
                 subtype: 0x0017,
-                unk_16_end: Unknown::new(vec![0; 4]),
+                unk_16_end: Unknown::new(TailBytes::from([0; 4])),
                 payload: BomaPayload::TrackPlaysSkips(TrackPlaysSkips {
                     track_persistent_id: 0xDD00_0000_0000_0004,
                     date_last_played: AppleTimestamp::new(3_800_000_000),
@@ -840,7 +840,7 @@ mod tests {
             header_size: 20,
             total_size,
             subtype,
-            unk_16_end: Unknown::new(Vec::new()),
+            unk_16_end: Unknown::new(TailBytes::new()),
             payload,
         }
     }
@@ -925,21 +925,21 @@ mod tests {
                 header_size: 20,
                 total_size: 384,
                 subtype: 0x0001,
-                unk_16_end: Unknown::new(Vec::new()),
+                unk_16_end: Unknown::new(TailBytes::new()),
                 payload: BomaPayload::TrackNumerics(Box::default()),
             },
             BomaSection {
                 header_size: 20,
                 total_size: 72,
                 subtype: 0x0017,
-                unk_16_end: Unknown::new(Vec::new()),
+                unk_16_end: Unknown::new(TailBytes::new()),
                 payload: BomaPayload::TrackPlaysSkips(TrackPlaysSkips::default()),
             },
             BomaSection {
                 header_size: 20,
                 total_size: 104,
                 subtype: 0x0024,
-                unk_16_end: Unknown::new(Vec::new()),
+                unk_16_end: Unknown::new(TailBytes::new()),
                 payload: BomaPayload::VideoInfo(Box::default()),
             },
         ]

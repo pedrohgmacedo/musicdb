@@ -4,7 +4,10 @@ use binrw::{BinRead, BinResult, BinWrite, Endian, binrw};
 
 use super::boma::BomaSection;
 use super::timestamp::AppleTimestamp;
-use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
+use super::unknown::{
+    TailBytes, Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, read_unknown_tail_bytes,
+    visit_unknowns,
+};
 use super::{read_bounded_vec, remaining_stream_bytes};
 use crate::error::MusicDbError;
 use crate::model::SmartOperatorFlags;
@@ -278,9 +281,10 @@ pub struct PlaylistTrackItem {
     pub container_item_id: u32,
     /// Offset 44..52: Repeated `item_persistent_id` (often non-zero on last track in playlist).
     pub item_persistent_id_2: u64,
-    /// Offset 52..`section_size`: Remaining bytes (16 bytes `52..68` when `section_size == 68`).
-    #[br(parse_with = read_unknown_tail, args(section_size, 52, "ipfa"))]
-    pub unk_52_end: Unknown<Vec<u8>>,
+    /// Offset 52..`section_size`: Remaining bytes (16 bytes `52..68` when `section_size == 68`),
+    /// stored inline without heap allocation up to 16 bytes.
+    #[br(parse_with = read_unknown_tail_bytes, args(section_size, 52, "ipfa"))]
+    pub unk_52_end: Unknown<TailBytes>,
 }
 
 impl VisitUnknowns for PlaylistTrackItem {
@@ -306,9 +310,10 @@ pub struct CompactPlaylistTrackItem {
     pub item_persistent_id: u64,
     /// Offset 16..24: Track Persistent ID (`itma` reference).
     pub track_persistent_id: u64,
-    /// Offset 24..`section_size`: Remaining bytes (8 bytes `24..32` when `section_size == 32`).
-    #[br(parse_with = read_unknown_tail, args(section_size, 24, "IPfa"))]
-    pub unk_24_end: Unknown<Vec<u8>>,
+    /// Offset 24..`section_size`: Remaining bytes (8 bytes `24..32` when `section_size == 32`),
+    /// stored inline without heap allocation up to 16 bytes.
+    #[br(parse_with = read_unknown_tail_bytes, args(section_size, 24, "IPfa"))]
+    pub unk_24_end: Unknown<TailBytes>,
 }
 
 impl VisitUnknowns for CompactPlaylistTrackItem {

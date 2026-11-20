@@ -47,7 +47,7 @@ pub use track::{
     TrackItem, TrackItemHeader, TrackListHeader, TrackListSection, TrackNumerics, TrackPlaysSkips,
     VideoInfo,
 };
-pub use unknown::{Unknown, UnknownSpan, UnknownValue, UnknownVisitor, VisitUnknowns};
+pub use unknown::{TailBytes, Unknown, UnknownSpan, UnknownValue, UnknownVisitor, VisitUnknowns};
 use unknown::{read_unknown_tail, visit_unknowns};
 
 /// Returns the number of bytes remaining from the current cursor position to the end of `reader`.
@@ -58,13 +58,12 @@ pub(crate) fn remaining_stream_bytes<R: Seek>(reader: &mut R) -> BinResult<u64> 
     Ok(end.saturating_sub(pos))
 }
 
-/// Validates that `header_size >= min_header_size` and reads the remaining `header_size - min_header_size`
-/// header bytes after checking that enough bytes remain in `reader`.
-pub(crate) fn read_header_tail<R: Read + Seek>(
+fn validated_header_tail_len<R: Seek>(
     reader: &mut R,
-    _endian: Endian,
-    (header_size, min_header_size, section): (u32, u32, &'static str),
-) -> BinResult<Vec<u8>> {
+    header_size: u32,
+    min_header_size: u32,
+    section: &'static str,
+) -> BinResult<usize> {
     let pos = reader.stream_position()?;
     let Some(tail_len_u32) = header_size.checked_sub(min_header_size) else {
         return Err(binrw::Error::Custom {
@@ -89,7 +88,7 @@ pub(crate) fn read_header_tail<R: Read + Seek>(
             }),
         });
     }
-    let tail_len = usize::try_from(tail_len_u32).map_err(|_| binrw::Error::Custom {
+    usize::try_from(tail_len_u32).map_err(|_| binrw::Error::Custom {
         pos,
         err: Box::new(MusicDbError::TruncatedSection {
             section: section.to_string(),
@@ -97,10 +96,31 @@ pub(crate) fn read_header_tail<R: Read + Seek>(
             needed: tail_len_u64,
             available: remaining,
         }),
-    })?;
+    })
+}
+
+/// Validates that `header_size >= min_header_size` and reads the remaining `header_size - min_header_size`
+/// header bytes after checking that enough bytes remain in `reader`.
+pub(crate) fn read_header_tail<R: Read + Seek>(
+    reader: &mut R,
+    _endian: Endian,
+    (header_size, min_header_size, section): (u32, u32, &'static str),
+) -> BinResult<Vec<u8>> {
+    let tail_len = validated_header_tail_len(reader, header_size, min_header_size, section)?;
     let mut buf = vec![0u8; tail_len];
     reader.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+/// Validates that `header_size >= min_header_size` and reads the remaining `header_size - min_header_size`
+/// header bytes into an inline-optimized [`TailBytes`] buffer.
+pub(crate) fn read_header_tail_bytes<R: Read + Seek>(
+    reader: &mut R,
+    _endian: Endian,
+    (header_size, min_header_size, section): (u32, u32, &'static str),
+) -> BinResult<TailBytes> {
+    let tail_len = validated_header_tail_len(reader, header_size, min_header_size, section)?;
+    Ok(TailBytes::read_exact_len(reader, tail_len)?)
 }
 
 /// Reads `count` items of type `T`, verifying that `count * min_item_bytes <= remaining_stream_bytes`

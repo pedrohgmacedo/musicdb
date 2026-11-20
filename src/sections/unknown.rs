@@ -1,12 +1,14 @@
 //! Type-safe wrappers and visitor traits for undecoded `.musicdb` binary fields.
 
+use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, Write};
 use std::ops::{Deref, DerefMut};
 
 use binrw::{BinRead, BinResult, BinWrite, Endian};
 
-use super::read_header_tail;
+use super::{read_header_tail, read_header_tail_bytes};
 
 /// Wrapper around an undecoded binary field whose bytes are preserved losslessly.
 ///
@@ -308,6 +310,248 @@ impl UnknownValue for Vec<u8> {
     }
 }
 
+#[derive(Clone)]
+enum TailBytesRepr {
+    Inline {
+        len: u8,
+        buf: [u8; TailBytes::INLINE_CAP],
+    },
+    Heap(Box<[u8]>),
+}
+
+/// Inline-optimized byte buffer for variable-length trailing binary header regions.
+///
+/// Stores up to [`TailBytes::INLINE_CAP`] (16) bytes inline without heap allocation and spills
+/// transparently to a heap `Box<[u8]>` for longer tails, preserving 100% lossless round-tripping
+/// at the same 24-byte stack footprint as `Vec<u8>`.
+#[non_exhaustive]
+#[derive(Clone)]
+pub struct TailBytes(TailBytesRepr);
+
+impl TailBytes {
+    /// Maximum number of bytes stored inline without heap allocation.
+    pub const INLINE_CAP: usize = 16;
+
+    /// Creates an empty [`TailBytes`] without allocating.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(TailBytesRepr::Inline {
+            len: 0,
+            buf: [0u8; Self::INLINE_CAP],
+        })
+    }
+
+    /// Creates a [`TailBytes`] from a byte slice, storing inline when `bytes.len() <= 16`.
+    #[must_use]
+    pub fn from_slice(bytes: &[u8]) -> Self {
+        if let Ok(len_u8) = u8::try_from(bytes.len())
+            && bytes.len() <= Self::INLINE_CAP
+        {
+            let mut buf = [0u8; Self::INLINE_CAP];
+            if let Some(dst) = buf.get_mut(..bytes.len()) {
+                dst.copy_from_slice(bytes);
+            }
+            Self(TailBytesRepr::Inline { len: len_u8, buf })
+        } else {
+            Self(TailBytesRepr::Heap(bytes.into()))
+        }
+    }
+
+    /// Creates a [`TailBytes`] from a `Vec<u8>`, storing inline when `bytes.len() <= 16`.
+    #[must_use]
+    pub fn from_vec(bytes: Vec<u8>) -> Self {
+        if bytes.len() <= Self::INLINE_CAP {
+            Self::from_slice(&bytes)
+        } else {
+            Self(TailBytesRepr::Heap(bytes.into_boxed_slice()))
+        }
+    }
+
+    /// Reads exactly `len` bytes from `reader`, storing inline when `len <= 16`.
+    pub(crate) fn read_exact_len<R: Read>(reader: &mut R, len: usize) -> std::io::Result<Self> {
+        if let Ok(len_u8) = u8::try_from(len)
+            && len <= Self::INLINE_CAP
+        {
+            let mut buf = [0u8; Self::INLINE_CAP];
+            if let Some(dst) = buf.get_mut(..len) {
+                reader.read_exact(dst)?;
+            }
+            Ok(Self(TailBytesRepr::Inline { len: len_u8, buf }))
+        } else {
+            let mut buf = vec![0u8; len];
+            reader.read_exact(&mut buf)?;
+            Ok(Self(TailBytesRepr::Heap(buf.into_boxed_slice())))
+        }
+    }
+
+    /// Returns the stored bytes as a slice.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        match &self.0 {
+            TailBytesRepr::Inline { len, buf } => {
+                let n = usize::from(*len);
+                buf.get(..n).unwrap_or(buf)
+            }
+            TailBytesRepr::Heap(b) => b,
+        }
+    }
+
+    /// Returns the byte length.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match &self.0 {
+            TailBytesRepr::Inline { len, .. } => usize::from(*len),
+            TailBytesRepr::Heap(b) => b.len(),
+        }
+    }
+
+    /// Returns `true` if the buffer contains zero bytes.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Copies the contents into an owned `Vec<u8>`.
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.as_slice().to_vec()
+    }
+}
+
+impl Default for TailBytes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Deref for TailBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl AsRef<[u8]> for TailBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl fmt::Debug for TailBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_slice(), f)
+    }
+}
+
+impl PartialEq for TailBytes {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for TailBytes {}
+
+impl PartialEq<[u8]> for TailBytes {
+    fn eq(&self, other: &[u8]) -> bool {
+        self.as_slice() == other
+    }
+}
+
+impl PartialEq<&[u8]> for TailBytes {
+    fn eq(&self, other: &&[u8]) -> bool {
+        self.as_slice() == *other
+    }
+}
+
+impl PartialEq<Vec<u8>> for TailBytes {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl PartialOrd for TailBytes {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TailBytes {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_slice().cmp(other.as_slice())
+    }
+}
+
+impl Hash for TailBytes {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_slice().hash(state);
+    }
+}
+
+impl From<Vec<u8>> for TailBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::from_vec(bytes)
+    }
+}
+
+impl From<&[u8]> for TailBytes {
+    fn from(bytes: &[u8]) -> Self {
+        Self::from_slice(bytes)
+    }
+}
+
+impl<const N: usize> From<[u8; N]> for TailBytes {
+    fn from(bytes: [u8; N]) -> Self {
+        Self::from_slice(&bytes)
+    }
+}
+
+impl BinWrite for TailBytes {
+    type Args<'a> = ();
+
+    fn write_options<W: Write + Seek>(
+        &self,
+        writer: &mut W,
+        _endian: Endian,
+        _args: Self::Args<'_>,
+    ) -> BinResult<()> {
+        writer.write_all(self.as_slice())?;
+        Ok(())
+    }
+}
+
+impl UnknownValue for TailBytes {
+    const WIRE_LEN: Option<usize> = None;
+
+    fn default_value() -> Self {
+        Self::new()
+    }
+
+    fn is_zero(&self) -> bool {
+        self.as_slice().iter().all(|&b| b == 0)
+    }
+
+    fn format_unknown(&self) -> String {
+        hex::encode(self.as_slice())
+    }
+
+    #[cfg(feature = "serde")]
+    fn serialize_unknown<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&hex::encode(self.as_slice()))
+    }
+
+    #[cfg(feature = "serde")]
+    fn deserialize_unknown<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let s: String = serde::Deserialize::deserialize(deserializer)?;
+        hex::decode(&s)
+            .map(Self::from_vec)
+            .map_err(D::Error::custom)
+    }
+}
+
 /// Byte offset range of an unknown field within its parent section.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -381,6 +625,16 @@ pub(crate) fn read_unknown_tail<R: Read + Seek>(
     args: (u32, u32, &'static str),
 ) -> BinResult<Unknown<Vec<u8>>> {
     read_header_tail(reader, endian, args).map(Unknown)
+}
+
+/// Helper `binrw` parser that delegates to [`read_header_tail_bytes`] and wraps the inline-optimized
+/// result in [`Unknown<TailBytes>`].
+pub(crate) fn read_unknown_tail_bytes<R: Read + Seek>(
+    reader: &mut R,
+    endian: Endian,
+    args: (u32, u32, &'static str),
+) -> BinResult<Unknown<TailBytes>> {
+    read_header_tail_bytes(reader, endian, args).map(Unknown)
 }
 
 /// Marker trait for fixed-width [`UnknownValue`] types (excludes `Vec<u8>`).
@@ -553,6 +807,40 @@ mod tests {
                 ));
             }
             other => panic!("unexpected binrw error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tail_bytes_inline_heap_and_size_invariant() {
+        assert!(
+            std::mem::size_of::<TailBytes>() <= std::mem::size_of::<Vec<u8>>(),
+            "TailBytes should not exceed Vec<u8> stack size"
+        );
+        for len in [0usize, 1, 4, 8, 16, 17, 32] {
+            let raw: Vec<u8> = (0..len)
+                .map(|i| u8::try_from(i % 251).expect("byte"))
+                .collect();
+            let from_slice = TailBytes::from_slice(&raw);
+            let from_vec = TailBytes::from_vec(raw.clone());
+            let mut cur = Cursor::new(raw.as_slice());
+            let from_reader = TailBytes::read_exact_len(&mut cur, len).expect("read_exact_len");
+            assert_eq!(from_slice, from_vec);
+            assert_eq!(from_slice, from_reader);
+            assert_eq!(from_slice.as_slice(), raw.as_slice());
+            assert_eq!(from_slice.len(), len);
+            assert_eq!(from_slice.is_empty(), len == 0);
+
+            let unk = Unknown::new(from_slice);
+            assert_eq!(unk.is_zero(), raw.iter().all(|&b| b == 0));
+            assert_eq!(unk.format_unknown(), hex::encode(&raw));
+
+            #[cfg(feature = "serde")]
+            {
+                let json = serde_json::to_string(&unk).expect("serialize Unknown<TailBytes>");
+                let back: Unknown<TailBytes> =
+                    serde_json::from_str(&json).expect("deserialize Unknown<TailBytes>");
+                assert_eq!(back, unk);
+            }
         }
     }
 }

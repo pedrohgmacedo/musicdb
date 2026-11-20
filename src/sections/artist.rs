@@ -3,7 +3,10 @@ use binrw::binrw;
 use super::boma::BomaSection;
 use super::read_bounded_vec;
 use super::timestamp::AppleTimestamp;
-use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
+use super::unknown::{
+    TailBytes, Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, read_unknown_tail_bytes,
+    visit_unknowns,
+};
 
 /// Artist list master header (`lAma`, typically 100 bytes).
 #[binrw]
@@ -102,9 +105,10 @@ pub struct ArtistItemHeader {
     /// Offset 120..124: Cloud sync timestamp (UTC Apple timestamp, or 2; present when `header_size >= 124`).
     #[br(if(header_size >= 124))]
     pub date_cloud_synced: Option<AppleTimestamp>,
-    /// Remaining bytes up to `header_size` (8 bytes `124..132` when `header_size == 132`, all zeros).
-    #[br(parse_with = read_unknown_tail, args(header_size, ArtistItemHeader::tail_start_offset(header_size), "iAma"))]
-    pub unk_tail: Unknown<Vec<u8>>,
+    /// Remaining bytes up to `header_size` (8 bytes `124..132` when `header_size == 132`, all zeros),
+    /// stored inline without heap allocation up to 16 bytes.
+    #[br(parse_with = read_unknown_tail_bytes, args(header_size, ArtistItemHeader::tail_start_offset(header_size), "iAma"))]
+    pub unk_tail: Unknown<TailBytes>,
 }
 
 impl ArtistItemHeader {
