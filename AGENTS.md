@@ -67,7 +67,7 @@ Much of the existing code predates these rules.
 ### Public API design (Rust API Guidelines)
 - **Every public struct and enum is `#[non_exhaustive]`** (except 1-field newtype wrappers such as `PersistentId`, `ParsePersistentIdError`, `Unknown<T>`, and `AppleTimestamp`). Read-only domain records (`Track`, `Album`, `Artist`, `Playlist`, `LibraryMetadata`) may expose `pub` data fields for ergonomic access and pattern matching (`#[non_exhaustive]` prevents external struct-literal construction), while container internals (such as `Library` indexes) stay private behind methods. Derived or computed values (`stars()`, `flags()`, `raw()`) are methods, not fields.
 - **Undecoded binary fields & format newtypes in `src/sections/`:**
-  - Wrap undecoded binary fields in `Unknown<T>` (never bare `u8`/`u32`/`[u8; N]`/`Vec<u8>`) and register every one in that struct's `VisitUnknowns` impl via `visit_unknowns!`. Split partially-decoded byte arrays cleanly into known fields plus `Unknown<T>` rather than leaving known flags inside `Unknown<[u8; N]>`.
+  - Wrap undecoded binary fields in `Unknown<T>` (never bare `u8`/`u32`/`[u8; N]`/`Vec<u8>`) and register every one in that struct's `VisitUnknowns` impl via `visit_unknowns!`. Use `Unknown<TailBytes>` for hot per-item variable-length header tails and `Unknown<Vec<u8>>` for rare once-per-section tails. Split partially-decoded byte arrays cleanly into known fields plus `Unknown<T>` rather than leaving known flags inside `Unknown<[u8; N]>`.
   - Use `AppleTimestamp` for 32-bit Apple epoch timestamp fields in `src/sections/`, and use `SectionKind` for `hsma` section filtering and dispatch.
   - `VisitUnknowns` / `UnknownVisitor` format introspection belongs in `src/sections/`, while `analysis` reports stay CLI-only.
 - **Be careful with what you make `pub`.** Helpers, serde `with` modules and research utilities are `pub(crate)`. Everything `pub` falls under semver.
@@ -128,7 +128,7 @@ Much of the existing code predates these rules.
 ## Versioning and commits
 - The crate is **0.x**. Under Cargo's semver rules, a breaking change bumps `0.MINOR` and a compatible change bumps `0.x.PATCH`.
 - **Don't change `version` in `Cargo.toml` unless asked.** Mention breaking changes explicitly in your summary.
-- Commit messages follow **Conventional Commits**: `feat: …`, `fix: …`, `refactor: …`, `docs: …`, `test: …`, `chore: …`, and `feat!:` / `fix!:` (or a `BREAKING CHANGE:` footer) for breaking changes. The subject line is imperative and under ~72 characters. Don't write messages like `doc` or `update`.
+- Commit messages follow **Conventional Commits**: `feat: …`, `fix: …`, `perf: …`, `refactor: …`, `docs: …`, `test: …`, `chore: …`, and `feat!:` / `fix!:` / `perf!:` (or a `BREAKING CHANGE:` footer) for breaking changes. The subject line is imperative and under ~72 characters. Don't write messages like `doc` or `update`.
 
 ## Tooling configuration: `clippy.toml` and `deny.toml`
 
