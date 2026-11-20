@@ -173,6 +173,17 @@ impl BomaSection {
             _ => None,
         }
     }
+
+    /// Consumes this `boma` section and returns its decoded string without cloning, if applicable.
+    pub(crate) fn into_string(self) -> Option<String> {
+        match self.payload {
+            BomaPayload::StringSection(s) => Some(s.text),
+            BomaPayload::RawStringUtf8 { text, .. }
+            | BomaPayload::RawStringUtf16Le { text, .. } => Some(text),
+            BomaPayload::Book { extracted_path, .. } => extracted_path,
+            _ => None,
+        }
+    }
 }
 
 /// Returns the human-readable field name for a known `boma` subtype ID.

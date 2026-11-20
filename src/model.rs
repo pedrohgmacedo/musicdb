@@ -9,10 +9,13 @@ use bitflags::bitflags;
 use jiff::Timestamp;
 
 use crate::error::{MusicDbError, Result};
+use crate::sections::boma::boma_subtype_name;
 use crate::sections::{
-    AlbumItem, AppleTimestamp, ArtistItem, BomaPayload, BomaSection, CloudDeletionItem, HsmaChild,
-    LibraryMasterSection, PlaylistItem, RawLibraryFile, SlstSection, SmartPlaylistOptions,
-    SmartPlaylistRule, SmartRuleChild, SocialProfileItem, TrackItem, TrackNumerics,
+    AlbumItem, AlbumItemHeader, AppleTimestamp, ArtistItem, ArtistItemHeader, BomaPayload,
+    BomaSection, CloudDeletionItem, HfmaHeader, HsmaChild, LibraryMasterHeader,
+    LibraryMasterSection, PlaylistItem, PlaylistItemHeader, RawLibraryFile, SlstSection,
+    SmartPlaylistOptions, SmartPlaylistRule, SmartRuleChild, SocialProfileItem, TrackItem,
+    TrackItemHeader, TrackNumerics, TrackPlaysSkips,
 };
 
 /// Seconds between 1904-01-01 00:00:00 UTC (Apple/Mac HFS+ epoch) and 1970-01-01 00:00:00 UTC (Unix epoch).
@@ -2630,7 +2633,7 @@ impl Library {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let mdb_path = RawLibraryFile::resolve_musicdb_path(path);
         let raw = RawLibraryFile::open(&mdb_path)?;
-        let mut lib = Self::from(&raw);
+        let mut lib = Self::from(raw);
 
         let bundle_dir = mdb_path.parent().filter(|parent| {
             parent.extension().and_then(|e| e.to_str()) == Some("musiclibrary")
@@ -2680,7 +2683,9 @@ impl Library {
             .collect();
 
         self.tracks_by_album.clear();
+        self.tracks_by_album.reserve(self.albums.len());
         self.tracks_by_artist.clear();
+        self.tracks_by_artist.reserve(self.artists.len());
         for (idx, t) in self.tracks.iter().enumerate() {
             if let Some(apid) = t.album_persistent_id {
                 self.tracks_by_album.entry(apid).or_default().push(idx);
@@ -2918,45 +2923,121 @@ impl Library {
     }
 }
 
+fn library_metadata_from_header(h: &HfmaHeader) -> LibraryMetadata {
+    LibraryMetadata {
+        persistent_id: PersistentId::new(h.library_persistent_id),
+        itunes_persistent_id: (h.itunes_library_persistent_id != 0)
+            .then_some(PersistentId::new(h.itunes_library_persistent_id)),
+        revision_hash: PersistentId::new(h.revision_hash),
+        file_size_mirror: h.file_size_mirror,
+        app_version: h.version_string(),
+        format_major_version: h.major_version,
+        format_minor_version: h.minor_version,
+        hsma_count: h.hsma_count,
+        declared_track_count: h.track_count,
+        declared_album_count: h.album_count,
+        declared_artist_count: h.artist_count,
+        declared_playlist_count: h.playlist_count,
+        timezone_offset_seconds: h.timezone_offset_seconds,
+        apple_store_account_id: h.apple_store_account_id,
+        date_modified: h.date_modified.to_utc(),
+        ..LibraryMetadata::default()
+    }
+}
+
+fn finalize_library(
+    metadata: LibraryMetadata,
+    albums: Vec<Album>,
+    artists: Vec<Artist>,
+    tracks: Vec<Track>,
+    mut playlists: Vec<Playlist>,
+    social_profiles: Vec<SocialProfile>,
+    pending_cloud_deletions: Vec<PendingCloudDeletion>,
+) -> Library {
+    link_playlist_hierarchy_and_refs(&mut playlists);
+
+    let mut lib = Library {
+        metadata,
+        albums,
+        artists,
+        tracks,
+        playlists,
+        social_profiles,
+        pending_cloud_deletions,
+        ..Library::default()
+    };
+    lib.rebuild_indexes();
+    lib
+}
+
 impl From<RawLibraryFile> for Library {
     fn from(raw: RawLibraryFile) -> Self {
-        Self::from(&raw)
+        let tz = raw.outer_header.timezone_offset_seconds;
+        let mut metadata = library_metadata_from_header(&raw.outer_header);
+
+        let mut albums = Vec::new();
+        let mut artists = Vec::new();
+        let mut tracks = Vec::new();
+        let mut playlists = Vec::new();
+        let mut social_profiles = Vec::new();
+        let mut pending_cloud_deletions = Vec::new();
+
+        for hsma in raw.sections {
+            match hsma.child {
+                HsmaChild::LibraryMaster(plma) => {
+                    populate_plma_metadata_owned(plma, &mut metadata);
+                }
+                HsmaChild::AlbumList(lama) => {
+                    albums.extend(
+                        lama.albums
+                            .into_iter()
+                            .map(|a| Album::from_owned_with_tz(a, tz)),
+                    );
+                }
+                HsmaChild::ArtistList(l_ama) => {
+                    artists.extend(l_ama.artists.into_iter().map(Artist::from_owned));
+                }
+                HsmaChild::TrackList(ltma) => {
+                    tracks.extend(
+                        ltma.tracks
+                            .into_iter()
+                            .map(|t| Track::from_owned_with_tz(t, tz)),
+                    );
+                }
+                HsmaChild::PlaylistList(l_pma) => {
+                    playlists.extend(l_pma.playlists.into_iter().map(Playlist::from_owned));
+                }
+                HsmaChild::PendingCloudDeletions(dcma) => {
+                    pending_cloud_deletions
+                        .extend(dcma.items.iter().map(PendingCloudDeletion::from));
+                }
+                HsmaChild::SocialProfileList(lsma) => {
+                    social_profiles
+                        .extend(lsma.profiles.into_iter().map(SocialProfile::from_owned));
+                }
+                HsmaChild::InnerHfma(_)
+                | HsmaChild::Padding(_)
+                | HsmaChild::Unknown { .. }
+                | HsmaChild::Skipped { .. } => {}
+            }
+        }
+
+        finalize_library(
+            metadata,
+            albums,
+            artists,
+            tracks,
+            playlists,
+            social_profiles,
+            pending_cloud_deletions,
+        )
     }
 }
 
 impl From<&RawLibraryFile> for Library {
     fn from(raw: &RawLibraryFile) -> Self {
-        let h = &raw.outer_header;
-        let tz = h.timezone_offset_seconds;
-        let mut metadata = LibraryMetadata {
-            persistent_id: PersistentId::new(h.library_persistent_id),
-            itunes_persistent_id: (h.itunes_library_persistent_id != 0)
-                .then_some(PersistentId::new(h.itunes_library_persistent_id)),
-            revision_hash: PersistentId::new(h.revision_hash),
-            file_size_mirror: h.file_size_mirror,
-            app_version: h.version_string(),
-            format_major_version: h.major_version,
-            format_minor_version: h.minor_version,
-            hsma_count: h.hsma_count,
-            declared_track_count: h.track_count,
-            declared_album_count: h.album_count,
-            declared_artist_count: h.artist_count,
-            declared_playlist_count: h.playlist_count,
-            timezone_offset_seconds: h.timezone_offset_seconds,
-            apple_store_account_id: h.apple_store_account_id,
-            date_modified: h.date_modified.to_utc(),
-            date_cloud_synced: None,
-            date_last_modified: None,
-            cloud_database_revision: None,
-            date_cloud_lease_expires: None,
-            show_song_list_checkboxes: None,
-            keep_media_folder_organized: None,
-            copy_files_to_media_folder: None,
-            media_folder_uri: None,
-            media_folder_path: None,
-            imported_itl_path: None,
-            songs_view_preferences: None,
-        };
+        let tz = raw.outer_header.timezone_offset_seconds;
+        let mut metadata = library_metadata_from_header(&raw.outer_header);
 
         let mut albums = Vec::new();
         let mut artists = Vec::new();
@@ -2996,9 +3077,7 @@ impl From<&RawLibraryFile> for Library {
             }
         }
 
-        link_playlist_hierarchy_and_refs(&mut playlists);
-
-        let mut lib = Self {
+        finalize_library(
             metadata,
             albums,
             artists,
@@ -3006,29 +3085,44 @@ impl From<&RawLibraryFile> for Library {
             playlists,
             social_profiles,
             pending_cloud_deletions,
-            ..Self::default()
-        };
-        lib.rebuild_indexes();
-        lib
+        )
+    }
+}
+
+fn apply_plma_header(header: &LibraryMasterHeader, meta: &mut LibraryMetadata) {
+    meta.date_cloud_synced = header.date_cloud_synced.to_utc();
+    meta.date_last_modified = header.date_last_modified.to_utc();
+    meta.cloud_database_revision =
+        (header.cloud_database_revision != 0).then_some(header.cloud_database_revision);
+    meta.date_cloud_lease_expires = header.date_cloud_lease_expires.to_utc();
+    meta.show_song_list_checkboxes = Some(header.checkbox_show_song_list_checkboxes != 0);
+    meta.keep_media_folder_organized = Some(header.checkbox_keep_media_folder_organized != 0);
+}
+
+fn apply_plma_string(subtype: u32, val: String, meta: &mut LibraryMetadata) {
+    match subtype {
+        0x01F8 => meta.media_folder_uri = Some(val),
+        0x01FC => meta.imported_itl_path = Some(val),
+        0x01FD | 0x0200 => meta.media_folder_path = Some(val),
+        _ => {}
     }
 }
 
 fn populate_plma_metadata(plma: &LibraryMasterSection, meta: &mut LibraryMetadata) {
-    meta.date_cloud_synced = plma.header.date_cloud_synced.to_utc();
-    meta.date_last_modified = plma.header.date_last_modified.to_utc();
-    meta.cloud_database_revision =
-        (plma.header.cloud_database_revision != 0).then_some(plma.header.cloud_database_revision);
-    meta.date_cloud_lease_expires = plma.header.date_cloud_lease_expires.to_utc();
-    meta.show_song_list_checkboxes = Some(plma.header.checkbox_show_song_list_checkboxes != 0);
-    meta.keep_media_folder_organized = Some(plma.header.checkbox_keep_media_folder_organized != 0);
+    apply_plma_header(&plma.header, meta);
     for boma in &plma.bomas {
         if let Some(s) = boma.as_str() {
-            match boma.subtype {
-                0x01F8 => meta.media_folder_uri = Some(s.to_owned()),
-                0x01FC => meta.imported_itl_path = Some(s.to_owned()),
-                0x01FD | 0x0200 => meta.media_folder_path = Some(s.to_owned()),
-                _ => {}
-            }
+            apply_plma_string(boma.subtype, s.to_owned(), meta);
+        }
+    }
+}
+
+fn populate_plma_metadata_owned(plma: LibraryMasterSection, meta: &mut LibraryMetadata) {
+    apply_plma_header(&plma.header, meta);
+    for boma in plma.bomas {
+        let subtype = boma.subtype;
+        if let Some(s) = boma.into_string() {
+            apply_plma_string(subtype, s, meta);
         }
     }
 }
@@ -3059,35 +3153,45 @@ fn link_playlist_hierarchy_and_refs(playlists: &mut [Playlist]) {
     }
 }
 
-impl From<&SocialProfileItem> for SocialProfile {
-    fn from(isma: &SocialProfileItem) -> Self {
-        let mut profile_id = None;
-        let mut name = None;
-        let mut handle = None;
-        let mut avatar_id = None;
-        let mut avatar_url = None;
+fn apply_social_boma_string(profile: &mut SocialProfile, subtype: u32, val: String) {
+    match subtype {
+        0x0320 => profile.profile_id = Some(val),
+        0x0321 => profile.name = Some(val),
+        0x0322 => profile.handle = Some(val),
+        0x0323 => profile.avatar_id = Some(val),
+        0x0324 => profile.avatar_url = Some(val),
+        _ => {}
+    }
+}
 
-        for boma in &isma.bomas {
-            if let Some(s) = boma.as_str() {
-                match boma.subtype {
-                    0x0320 => profile_id = Some(s.to_owned()),
-                    0x0321 => name = Some(s.to_owned()),
-                    0x0322 => handle = Some(s.to_owned()),
-                    0x0323 => avatar_id = Some(s.to_owned()),
-                    0x0324 => avatar_url = Some(s.to_owned()),
-                    _ => {}
-                }
+impl SocialProfile {
+    fn from_owned(isma: SocialProfileItem) -> Self {
+        let mut profile = Self {
+            persistent_id: PersistentId::new(isma.header.profile_persistent_id),
+            ..Self::default()
+        };
+        for boma in isma.bomas {
+            let subtype = boma.subtype;
+            if let Some(s) = boma.into_string() {
+                apply_social_boma_string(&mut profile, subtype, s);
             }
         }
+        profile
+    }
+}
 
-        Self {
+impl From<&SocialProfileItem> for SocialProfile {
+    fn from(isma: &SocialProfileItem) -> Self {
+        let mut profile = Self {
             persistent_id: PersistentId::new(isma.header.profile_persistent_id),
-            profile_id,
-            name,
-            handle,
-            avatar_id,
-            avatar_url,
+            ..Self::default()
+        };
+        for boma in &isma.bomas {
+            if let Some(s) = boma.as_str() {
+                apply_social_boma_string(&mut profile, boma.subtype, s.to_owned());
+            }
         }
+        profile
     }
 }
 
@@ -3097,55 +3201,26 @@ impl From<&AlbumItem> for Album {
     }
 }
 
+fn apply_album_string(album: &mut Album, subtype: u32, val: String) {
+    match subtype {
+        0x012C => album.title = Some(val),
+        0x012D => album.artist = Some(val),
+        0x012E => album.album_artist = Some(val),
+        0x0133 => album.cloud_album_id = Some(val),
+        0x0134 => album.editorial_notes = Some(val),
+        0x0136 => album.catalog_genre = Some(val),
+        _ => {}
+    }
+}
+
 impl Album {
-    pub(crate) fn from_raw_with_tz(iama: &AlbumItem, tz_offset_seconds: i32) -> Self {
-        let h = &iama.header;
-        let mut title = None;
-        let mut artist = None;
-        let mut album_artist = None;
-        let mut cloud_album_id = None;
-        let mut editorial_notes = None;
-        let mut catalog_genre = None;
-        let mut motion_artwork_url = None;
-        let mut motion_preview_frame_url = None;
-        let mut motion_artwork_token = None;
-
-        for boma in &iama.bomas {
-            if boma.subtype == 0x0135 {
-                apply_album_motion_artwork_plist(
-                    boma,
-                    &mut motion_artwork_url,
-                    &mut motion_preview_frame_url,
-                    &mut motion_artwork_token,
-                );
-            } else if let Some(s) = boma.as_str() {
-                match boma.subtype {
-                    0x012C => title = Some(s.to_owned()),
-                    0x012D => artist = Some(s.to_owned()),
-                    0x012E => album_artist = Some(s.to_owned()),
-                    0x0133 => cloud_album_id = Some(s.to_owned()),
-                    0x0134 => editorial_notes = Some(s.to_owned()),
-                    0x0136 => catalog_genre = Some(s.to_owned()),
-                    _ => {}
-                }
-            }
-        }
-
+    fn from_header(h: &AlbumItemHeader, tz_offset_seconds: i32) -> Self {
         Self {
             persistent_id: PersistentId::new(h.album_persistent_id),
             itunes_persistent_id: (h.album_persistent_id_2 != 0)
                 .then_some(PersistentId::new(h.album_persistent_id_2)),
             first_track_persistent_id: (h.first_track_persistent_id != 0)
                 .then_some(PersistentId::new(h.first_track_persistent_id)),
-            title,
-            artist,
-            album_artist,
-            cloud_album_id,
-            editorial_notes,
-            catalog_genre,
-            motion_artwork_url,
-            motion_preview_frame_url,
-            motion_artwork_token,
             is_compilation: h.is_compilation != 0,
             playlist_only: h.playlist_only != 0,
             catalog_album_type: h
@@ -3160,7 +3235,45 @@ impl Album {
             date_cloud_synced: h.date_cloud_synced.and_then(AppleTimestamp::to_utc),
             date_released: h.date_released.and_then(AppleTimestamp::to_utc),
             apple_music_store_album_id: h.apple_music_store_album_id.filter(|&id| id != 0),
+            ..Self::default()
         }
+    }
+
+    pub(crate) fn from_raw_with_tz(iama: &AlbumItem, tz_offset_seconds: i32) -> Self {
+        let mut album = Self::from_header(&iama.header, tz_offset_seconds);
+        for boma in &iama.bomas {
+            if boma.subtype == 0x0135 {
+                apply_album_motion_artwork_plist(
+                    boma,
+                    &mut album.motion_artwork_url,
+                    &mut album.motion_preview_frame_url,
+                    &mut album.motion_artwork_token,
+                );
+            } else if let Some(s) = boma.as_str() {
+                apply_album_string(&mut album, boma.subtype, s.to_owned());
+            }
+        }
+        album
+    }
+
+    fn from_owned_with_tz(iama: AlbumItem, tz_offset_seconds: i32) -> Self {
+        let mut album = Self::from_header(&iama.header, tz_offset_seconds);
+        for boma in iama.bomas {
+            if boma.subtype == 0x0135 {
+                apply_album_motion_artwork_plist(
+                    &boma,
+                    &mut album.motion_artwork_url,
+                    &mut album.motion_preview_frame_url,
+                    &mut album.motion_artwork_token,
+                );
+            } else {
+                let subtype = boma.subtype;
+                if let Some(s) = boma.into_string() {
+                    apply_album_string(&mut album, subtype, s);
+                }
+            }
+        }
+        album
     }
 }
 
@@ -3201,33 +3314,22 @@ fn apply_album_motion_artwork_plist(
     }
 }
 
-impl From<&ArtistItem> for Artist {
-    fn from(i_ama: &ArtistItem) -> Self {
-        let h = &i_ama.header;
-        let mut name = None;
-        let mut sort_name = None;
-        let mut cloud_artist_id = None;
-        let mut artwork_url_plist = None;
+fn apply_artist_string(artist: &mut Artist, subtype: u32, val: String) {
+    match subtype {
+        0x0190 | 0x0004 => artist.name = Some(val),
+        0x0191 => artist.sort_name = Some(val),
+        0x0192 => artist.artwork_url_plist = Some(val),
+        0x0193 => artist.cloud_artist_id = Some(val),
+        _ => {}
+    }
+}
 
-        for boma in &i_ama.bomas {
-            if let Some(s) = boma.as_str() {
-                match boma.subtype {
-                    0x0190 | 0x0004 => name = Some(s.to_owned()),
-                    0x0191 => sort_name = Some(s.to_owned()),
-                    0x0192 => artwork_url_plist = Some(s.to_owned()),
-                    0x0193 => cloud_artist_id = Some(s.to_owned()),
-                    _ => {}
-                }
-            }
-        }
-
+impl Artist {
+    fn from_header(h: &ArtistItemHeader) -> Self {
         Self {
             persistent_id: PersistentId::new(h.artist_persistent_id),
             itunes_persistent_id: (h.artist_persistent_id_2 != 0)
                 .then_some(PersistentId::new(h.artist_persistent_id_2)),
-            name,
-            sort_name,
-            cloud_artist_id,
             playlist_only: h.playlist_only != 0,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
             suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
@@ -3239,8 +3341,31 @@ impl From<&ArtistItem> for Artist {
                 h.apple_music_store_artist_id_2
             },
             artwork_uuid: format_artwork_uuid(&h.artwork_uuid),
-            artwork_url_plist,
+            ..Self::default()
         }
+    }
+
+    fn from_owned(i_ama: ArtistItem) -> Self {
+        let mut artist = Self::from_header(&i_ama.header);
+        for boma in i_ama.bomas {
+            let subtype = boma.subtype;
+            if let Some(s) = boma.into_string() {
+                apply_artist_string(&mut artist, subtype, s);
+            }
+        }
+        artist
+    }
+}
+
+impl From<&ArtistItem> for Artist {
+    fn from(i_ama: &ArtistItem) -> Self {
+        let mut artist = Self::from_header(&i_ama.header);
+        for boma in &i_ama.bomas {
+            if let Some(s) = boma.as_str() {
+                apply_artist_string(&mut artist, boma.subtype, s.to_owned());
+            }
+        }
+        artist
     }
 }
 
@@ -3251,12 +3376,11 @@ impl From<&TrackItem> for Track {
 }
 
 impl Track {
-    pub(crate) fn from_raw_with_tz(itma: &TrackItem, tz_offset_seconds: i32) -> Self {
-        let h = &itma.header;
+    fn from_header(h: &TrackItemHeader) -> Self {
         let cloud_saga_id = (h.cloud_saga_id != 0 && h.cloud_saga_id != 0xFFFF_FFFF_FFFF_FFFD)
             .then_some(h.cloud_saga_id);
 
-        let mut track = Self {
+        Self {
             persistent_id: PersistentId::new(h.track_persistent_id),
             movement_number: h.movement_number,
             movement_total: h.movement_total,
@@ -3300,13 +3424,35 @@ impl Track {
                 .then_some(PersistentId::new(h.artist_persistent_id)),
             artwork_uuid: format_artwork_uuid(&h.artwork_uuid),
             ..Self::default()
-        };
+        }
+    }
 
+    pub(crate) fn from_raw_with_tz(itma: &TrackItem, tz_offset_seconds: i32) -> Self {
+        let mut track = Self::from_header(&itma.header);
         for boma in &itma.bomas {
             apply_track_boma(&mut track, boma, tz_offset_seconds);
         }
-
         track
+    }
+
+    fn from_owned_with_tz(itma: TrackItem, tz_offset_seconds: i32) -> Self {
+        let mut track = Self::from_header(&itma.header);
+        for boma in itma.bomas {
+            apply_track_boma_owned(&mut track, boma, tz_offset_seconds);
+        }
+        track
+    }
+}
+
+fn apply_track_plays_skips(track: &mut Track, ps: &TrackPlaysSkips, tz_offset_seconds: i32) {
+    if track.play_count.is_none() {
+        track.play_count = Some(ps.play_count);
+        track.true_play_count = Some(ps.true_play_count);
+        track.skip_count = Some(ps.skip_count);
+        track.true_skip_count = Some(ps.true_skip_count);
+        track.date_last_played = ps.date_last_played.to_utc_with_offset(tz_offset_seconds);
+        track.date_first_played_utc = ps.date_first_played_utc.to_utc();
+        track.date_last_skipped = ps.date_last_skipped.to_utc_with_offset(tz_offset_seconds);
     }
 }
 
@@ -3319,28 +3465,51 @@ fn apply_track_boma(track: &mut Track, boma: &BomaSection, tz_offset_seconds: i3
                 apply_secondary_track_numerics(track, num);
             }
         }
-        BomaPayload::TrackPlaysSkips(ps) => {
-            if track.play_count.is_none() {
-                track.play_count = Some(ps.play_count);
-                track.true_play_count = Some(ps.true_play_count);
-                track.skip_count = Some(ps.skip_count);
-                track.true_skip_count = Some(ps.true_skip_count);
-                track.date_last_played = ps.date_last_played.to_utc_with_offset(tz_offset_seconds);
-                track.date_first_played_utc = ps.date_first_played_utc.to_utc();
-                track.date_last_skipped =
-                    ps.date_last_skipped.to_utc_with_offset(tz_offset_seconds);
-            }
-        }
+        BomaPayload::TrackPlaysSkips(ps) => apply_track_plays_skips(track, ps, tz_offset_seconds),
         BomaPayload::Book { extracted_path, .. } => {
             if track.book_path.is_none() {
                 track.book_path.clone_from(extracted_path);
             }
         }
-        _ => {
-            if let Some(s) = boma.as_str() {
-                apply_track_string_boma(track, boma, s.to_owned());
+        BomaPayload::RawStringUtf8 { text, raw_bytes } => {
+            apply_track_string_boma(track, boma.subtype, Some(raw_bytes), text.clone());
+        }
+        BomaPayload::StringSection(s) => {
+            apply_track_string_boma(track, boma.subtype, None, s.text.clone());
+        }
+        BomaPayload::RawStringUtf16Le { text, .. } => {
+            apply_track_string_boma(track, boma.subtype, None, text.clone());
+        }
+        _ => {}
+    }
+}
+
+fn apply_track_boma_owned(track: &mut Track, boma: BomaSection, tz_offset_seconds: i32) {
+    let subtype = boma.subtype;
+    match boma.payload {
+        BomaPayload::TrackNumerics(num) => {
+            if track.duration_ms.is_none() {
+                apply_primary_track_numerics(track, &num, tz_offset_seconds);
+            } else {
+                apply_secondary_track_numerics(track, &num);
             }
         }
+        BomaPayload::TrackPlaysSkips(ps) => apply_track_plays_skips(track, &ps, tz_offset_seconds),
+        BomaPayload::Book { extracted_path, .. } => {
+            if track.book_path.is_none() {
+                track.book_path = extracted_path;
+            }
+        }
+        BomaPayload::RawStringUtf8 { text, raw_bytes } => {
+            apply_track_string_boma(track, subtype, Some(&raw_bytes), text);
+        }
+        BomaPayload::StringSection(s) => {
+            apply_track_string_boma(track, subtype, None, s.text);
+        }
+        BomaPayload::RawStringUtf16Le { text, .. } => {
+            apply_track_string_boma(track, subtype, None, text);
+        }
+        _ => {}
     }
 }
 
@@ -3478,8 +3647,8 @@ fn apply_secondary_track_numerics(track: &mut Track, num: &TrackNumerics) {
     }
 }
 
-fn apply_track_string_boma(track: &mut Track, boma: &BomaSection, val: String) {
-    let target = match boma.subtype {
+fn apply_track_string_boma(track: &mut Track, subtype: u32, raw_bytes: Option<&[u8]>, val: String) {
+    let target = match subtype {
         0x0002 => &mut track.title,
         0x0003 => &mut track.album,
         0x0004 => &mut track.artist,
@@ -3510,13 +3679,13 @@ fn apply_track_string_boma(track: &mut Track, boma: &BomaSection, val: String) {
         0x0040 => &mut track.movement_name,
         0x0043 => &mut track.legacy_file_path,
         0x0036 => {
-            apply_track_cloud_plist(track, boma, val);
+            apply_track_cloud_plist(track, raw_bytes, val);
             return;
         }
         other => {
             track
                 .extra_strings
-                .entry(format!("0x{other:04X}_{}", boma.subtype_name()))
+                .entry(format!("0x{other:04X}_{}", boma_subtype_name(other)))
                 .or_insert(val);
             return;
         }
@@ -3524,8 +3693,8 @@ fn apply_track_string_boma(track: &mut Track, boma: &BomaSection, val: String) {
     target.get_or_insert(val);
 }
 
-fn apply_track_cloud_plist(track: &mut Track, boma: &BomaSection, val: String) {
-    if let BomaPayload::RawStringUtf8 { raw_bytes, .. } = &boma.payload
+fn apply_track_cloud_plist(track: &mut Track, raw_bytes: Option<&[u8]>, val: String) {
+    if let Some(raw_bytes) = raw_bytes
         && let Ok(plist::Value::Dictionary(dict)) =
             plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
     {
@@ -3556,31 +3725,21 @@ fn apply_track_cloud_plist(track: &mut Track, boma: &BomaSection, val: String) {
     }
     track
         .extra_strings
-        .entry(format!("0x{:04X}_{}", boma.subtype, boma.subtype_name()))
+        .entry(format!("0x0036_{}", boma_subtype_name(0x0036)))
         .or_insert(val);
 }
 
-impl From<&PlaylistItem> for Playlist {
-    fn from(lpma: &PlaylistItem) -> Self {
-        let h = &lpma.header;
-        let mut raw_smart_rules: Option<&SlstSection> = None;
-        let mut raw_smart_options: Option<&SmartPlaylistOptions> = None;
-        let mut track_persistent_ids = Vec::new();
-
-        let is_master = h.is_master_playlist != 0;
-        let is_folder = h.is_folder != 0;
-        let system_kind = DistinguishedPlaylistKind::from(h.distinguished_kind);
-        let share_mode = PlaylistShareMode::from(h.cloud_share_mode);
-
-        let mut pl = Self {
+impl Playlist {
+    fn from_header(h: &PlaylistItemHeader) -> Self {
+        Self {
             persistent_id: PersistentId::new(h.playlist_persistent_id),
             parent_persistent_id: (h.parent_persistent_id != 0)
                 .then_some(PersistentId::new(h.parent_persistent_id)),
-            is_master,
-            is_folder,
+            is_master: h.is_master_playlist != 0,
+            is_folder: h.is_folder != 0,
             is_subscribed: h.is_subscribed_playlist != 0,
             show_in_profile_and_search: h.checkbox_show_in_profile_and_search != 0,
-            system_kind,
+            system_kind: DistinguishedPlaylistKind::from(h.distinguished_kind),
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
             suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
             date_created: h.date_created.to_utc(),
@@ -3594,7 +3753,7 @@ impl From<&PlaylistItem> for Playlist {
             play_count: h.play_count,
             true_play_count: h.true_play_count,
             refresh_interval_seconds: h.refresh_interval_seconds,
-            share_mode,
+            share_mode: PlaylistShareMode::from(h.cloud_share_mode),
             artwork_template_kind: h.artwork_template_kind,
             cloud_saga_id: (h.cloud_playlist_saga_id_1 != 0).then_some(h.cloud_playlist_saga_id_1),
             author_social_profile_persistent_id: h
@@ -3604,7 +3763,80 @@ impl From<&PlaylistItem> for Playlist {
             artwork_uuid: format_artwork_uuid(&h.artwork_uuid),
             declared_track_count: h.track_count,
             ..Self::default()
+        }
+    }
+
+    fn finalize_playlist(
+        &mut self,
+        h: &PlaylistItemHeader,
+        track_persistent_ids: Vec<PersistentId>,
+        raw_smart_rules: Option<&SlstSection>,
+        raw_smart_options: Option<&SmartPlaylistOptions>,
+    ) {
+        self.track_persistent_ids = track_persistent_ids;
+        let has_smart_blocks = raw_smart_rules.is_some() || raw_smart_options.is_some();
+        self.is_smart = !self.is_folder && has_smart_blocks;
+        self.smart_playlist = self
+            .is_smart
+            .then(|| decode_smart_playlist(raw_smart_options, raw_smart_rules));
+
+        self.kind = if self.is_master {
+            PlaylistKind::Master
+        } else if self.is_folder {
+            PlaylistKind::Folder
+        } else if h.distinguished_kind != 0 {
+            PlaylistKind::Distinguished
+        } else if self.is_smart {
+            PlaylistKind::Smart
+        } else if self.share_mode == PlaylistShareMode::SubscribedCatalog
+            || self.subscribed_container_url.is_some()
+        {
+            PlaylistKind::SubscribedCatalog
+        } else {
+            PlaylistKind::Standard
         };
+    }
+
+    fn from_owned(lpma: PlaylistItem) -> Self {
+        let h = &lpma.header;
+        let mut raw_smart_rules: Option<Box<SlstSection>> = None;
+        let mut raw_smart_options: Option<Box<SmartPlaylistOptions>> = None;
+        let initial_cap = usize::try_from(h.track_count)
+            .unwrap_or(0)
+            .min(lpma.bomas.len());
+        let mut track_persistent_ids = Vec::with_capacity(initial_cap);
+        let mut pl = Self::from_header(h);
+
+        for boma in lpma.bomas {
+            apply_playlist_boma_owned(
+                &mut pl,
+                boma,
+                &mut track_persistent_ids,
+                &mut raw_smart_rules,
+                &mut raw_smart_options,
+            );
+        }
+
+        pl.finalize_playlist(
+            h,
+            track_persistent_ids,
+            raw_smart_rules.as_deref(),
+            raw_smart_options.as_deref(),
+        );
+        pl
+    }
+}
+
+impl From<&PlaylistItem> for Playlist {
+    fn from(lpma: &PlaylistItem) -> Self {
+        let h = &lpma.header;
+        let mut raw_smart_rules: Option<&SlstSection> = None;
+        let mut raw_smart_options: Option<&SmartPlaylistOptions> = None;
+        let initial_cap = usize::try_from(h.track_count)
+            .unwrap_or(0)
+            .min(lpma.bomas.len());
+        let mut track_persistent_ids = Vec::with_capacity(initial_cap);
+        let mut pl = Self::from_header(h);
 
         for boma in &lpma.bomas {
             apply_playlist_boma(
@@ -3616,29 +3848,7 @@ impl From<&PlaylistItem> for Playlist {
             );
         }
 
-        pl.track_persistent_ids = track_persistent_ids;
-        let has_smart_blocks = raw_smart_rules.is_some() || raw_smart_options.is_some();
-        pl.is_smart = !is_folder && has_smart_blocks;
-        pl.smart_playlist = pl
-            .is_smart
-            .then(|| decode_smart_playlist(raw_smart_options, raw_smart_rules));
-
-        pl.kind = if is_master {
-            PlaylistKind::Master
-        } else if is_folder {
-            PlaylistKind::Folder
-        } else if h.distinguished_kind != 0 {
-            PlaylistKind::Distinguished
-        } else if pl.is_smart {
-            PlaylistKind::Smart
-        } else if share_mode == PlaylistShareMode::SubscribedCatalog
-            || pl.subscribed_container_url.is_some()
-        {
-            PlaylistKind::SubscribedCatalog
-        } else {
-            PlaylistKind::Standard
-        };
-
+        pl.finalize_playlist(h, track_persistent_ids, raw_smart_rules, raw_smart_options);
         pl
     }
 }
@@ -3676,6 +3886,44 @@ fn apply_playlist_boma<'a>(
                 apply_playlist_cloud_dict(pl, &dict);
             }
         }
+    }
+}
+
+fn apply_playlist_boma_owned(
+    pl: &mut Playlist,
+    boma: BomaSection,
+    track_persistent_ids: &mut Vec<PersistentId>,
+    raw_smart_rules: &mut Option<Box<SlstSection>>,
+    raw_smart_options: &mut Option<Box<SmartPlaylistOptions>>,
+) {
+    let subtype = boma.subtype;
+    match boma.payload {
+        BomaPayload::PlaylistItem(ipfa) => {
+            track_persistent_ids.push(PersistentId::new(ipfa.track_persistent_id));
+        }
+        BomaPayload::PlaylistItemCompact(ipfa) => {
+            track_persistent_ids.push(PersistentId::new(ipfa.track_persistent_id));
+        }
+        BomaPayload::SmartPlaylistRules(slst) => {
+            *raw_smart_rules = Some(slst);
+        }
+        BomaPayload::SmartPlaylistOptions(opts) => {
+            *raw_smart_options = Some(opts);
+        }
+        BomaPayload::RawStringUtf8 { raw_bytes, .. } if subtype == 0x00CD => {
+            if let Ok(plist::Value::Dictionary(dict)) =
+                plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
+            {
+                apply_playlist_cloud_dict(pl, &dict);
+            }
+        }
+        payload if subtype == 0x00C8 => {
+            let owned_boma = BomaSection { payload, ..boma };
+            if let Some(s) = owned_boma.into_string() {
+                pl.name = Some(s);
+            }
+        }
+        _ => {}
     }
 }
 
