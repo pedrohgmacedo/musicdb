@@ -3277,6 +3277,118 @@ impl Album {
     }
 }
 
+#[cfg(feature = "serde")]
+#[derive(Default)]
+struct LossyPlistString(Option<String>);
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for LossyPlistString {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct LossyVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for LossyVisitor {
+            type Value = LossyPlistString;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("any plist value")
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                v: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(LossyPlistString(Some(v.to_owned())))
+            }
+
+            fn visit_string<E: serde::de::Error>(
+                self,
+                v: String,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(LossyPlistString(Some(v)))
+            }
+
+            fn visit_bool<E>(self, _: bool) -> std::result::Result<Self::Value, E> {
+                Ok(LossyPlistString(None))
+            }
+
+            fn visit_i64<E>(self, _: i64) -> std::result::Result<Self::Value, E> {
+                Ok(LossyPlistString(None))
+            }
+
+            fn visit_u64<E>(self, _: u64) -> std::result::Result<Self::Value, E> {
+                Ok(LossyPlistString(None))
+            }
+
+            fn visit_f64<E>(self, _: f64) -> std::result::Result<Self::Value, E> {
+                Ok(LossyPlistString(None))
+            }
+
+            fn visit_bytes<E>(self, _: &[u8]) -> std::result::Result<Self::Value, E> {
+                Ok(LossyPlistString(None))
+            }
+
+            fn visit_none<E>(self) -> std::result::Result<Self::Value, E> {
+                Ok(LossyPlistString(None))
+            }
+
+            fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
+                Ok(LossyPlistString(None))
+            }
+
+            fn visit_some<D: serde::Deserializer<'de>>(
+                self,
+                d: D,
+            ) -> std::result::Result<Self::Value, D::Error> {
+                let _ = <serde::de::IgnoredAny as serde::Deserialize>::deserialize(d)?;
+                Ok(LossyPlistString(None))
+            }
+
+            fn visit_newtype_struct<D: serde::Deserializer<'de>>(
+                self,
+                d: D,
+            ) -> std::result::Result<Self::Value, D::Error> {
+                let _ = <serde::de::IgnoredAny as serde::Deserialize>::deserialize(d)?;
+                Ok(LossyPlistString(None))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(LossyPlistString(None))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                while map
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                    .is_some()
+                {}
+                Ok(LossyPlistString(None))
+            }
+        }
+
+        deserializer.deserialize_any(LossyVisitor)
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct AlbumMotionArtworkPlist {
+    #[serde(rename = "motion-artwork-url")]
+    artwork_url: LossyPlistString,
+    #[serde(rename = "motion-preview-frame-url")]
+    preview_frame_url: LossyPlistString,
+    #[serde(rename = "motion-artwork-token")]
+    artwork_token: LossyPlistString,
+}
+
 fn apply_album_motion_artwork_plist(
     boma: &BomaSection,
     motion_artwork_url: &mut Option<String>,
@@ -3289,28 +3401,47 @@ fn apply_album_motion_artwork_plist(
         | BomaPayload::Unknown { raw_bytes, .. } => raw_bytes.as_slice(),
         _ => return,
     };
-    let Ok(plist::Value::Dictionary(dict)) =
-        plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
-    else {
-        return;
-    };
-    if let Some(v) = dict
-        .get("motion-artwork-url")
-        .and_then(plist::Value::as_string)
+
+    #[cfg(feature = "serde")]
     {
-        motion_artwork_url.get_or_insert_with(|| v.to_owned());
+        if let Ok(parsed) = plist::from_bytes::<AlbumMotionArtworkPlist>(raw_bytes) {
+            if let Some(v) = parsed.artwork_url.0 {
+                motion_artwork_url.get_or_insert(v);
+            }
+            if let Some(v) = parsed.preview_frame_url.0 {
+                motion_preview_frame_url.get_or_insert(v);
+            }
+            if let Some(v) = parsed.artwork_token.0 {
+                motion_artwork_token.get_or_insert(v);
+            }
+        }
     }
-    if let Some(v) = dict
-        .get("motion-preview-frame-url")
-        .and_then(plist::Value::as_string)
+
+    #[cfg(not(feature = "serde"))]
     {
-        motion_preview_frame_url.get_or_insert_with(|| v.to_owned());
-    }
-    if let Some(v) = dict
-        .get("motion-artwork-token")
-        .and_then(plist::Value::as_string)
-    {
-        motion_artwork_token.get_or_insert_with(|| v.to_owned());
+        let Ok(plist::Value::Dictionary(dict)) =
+            plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
+        else {
+            return;
+        };
+        if let Some(v) = dict
+            .get("motion-artwork-url")
+            .and_then(plist::Value::as_string)
+        {
+            motion_artwork_url.get_or_insert_with(|| v.to_owned());
+        }
+        if let Some(v) = dict
+            .get("motion-preview-frame-url")
+            .and_then(plist::Value::as_string)
+        {
+            motion_preview_frame_url.get_or_insert_with(|| v.to_owned());
+        }
+        if let Some(v) = dict
+            .get("motion-artwork-token")
+            .and_then(plist::Value::as_string)
+        {
+            motion_artwork_token.get_or_insert_with(|| v.to_owned());
+        }
     }
 }
 
@@ -3647,6 +3778,14 @@ fn apply_secondary_track_numerics(track: &mut Track, num: &TrackNumerics) {
     }
 }
 
+fn extra_string_key(subtype: u32) -> String {
+    match subtype {
+        0x0036 => "0x0036_plist_artwork".to_owned(),
+        0x0038 => "0x0038_plist_redownload_params".to_owned(),
+        other => format!("0x{other:04X}_{}", boma_subtype_name(other)),
+    }
+}
+
 fn apply_track_string_boma(track: &mut Track, subtype: u32, raw_bytes: Option<&[u8]>, val: String) {
     let target = match subtype {
         0x0002 => &mut track.title,
@@ -3685,7 +3824,7 @@ fn apply_track_string_boma(track: &mut Track, subtype: u32, raw_bytes: Option<&[
         other => {
             track
                 .extra_strings
-                .entry(format!("0x{other:04X}_{}", boma_subtype_name(other)))
+                .entry(extra_string_key(other))
                 .or_insert(val);
             return;
         }
@@ -3693,39 +3832,73 @@ fn apply_track_string_boma(track: &mut Track, subtype: u32, raw_bytes: Option<&[
     target.get_or_insert(val);
 }
 
+#[cfg(feature = "serde")]
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct TrackCloudPlist {
+    #[serde(rename = "cloud-album-id")]
+    album_id: LossyPlistString,
+    #[serde(rename = "cloud-artist-id")]
+    artist_id: LossyPlistString,
+    #[serde(rename = "cloud-artwork-token")]
+    artwork_token: LossyPlistString,
+    #[serde(rename = "cloud-lyrics")]
+    lyrics: LossyPlistString,
+    #[serde(rename = "cloud-lyrics-token")]
+    lyrics_token: LossyPlistString,
+}
+
 fn apply_track_cloud_plist(track: &mut Track, raw_bytes: Option<&[u8]>, val: String) {
-    if let Some(raw_bytes) = raw_bytes
-        && let Ok(plist::Value::Dictionary(dict)) =
+    if let Some(raw_bytes) = raw_bytes {
+        #[cfg(feature = "serde")]
+        if let Ok(parsed) = plist::from_bytes::<TrackCloudPlist>(raw_bytes) {
+            if let Some(v) = parsed.album_id.0 {
+                track.cloud_album_id.get_or_insert(v);
+            }
+            if let Some(v) = parsed.artist_id.0 {
+                track.cloud_artist_id.get_or_insert(v);
+            }
+            if let Some(v) = parsed.artwork_token.0 {
+                track.cloud_artwork_token.get_or_insert(v);
+            }
+            if let Some(v) = parsed.lyrics.0.or(parsed.lyrics_token.0) {
+                track.cloud_lyrics_token.get_or_insert(v);
+            }
+        }
+
+        #[cfg(not(feature = "serde"))]
+        if let Ok(plist::Value::Dictionary(dict)) =
             plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
-    {
-        if let Some(v) = dict.get("cloud-album-id").and_then(plist::Value::as_string) {
-            track.cloud_album_id.get_or_insert_with(|| v.to_owned());
-        }
-        if let Some(v) = dict
-            .get("cloud-artist-id")
-            .and_then(plist::Value::as_string)
         {
-            track.cloud_artist_id.get_or_insert_with(|| v.to_owned());
-        }
-        if let Some(v) = dict
-            .get("cloud-artwork-token")
-            .and_then(plist::Value::as_string)
-        {
-            track
-                .cloud_artwork_token
-                .get_or_insert_with(|| v.to_owned());
-        }
-        if let Some(v) = dict
-            .get("cloud-lyrics")
-            .or_else(|| dict.get("cloud-lyrics-token"))
-            .and_then(plist::Value::as_string)
-        {
-            track.cloud_lyrics_token.get_or_insert_with(|| v.to_owned());
+            if let Some(v) = dict.get("cloud-album-id").and_then(plist::Value::as_string) {
+                track.cloud_album_id.get_or_insert_with(|| v.to_owned());
+            }
+            if let Some(v) = dict
+                .get("cloud-artist-id")
+                .and_then(plist::Value::as_string)
+            {
+                track.cloud_artist_id.get_or_insert_with(|| v.to_owned());
+            }
+            if let Some(v) = dict
+                .get("cloud-artwork-token")
+                .and_then(plist::Value::as_string)
+            {
+                track
+                    .cloud_artwork_token
+                    .get_or_insert_with(|| v.to_owned());
+            }
+            if let Some(v) = dict
+                .get("cloud-lyrics")
+                .or_else(|| dict.get("cloud-lyrics-token"))
+                .and_then(plist::Value::as_string)
+            {
+                track.cloud_lyrics_token.get_or_insert_with(|| v.to_owned());
+            }
         }
     }
     track
         .extra_strings
-        .entry(format!("0x0036_{}", boma_subtype_name(0x0036)))
+        .entry(extra_string_key(0x0036))
         .or_insert(val);
 }
 
@@ -3880,10 +4053,8 @@ fn apply_playlist_boma<'a>(
                 pl.name = Some(s.to_owned());
             } else if boma.subtype == 0x00CD
                 && let BomaPayload::RawStringUtf8 { raw_bytes, .. } = &boma.payload
-                && let Ok(plist::Value::Dictionary(dict)) =
-                    plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
             {
-                apply_playlist_cloud_dict(pl, &dict);
+                apply_playlist_cloud_plist(pl, raw_bytes);
             }
         }
     }
@@ -3911,11 +4082,7 @@ fn apply_playlist_boma_owned(
             *raw_smart_options = Some(opts);
         }
         BomaPayload::RawStringUtf8 { raw_bytes, .. } if subtype == 0x00CD => {
-            if let Ok(plist::Value::Dictionary(dict)) =
-                plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
-            {
-                apply_playlist_cloud_dict(pl, &dict);
-            }
+            apply_playlist_cloud_plist(pl, &raw_bytes);
         }
         payload if subtype == 0x00C8 => {
             let owned_boma = BomaSection { payload, ..boma };
@@ -3927,39 +4094,83 @@ fn apply_playlist_boma_owned(
     }
 }
 
-fn apply_playlist_cloud_dict(pl: &mut Playlist, dict: &plist::Dictionary) {
-    pl.universal_library_id = dict
-        .get("universal-library-id")
-        .and_then(plist::Value::as_string)
-        .map(str::to_owned);
-    pl.cloud_uuid = dict
-        .get("uuid")
-        .and_then(plist::Value::as_string)
-        .map(str::to_owned);
-    pl.subscribed_container_url = dict
-        .get("subscribed-container-url")
-        .and_then(plist::Value::as_string)
-        .map(str::to_owned);
-    pl.owner_name = dict
-        .get("ownerName")
-        .and_then(plist::Value::as_string)
-        .map(str::to_owned);
-    pl.owner_id = dict
-        .get("ownerID")
-        .and_then(plist::Value::as_string)
-        .map(str::to_owned);
-    pl.description = dict
-        .get("description")
-        .and_then(plist::Value::as_string)
-        .map(str::to_owned);
-    pl.cloud_artwork_url = dict
-        .get("cloud-artwork-url")
-        .and_then(plist::Value::as_string)
-        .map(str::to_owned);
-    pl.cloud_artwork_token = dict
-        .get("cloud-artwork-token")
-        .and_then(plist::Value::as_string)
-        .map(str::to_owned);
+#[cfg(feature = "serde")]
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct PlaylistCloudPlist {
+    #[serde(rename = "universal-library-id")]
+    universal_library_id: LossyPlistString,
+    #[serde(rename = "uuid")]
+    cloud_uuid: LossyPlistString,
+    #[serde(rename = "subscribed-container-url")]
+    subscribed_container_url: LossyPlistString,
+    #[serde(rename = "ownerName")]
+    owner_name: LossyPlistString,
+    #[serde(rename = "ownerID")]
+    owner_id: LossyPlistString,
+    #[serde(rename = "description")]
+    description: LossyPlistString,
+    #[serde(rename = "cloud-artwork-url")]
+    cloud_artwork_url: LossyPlistString,
+    #[serde(rename = "cloud-artwork-token")]
+    cloud_artwork_token: LossyPlistString,
+}
+
+fn apply_playlist_cloud_plist(pl: &mut Playlist, raw_bytes: &[u8]) {
+    #[cfg(feature = "serde")]
+    {
+        if let Ok(parsed) = plist::from_bytes::<PlaylistCloudPlist>(raw_bytes) {
+            pl.universal_library_id = parsed.universal_library_id.0;
+            pl.cloud_uuid = parsed.cloud_uuid.0;
+            pl.subscribed_container_url = parsed.subscribed_container_url.0;
+            pl.owner_name = parsed.owner_name.0;
+            pl.owner_id = parsed.owner_id.0;
+            pl.description = parsed.description.0;
+            pl.cloud_artwork_url = parsed.cloud_artwork_url.0;
+            pl.cloud_artwork_token = parsed.cloud_artwork_token.0;
+        }
+    }
+
+    #[cfg(not(feature = "serde"))]
+    {
+        let Ok(plist::Value::Dictionary(dict)) =
+            plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
+        else {
+            return;
+        };
+        pl.universal_library_id = dict
+            .get("universal-library-id")
+            .and_then(plist::Value::as_string)
+            .map(str::to_owned);
+        pl.cloud_uuid = dict
+            .get("uuid")
+            .and_then(plist::Value::as_string)
+            .map(str::to_owned);
+        pl.subscribed_container_url = dict
+            .get("subscribed-container-url")
+            .and_then(plist::Value::as_string)
+            .map(str::to_owned);
+        pl.owner_name = dict
+            .get("ownerName")
+            .and_then(plist::Value::as_string)
+            .map(str::to_owned);
+        pl.owner_id = dict
+            .get("ownerID")
+            .and_then(plist::Value::as_string)
+            .map(str::to_owned);
+        pl.description = dict
+            .get("description")
+            .and_then(plist::Value::as_string)
+            .map(str::to_owned);
+        pl.cloud_artwork_url = dict
+            .get("cloud-artwork-url")
+            .and_then(plist::Value::as_string)
+            .map(str::to_owned);
+        pl.cloud_artwork_token = dict
+            .get("cloud-artwork-token")
+            .and_then(plist::Value::as_string)
+            .map(str::to_owned);
+    }
 }
 
 fn decode_smart_playlist(
@@ -4377,4 +4588,114 @@ fn bytes_to_lower_hex(bytes: &[u8]) -> String {
         let _ = write!(s, "{b:02x}");
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streaming_track_cloud_plist_handles_xml_nested_entities_and_malformed() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>ignored-int</key><integer>2112</integer>
+    <key>ignored-flag</key><true/>
+    <key>nested</key>
+    <dict>
+        <key>cloud-album-id</key><string>SHOULD_BE_IGNORED</string>
+        <key>items</key><array><string>Limelight</string></array>
+    </dict>
+    <key>cloud-lyrics-token</key><string>fallback-token</string>
+    <key>cloud-album-id</key><string>l.rush-moving-pictures</string>
+    <key>cloud-artist-id</key><string>r.geddy&amp;alex&amp;neil</string>
+    <key>cloud-artwork-token</key><string>tok-yyz</string>
+    <key>cloud-lyrics</key><string>preferred-lyrics</string>
+</dict>
+</plist>"#;
+
+        let mut track = Track::default();
+        apply_track_cloud_plist(
+            &mut track,
+            Some(xml),
+            String::from_utf8_lossy(xml).into_owned(),
+        );
+        assert_eq!(
+            track.cloud_album_id.as_deref(),
+            Some("l.rush-moving-pictures")
+        );
+        assert_eq!(track.cloud_artist_id.as_deref(), Some("r.geddy&alex&neil"));
+        assert_eq!(track.cloud_artwork_token.as_deref(), Some("tok-yyz"));
+        assert_eq!(
+            track.cloud_lyrics_token.as_deref(),
+            Some("preferred-lyrics")
+        );
+        assert!(track.extra_strings.contains_key("0x0036_plist_artwork"));
+
+        // Truncated plist must not commit partially-parsed fields.
+        let truncated =
+            b"<plist version=\"1.0\"><dict><key>cloud-album-id</key><string>l.partial</string>";
+        let mut partial_track = Track::default();
+        apply_track_cloud_plist(&mut partial_track, Some(truncated), "partial".to_owned());
+        assert_eq!(partial_track.cloud_album_id, None);
+    }
+
+    #[test]
+    fn streaming_album_motion_plist_handles_binary_plist() {
+        let mut dict = plist::Dictionary::new();
+        dict.insert(
+            "motion-artwork-url".to_owned(),
+            plist::Value::String("https://example.invalid/rush/signals.m3u8".to_owned()),
+        );
+        dict.insert(
+            "motion-preview-frame-url".to_owned(),
+            plist::Value::String("https://example.invalid/rush/signals.jpg".to_owned()),
+        );
+        dict.insert(
+            "motion-artwork-token".to_owned(),
+            plist::Value::String("tok-subdivisions".to_owned()),
+        );
+        dict.insert("ignored-count".to_owned(), plist::Value::Integer(8.into()));
+
+        let mut bplist_bytes = Vec::new();
+        plist::Value::Dictionary(dict)
+            .to_writer_binary(&mut bplist_bytes)
+            .expect("binary plist");
+
+        let boma = BomaSection {
+            header_size: 20,
+            total_size: 20,
+            subtype: 0x0135,
+            unk_16_end: crate::sections::Unknown::new(crate::sections::TailBytes::from([0u8; 4])),
+            payload: BomaPayload::BinaryPlist {
+                subtype: 0x0135,
+                raw_bytes: bplist_bytes,
+            },
+        };
+
+        let mut url = None;
+        let mut preview = None;
+        let mut token = None;
+        apply_album_motion_artwork_plist(&boma, &mut url, &mut preview, &mut token);
+        assert_eq!(
+            url.as_deref(),
+            Some("https://example.invalid/rush/signals.m3u8")
+        );
+        assert_eq!(
+            preview.as_deref(),
+            Some("https://example.invalid/rush/signals.jpg")
+        );
+        assert_eq!(token.as_deref(), Some("tok-subdivisions"));
+    }
+
+    #[test]
+    fn extra_string_key_matches_formatted_subtype_name() {
+        for subtype in [0x0036, 0x0038, 0x0034, 0x9999] {
+            assert_eq!(
+                extra_string_key(subtype),
+                format!("0x{subtype:04X}_{}", boma_subtype_name(subtype))
+            );
+        }
+    }
 }
