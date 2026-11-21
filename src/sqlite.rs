@@ -227,6 +227,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             has_local_custom_lyrics INTEGER NOT NULL,
             has_unsynced_local_changes INTEGER NOT NULL,
             custom_lyrics_hash INTEGER,
+            has_catalog_synced_lyrics INTEGER,
             is_itunes_matched INTEGER,
             is_apple_music_catalog INTEGER,
             is_apple_digital_master INTEGER,
@@ -311,7 +312,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             refresh_interval_seconds INTEGER NOT NULL,
             cloud_share_mode INTEGER NOT NULL,
             share_mode TEXT NOT NULL,
-            artwork_template_kind INTEGER NOT NULL,
+            artwork_cache_state INTEGER NOT NULL,
             cloud_saga_id INTEGER,
             universal_library_id TEXT,
             cloud_uuid TEXT,
@@ -512,10 +513,10 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "full-row 123-column SQLite track binding"
+    reason = "full-row 124-column SQLite track binding"
 )]
 fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
-    let placeholders: Vec<String> = (1..=123).map(|i| format!("?{i}")).collect();
+    let placeholders: Vec<String> = (1..=124).map(|i| format!("?{i}")).collect();
     let sql = format!(
         "INSERT INTO tracks (
             persistent_id, title, album, artist, album_artist, composer, genre,
@@ -534,7 +535,8 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             show_composer_in_all_views, use_work_and_movement,
             album_is_compilation, part_of_gapless_album, playlist_only, purchased,
             has_custom_lyrics, has_local_custom_lyrics,
-            has_unsynced_local_changes, custom_lyrics_hash, is_itunes_matched,
+            has_unsynced_local_changes, custom_lyrics_hash,
+            has_catalog_synced_lyrics, is_itunes_matched,
             is_apple_music_catalog, is_apple_digital_master,
             is_cloud_unavailable, is_available_in_catalog, audio_traits_raw,
             audio_traits, purchaser_account_id, drm_account_id, cloud_saga_id,
@@ -629,6 +631,7 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             i32::from(t.has_local_custom_lyrics),
             i32::from(t.has_unsynced_local_changes),
             t.custom_lyrics_hash,
+            t.has_catalog_synced_lyrics.map(i32::from),
             t.is_itunes_matched.map(i32::from),
             t.is_apple_music_catalog.map(i32::from),
             t.is_apple_digital_master.map(i32::from),
@@ -706,7 +709,7 @@ fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             date_modified_utc, date_last_played_utc, date_cloud_published_utc,
             date_cloud_synced_utc, play_count, true_play_count,
             refresh_interval_seconds, cloud_share_mode, share_mode,
-            artwork_template_kind, cloud_saga_id, universal_library_id,
+            artwork_cache_state, cloud_saga_id, universal_library_id,
             cloud_uuid, subscribed_container_url, owner_name, owner_id,
             author_social_profile_persistent_id, cloud_artwork_url,
             cloud_artwork_token, artwork_uuid, declared_track_count,
@@ -767,7 +770,7 @@ fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             p.refresh_interval_seconds,
             p.share_mode.raw(),
             p.share_mode.to_string(),
-            p.artwork_template_kind,
+            p.artwork_cache_state,
             p.cloud_saga_id.map(u64_to_sqlite_i64),
             p.universal_library_id,
             p.cloud_uuid,

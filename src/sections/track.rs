@@ -101,10 +101,8 @@ pub struct TrackItemHeader {
     pub checkbox_show_composer_in_all_views: u8,
     /// Offset 52: Checkbox "Use work and movement" (0 or 1).
     pub checkbox_use_work_and_movement: u8,
-    /// Offset 53: Work and movement active flag (1 when work/movement fields are active, 0 otherwise).
-    pub has_work_and_movement_active: u8,
-    /// Offset 54: Unknown byte.
-    pub unk_54: Unknown<u8>,
+    /// Offset 53..55: Unknown 2 bytes (offset 53 is `1` on most catalog tracks and edited local tracks, `0` otherwise).
+    pub unk_53_55: Unknown<[u8; 2]>,
     /// Offset 55: Playback or custom start/stop bounds activity flag (changes 0 -> 1 on first play or when playback start/stop bounds are set).
     pub has_playback_or_bounds_activity: u8,
     /// Offset 56: Unknown byte.
@@ -123,7 +121,7 @@ pub struct TrackItemHeader {
     pub unk_64_store_flag: Unknown<u8>,
     /// Offset 65: Star rating (0..=100 in steps of 20).
     pub star_rating: u8,
-    /// Offset 66..72: Sort string mode flags for `[Title, Album, Artist, Album Artist, Composer, Show]` (`0x80` = auto-generated sort mode, `0x81` = auto-generated sort string present, `0x01` = default custom sort mode, `0x03` = user-overridden custom sort string).
+    /// Offset 66..72: Sort string bitflags for `[Title, Album, Artist, Album Artist, Composer, Show]` (bit 0 `0x01` = sort `boma` present, bit 1 `0x02` = user/tag custom sort override, bit 7 `0x80` = local auto-sort rule; e.g. `0x80` = auto absent, `0x81` = auto article-stripped, `0x01` = catalog sort string, `0x03` = custom override).
     pub auto_sort_flags: [u8; 6],
     /// Offset 72..82: Unknown 10 bytes (all zeros).
     pub unk_72_82: Unknown<[u8; 10]>,
@@ -209,7 +207,7 @@ pub struct TrackItemHeader {
     pub unk_312_320: Unknown<u64>,
     /// Offset 320..328: iCloud Music Library `sagaId` repeated (matches offset 220).
     pub cloud_saga_id_2: u64,
-    /// Offset 328: Artwork cache / source state (`0x00` = none, `0x03` = local embedded not in `artwork.sqlite`, `0x05` = embedded/catalog alternate state, `0x08` = cached in `artwork.sqlite`).
+    /// Offset 328: Artwork cache state bitfield matching `iAma[100]`, `lpma[300..304]`, and `isma[52]` (`0` = none, `3` = local embedded artwork not in `artwork.sqlite`, `5` = cached dynamic/recipe artwork, `8` = cached static/uploaded/catalog artwork in `artwork.sqlite`).
     pub artwork_cache_state: u8,
     /// Offset 329..331: Unknown 2 bytes (typically `[0, 0]`; `0x64` at offset 329 on purchased music videos).
     pub unk_329_331: Unknown<[u8; 2]>,
@@ -225,8 +223,8 @@ pub struct TrackItemHeader {
     pub artwork_size_kind: u32,
     /// Offset 348..352: Artwork cached image format in `artwork.sqlite` (`cache_items.extension`; 1 = `jpeg`, 2 = `png`, 0 = none).
     pub artwork_image_format: u32,
-    /// Offset 352..356: Secondary cloud/library UTC timestamp (populated across synced tracks, else 0).
-    pub date_added_most_recent_track: AppleTimestamp,
+    /// Offset 352..356: Track cloud sync timestamp (Apple UTC timestamp; mirrors `TrackNumerics.date_cloud_synced`, 0 when unsynced).
+    pub date_cloud_synced: AppleTimestamp,
     /// Offset 356..376: Unknown 20 bytes.
     pub unk_356_376: Unknown<[u8; 20]>,
     /// Any extra bytes if `header_size > 376`.
@@ -246,7 +244,7 @@ impl VisitUnknowns for TrackItemHeader {
                 (self.unk_43, 43),
                 (self.unk_45, 45),
                 (self.unk_47_49, 47),
-                (self.unk_54, 54),
+                (self.unk_53_55, 53),
                 (self.unk_56, 56),
                 (self.unk_60_62, 60),
                 (self.unk_64_store_flag, 64),
@@ -333,8 +331,14 @@ pub struct TrackNumerics {
     pub is_available_in_catalog: u8,
     /// Offset 40: Local MP3 flag (`1` iff `subrecord_kind == 1 && container_format_kind == 12`, `0` otherwise).
     pub is_local_mp3: u8,
-    /// Offset 41..60: Unknown 19 bytes (offset 48 = `3` on downloaded HLS Dolby Atmos `.movpkg`; offsets 49..56 encode iCloud sync/origin/codec states).
-    pub unk_41_60: Unknown<[u8; 19]>,
+    /// Offset 41..54: Unknown 13 bytes (offset 48 = `3` on downloaded HLS Dolby Atmos `.movpkg`; offsets 49..53 encode iCloud sync/origin states).
+    pub unk_41_54: Unknown<[u8; 13]>,
+    /// Offset 54: Cloud/source asset container kind (`1` = MP3/MPEG audio, `2` = M4A/AAC audio, `0` = video / `.movpkg` / local `subrecord_kind == 1`).
+    pub asset_container_kind: u8,
+    /// Offset 55..59: Unknown 4 bytes.
+    pub unk_55_59: Unknown<[u8; 4]>,
+    /// Offset 59: Apple Music catalog time-synced lyrics availability on `subrecord_kind == 3` (`1` = catalog time-synced lyrics available, `2` = no catalog time-synced lyrics / Matched or Uploaded track, `0` = local `subrecord_kind == 1` or format `<= 22.0`).
+    pub catalog_lyrics_state: u8,
     /// Offset 60..64: Sample rate in Hz (IEEE 754 f32, e.g. 44100.0).
     pub sample_rate: f32,
     /// Offset 64..68: File type `FourCC` in little-endian (e.g. `0x4D503320` = `"MP3 "`, `0x4D344120` = `"M4A "`, `0x4D4F5650` = `"MOVP"`).
@@ -365,11 +369,11 @@ pub struct TrackNumerics {
     pub gapless_encoder_delay: u32,
     /// Offset 112..116: Gapless playback encoder padding in samples (word 2 of `iTunSMPB`).
     pub gapless_encoder_padding: u32,
-    /// Offset 116..120: Gapless playback heuristic / frame info (`0xD87B....` or `0x0100....`).
-    pub gapless_heuristic_info: u32,
+    /// Offset 116..120: Unknown server-supplied `AppleTimestamp` populated on Matched and playlist-only catalog subrecords in Apple Music 1.6.4+ (0 in older versions and on Uploaded tracks).
+    pub unk_116_cloud_timestamp: Unknown<u32>,
     /// Offset 120..124: Gapless playback flags (`1` or `0x02000003` when `iTunSMPB` is present).
     pub gapless_playback_flags: u32,
-    /// Offset 124..128: Custom lyrics checksum/hash (0 if no custom lyrics).
+    /// Offset 124..128: 32-bit hash of embedded/custom lyrics (`USLT` / `©lyr`) on local `subrecord_kind == 1` records (0 if no embedded/custom lyrics; identical hash for identical lyrics text).
     pub custom_lyrics_hash: u32,
     /// Offset 128..132: Date Modified (Apple local timestamp).
     pub date_modified: AppleTimestamp,
@@ -379,7 +383,7 @@ pub struct TrackNumerics {
     pub date_purchased: AppleTimestamp,
     /// Offset 140..144: Release Date (Apple UTC timestamp).
     pub date_released: AppleTimestamp,
-    /// Offset 144..148: Cloud codec kind (`2` = `"mp4a"` MPEG-4 audio, `3` = `"mpeg"` MP3 audio, `0` on local file subrecords and video).
+    /// Offset 144..148: Cloud/ingested source audio codec kind on `subrecord_kind == 3` (`2` = `"mp4a"` AAC/M4A, `3` = `"mpeg"` MP3, reflecting the originally ingested/matched source format on Matched/Uploaded tracks and `"mp4a"` on catalog tracks; `0` on local `subrecord_kind == 1` and video).
     pub cloud_codec_kind: u32,
     /// Offset 148..152: Codec/Subtype `FourCC` in little-endian (e.g. `0x6D703461` = `"mp4a"`, `0x6D706567` = `"mpeg"`).
     pub codec_fourcc: u32,
@@ -450,9 +454,11 @@ impl VisitUnknowns for TrackNumerics {
                 (self.unk_24_27, 24),
                 (self.unk_35, 35),
                 (self.unk_37_39, 37),
-                (self.unk_41_60, 41),
+                (self.unk_41_54, 41),
+                (self.unk_55_59, 55),
                 (self.unk_68_file_type, 68),
                 (self.unk_96_108, 96),
+                (self.unk_116_cloud_timestamp, 116),
                 (self.unk_152, 152),
                 (self.unk_176_200, 176),
                 (self.unk_216_248, 216),

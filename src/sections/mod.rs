@@ -33,7 +33,7 @@ pub use artist::{ArtistItem, ArtistItemHeader, ArtistListHeader, ArtistListSecti
 pub use boma::{BomaPayload, BomaSection, BomaStringSection};
 pub use cloud_deletion::{CloudDeletionItem, CloudDeletionListHeader, CloudDeletionListSection};
 pub use header::{HfmaHeader, HsmaHeader, SectionKind};
-pub use library_master::{LibraryMasterHeader, LibraryMasterSection, PlmaSub1F6, PlmaSub1FF};
+pub use library_master::{LibraryMasterHeader, LibraryMasterSection};
 pub use playlist::{
     CompactPlaylistTrackItem, PlaylistItem, PlaylistItemHeader, PlaylistListHeader,
     PlaylistListSection, PlaylistTrackItem, SlstSection, SmartPlaylistOptions, SmartPlaylistRule,

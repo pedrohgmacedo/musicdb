@@ -154,8 +154,8 @@ pub struct PlaylistItemHeader {
     pub unk_288_296: Unknown<[u8; 8]>,
     /// Offset 296..300: Artwork source kind in `artwork.sqlite` (`item_to_artwork.source_kind`; 63 = Cloud Playlist Cover Recipe, 102 = Custom/Uploaded Playlist Cover Artwork).
     pub artwork_source_kind: u32,
-    /// Offset 300..304: Cover artwork / template kind (5 = custom uploaded cover art, 8 = auto 2x2 grid or subscribed cover, 10 = Apple cover-artwork-recipe or single album cover).
-    pub artwork_template_kind: u32,
+    /// Offset 300..304: Artwork cache state bitfield matching `itma[328]`, `iAma[100]`, and `isma[52]` (`0` = none, `5` = cached cover-artwork-recipe `loc_type=4`, `8` = cached custom uploaded `source_kind=102` or catalog URL `loc_type=2` artwork, `10` = pending/unrendered recipe in `artwork.sqlite`).
+    pub artwork_cache_state: u32,
     /// Offset 304..308: Cloud publish / artwork generation date (UTC Apple timestamp).
     pub date_cloud_published: AppleTimestamp,
     /// Offset 308..312: Cloud share / visibility mode (0 = private user playlist, 2 = subscribed catalog playlist, 4 = public shared user playlist on profile).

@@ -24,20 +24,22 @@ pub struct LibraryMasterHeader {
     pub date_last_modified: AppleTimestamp,
     /// Offset 24: Checkbox "Settings -> General -> Show -> Songs list checkboxes" (0 or 1).
     pub checkbox_show_song_list_checkboxes: u8,
-    /// Offset 25..52: Unknown bytes.
-    pub unk_25_52: Unknown<[u8; 27]>,
-    /// Offset 52..56: Unknown (e.g. 0x00020000).
-    pub unk_52: Unknown<u32>,
-    /// Offset 56..58: Unknown 2 bytes.
-    pub unk_56_58: Unknown<[u8; 2]>,
+    /// Offset 25..46: Unknown 21 bytes.
+    pub unk_25_46: Unknown<[u8; 21]>,
+    /// Offset 46..54: Signed-in Apple Store account ID (`dsid`, matches `hfma.apple_store_account_id`; 0 when signed out).
+    pub apple_store_account_id_1: u64,
+    /// Offset 54..58: Unknown 4 bytes (e.g. `[0x04, 0x01, 0x00, 0x00]` on iCloud-synced libraries, `[0x02, 0x00, 0x00, 0x00]` when signed out).
+    pub unk_54_58: Unknown<[u8; 4]>,
     /// Offset 58..66: Library Persistent ID.
     pub library_persistent_id: u64,
     /// Offset 66..68: Monotonic iCloud Music Library database revision (0 when not synced to iCloud).
     pub cloud_database_revision: u16,
     /// Offset 68..72: Unknown (e.g. 0x00080000).
     pub unk_68: Unknown<u32>,
-    /// Offset 72..92: Unknown 20 bytes.
-    pub unk_72_92: Unknown<[u8; 20]>,
+    /// Offset 72..84: Unknown 12 bytes.
+    pub unk_72_84: Unknown<[u8; 12]>,
+    /// Offset 84..92: Signed-in Apple Store account ID (`dsid`, repeated; matches `hfma.apple_store_account_id`; 0 when signed out).
+    pub apple_store_account_id_2: u64,
     /// Offset 92..100: Library Persistent ID repeated.
     pub library_persistent_id_2: u64,
     /// Offset 100..104: Unknown 4 bytes.
@@ -76,11 +78,10 @@ impl VisitUnknowns for LibraryMasterHeader {
             "plma",
             [
                 (self.unk_12, 12),
-                (self.unk_25_52, 25),
-                (self.unk_52, 52),
-                (self.unk_56_58, 56),
+                (self.unk_25_46, 25),
+                (self.unk_54_58, 54),
                 (self.unk_68, 68),
-                (self.unk_72_92, 72),
+                (self.unk_72_84, 72),
                 (self.unk_100, 100),
                 (self.unk_112_120, 112),
                 (self.unk_124, 124),
@@ -116,51 +117,5 @@ impl VisitUnknowns for LibraryMasterSection {
         for boma in &self.bomas {
             boma.visit_unknowns("plma", visitor);
         }
-    }
-}
-
-/// Payload of `boma` subtype `0x01F6` under `plma` (20 bytes).
-#[binrw]
-#[brw(little)]
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct PlmaSub1F6 {
-    /// Offset 0..4: Unknown 4-byte value (e.g. `01 00 14 00`).
-    pub unk_0: Unknown<[u8; 4]>,
-    /// Offset 4..20: 16-byte ID / UUID / hash.
-    pub uuid_or_hash: [u8; 16],
-}
-
-impl VisitUnknowns for PlmaSub1F6 {
-    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
-        visit_unknowns!(visitor, "plma::0x01F6", [(self.unk_0, 0)]);
-    }
-}
-
-/// Payload of `boma` subtype `0x01FF` under `plma` (44 bytes).
-#[binrw]
-#[brw(little)]
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct PlmaSub1FF {
-    /// Offset 0..8: Unknown (typically 1 as u64).
-    pub unk_0: Unknown<u64>,
-    /// Offset 8..16: Library Persistent ID.
-    pub library_persistent_id: u64,
-    /// Offset 16..24: Library Persistent ID repeated (or 0 in fresh libraries).
-    pub library_persistent_id_2: u64,
-    /// Offset 24..44: Remaining 20 bytes.
-    pub unk_24_44: Unknown<[u8; 20]>,
-}
-
-impl VisitUnknowns for PlmaSub1FF {
-    fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
-        visit_unknowns!(
-            visitor,
-            "plma::0x01FF",
-            [(self.unk_0, 0), (self.unk_24_44, 24)]
-        );
     }
 }

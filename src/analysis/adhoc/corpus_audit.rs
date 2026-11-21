@@ -1017,9 +1017,9 @@ fn compare_track_ts(
     );
     record_ts_delta(
         deltas,
-        "itma.date_added_most_recent_track",
-        Some(a.header.date_added_most_recent_track),
-        Some(b.header.date_added_most_recent_track),
+        "itma.date_cloud_synced",
+        Some(a.header.date_cloud_synced),
+        Some(b.header.date_cloud_synced),
     );
     for (na, nb) in a
         .bomas

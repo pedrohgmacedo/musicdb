@@ -90,8 +90,8 @@ pub struct ArtistItemHeader {
     pub unk_88_96: Unknown<[u8; 8]>,
     /// Offset 96..100: Artwork source kind in `artwork.sqlite` (`item_to_artwork.source_kind`; 45 = Artist Artwork when `artwork_uuid` is non-zero, 0 otherwise).
     pub artwork_source_kind: u32,
-    /// Offset 100: Unknown byte (typically 5 when `artwork_uuid` is non-zero, 0 otherwise).
-    pub unk_100: Unknown<u8>,
+    /// Offset 100: Artwork cache state bitfield matching `itma[328]`, `lpma[300..304]`, and `isma[52]` (`0` = none, `5` = cached artist artwork in `artwork.sqlite`, `12` = pending/unformatted artist artwork).
+    pub artwork_cache_state: u8,
     /// Offset 101..103: Suggestion/like flag (0 = none, 1 = removed, 2 = favorite, 3 = suggest less).
     pub suggestion_flag: u16,
     /// Offset 103: Unknown byte (typically 1).
@@ -131,7 +131,6 @@ impl VisitUnknowns for ArtistItemHeader {
                 (self.unk_28, 28),
                 (self.unk_32_52, 32),
                 (self.unk_88_96, 88),
-                (self.unk_100, 100),
                 (self.unk_103, 103),
                 (tail: self.unk_tail, tail_start),
             ]

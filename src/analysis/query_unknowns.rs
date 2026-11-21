@@ -246,8 +246,6 @@ const CANONICAL_SECTIONS: &[&str] = &[
     "hsma",
     "LPma",
     "plma",
-    "plma::0x01F6",
-    "plma::0x01FF",
     "lama",
     "iama",
     "lAma",
@@ -301,14 +299,6 @@ const STRUCT_ALIASES: &[AliasMapping] = &[
     AliasMapping {
         alias: "LibraryMasterSection",
         sections: &["plma"],
-    },
-    AliasMapping {
-        alias: "PlmaSub1F6",
-        sections: &["plma::0x01F6"],
-    },
-    AliasMapping {
-        alias: "PlmaSub1FF",
-        sections: &["plma::0x01FF"],
     },
     AliasMapping {
         alias: "AlbumListHeader",
@@ -696,7 +686,7 @@ fn parse_field_selector(raw: &str) -> Result<FieldSelector> {
         return Ok(FieldSelector::SectionAll { sections });
     }
     if let Some((left, right)) = trimmed.rsplit_once("::")
-        && !matches!(right, "str" | "boma" | "0x01F6" | "0x01FF")
+        && !matches!(right, "str" | "boma")
         && let Some(sections) = try_resolve_section_or_alias(left)?
     {
         return Ok(if right == "*" {
@@ -2837,7 +2827,7 @@ mod tests {
         );
         let playlist_list = make_list_section(*b"lPma", &[playlist_1]);
 
-        let profile_1 = make_social_profile_item(0xEE01, 5, "Rush Überfan", "rush2112");
+        let profile_1 = make_social_profile_item(0xEE01, 0x0000_0105, "Rush Überfan", "rush2112");
         let social_list = make_list_section(*b"Lsma", &[profile_1]);
 
         let mut plma = vec![0u8; 160];
@@ -2871,8 +2861,8 @@ mod tests {
         let sel_boma_str = parse_field_selector("boma::str.unk_12").unwrap();
         assert!(sel_boma_str.matches_unknown_field("boma::str", "unk_12"));
 
-        let sel_plma_sub = parse_field_selector("plma::0x01F6.unk_0").unwrap();
-        assert!(sel_plma_sub.matches_unknown_field("plma::0x01F6", "unk_0"));
+        let sel_plma_sub = parse_field_selector("plma::boma:0x01F6").unwrap();
+        assert!(sel_plma_sub.matches_unhandled_boma("plma", 0x01F6));
 
         let err_ambig = query_unknowns(
             &raw,

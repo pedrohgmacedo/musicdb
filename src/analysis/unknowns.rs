@@ -543,9 +543,6 @@ mod tests {
             ("hfma(outer)", "extra_bytes"),
             ("plma::boma", "unk_16_end"),
             ("boma::str", "unk_12"),
-            ("plma::0x01F6", "unk_0"),
-            ("plma::0x01FF", "unk_0"),
-            ("plma::0x01FF", "unk_24_44"),
             ("iama", "unk_27"),
             ("itma", "extra_bytes"),
             ("VideoInfo", "unk_40"),
@@ -560,6 +557,19 @@ mod tests {
                 "expected {expected:?} in nonzero_unknown_fields, got {keys:?}"
             );
         }
+
+        assert_eq!(
+            report
+                .unknown_boma_subtypes
+                .get("plma::0x01F6 (unknown_boma)"),
+            Some(&1)
+        );
+        assert_eq!(
+            report
+                .unknown_boma_subtypes
+                .get("plma::0x01FF (unknown_boma)"),
+            Some(&1)
+        );
 
         let slst_unk4 = report
             .nonzero_unknown_fields

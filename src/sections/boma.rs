@@ -4,7 +4,6 @@ use std::io::{Cursor, Read, Seek, Write};
 
 use binrw::{BinRead, BinResult, BinWrite, Endian};
 
-use super::library_master::{PlmaSub1F6, PlmaSub1FF};
 use super::playlist::{
     CompactPlaylistTrackItem, PlaylistTrackItem, SlstSection, SmartPlaylistOptions,
 };
@@ -54,8 +53,6 @@ impl VisitUnknowns for BomaSection {
                 opts.visit_unknowns("SmartPlaylistOptions", visitor);
             }
             BomaPayload::SmartPlaylistRules(slst) => slst.visit_unknowns("SLst", visitor),
-            BomaPayload::Plma1F6(s) => s.visit_unknowns("plma::0x01F6", visitor),
-            BomaPayload::Plma1FF(s) => s.visit_unknowns("plma::0x01FF", visitor),
             BomaPayload::StringSection(s) => s.visit_unknowns("boma::str", visitor),
             BomaPayload::RawStringUtf8 { .. }
             | BomaPayload::RawStringUtf16Le { .. }
@@ -110,10 +107,6 @@ pub enum BomaPayload {
     SmartPlaylistOptions(Box<SmartPlaylistOptions>),
     /// Subtype `0x00C9`: Smart playlist rules list (`SLst`, big-endian).
     SmartPlaylistRules(Box<SlstSection>),
-    /// Subtype `0x01F6` under `plma` (20 bytes).
-    Plma1F6(PlmaSub1F6),
-    /// Subtype `0x01FF` under `plma` (44 bytes).
-    Plma1FF(PlmaSub1FF),
     /// Structured string with 16-byte header (`encoding`, `byte_len`, `counter`, `unk_12`).
     StringSection(BomaStringSection),
     /// Raw UTF-8 string without 16-byte string header (e.g., XML plists `0x36`, `0x38`, `0xCD`, `0x192`, `0x1FC`).
@@ -246,12 +239,10 @@ pub fn boma_subtype_name(subtype: u32) -> &'static str {
         0x0192 => "plist_artist_artwork_url",
         0x0193 => "cloud_artist_id",
         0x01F4 => "unknown_hex_1f4",
-        0x01F6 => "plma_1f6",
         0x01F8 => "media_folder_uri",
         0x01FC => "imported_itl_path",
         0x01FD => "media_folder_path_1fd",
         0x01FE => "unknown_hex_1fe",
-        0x01FF => "plma_1ff",
         0x0200 => "media_folder_path_200",
         0x0201 => "library_view_version_vector",
         0x02BC => "xml_block_2bc",
@@ -437,8 +428,8 @@ fn read_boma_payload<R: Read + Seek>(
                 SmartPlaylistOptions::read_le(reader)?,
             )));
         }
-        (0x01F6, 20) => return Ok(BomaPayload::Plma1F6(PlmaSub1F6::read_le(reader)?)),
-        (0x01FF, 44) => return Ok(BomaPayload::Plma1FF(PlmaSub1FF::read_le(reader)?)),
+        // `plma` subtypes `0x01F6` (20 B) and `0x01FF` (44 B) have unverified semantics and
+        // intentionally fall through to `BomaPayload::Unknown` for lossless preservation.
         _ => {}
     }
 
@@ -666,8 +657,6 @@ impl BinWrite for BomaSection {
             BomaPayload::PlaylistItemCompact(ipfa) => ipfa.write_le(writer)?,
             BomaPayload::SmartPlaylistOptions(opts) => opts.write_le(writer)?,
             BomaPayload::SmartPlaylistRules(slst) => slst.write_be(writer)?,
-            BomaPayload::Plma1F6(s) => s.write_le(writer)?,
-            BomaPayload::Plma1FF(s) => s.write_le(writer)?,
             BomaPayload::StringSection(s) => {
                 s.encoding.write_le(writer)?;
                 s.string_byte_len.write_le(writer)?;

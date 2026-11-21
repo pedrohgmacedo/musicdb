@@ -208,7 +208,7 @@ mod tests {
             minor_version: 1,
             version_bytes,
             library_persistent_id: 0xABCD_0123_4567_89EF,
-            hsma_count: 5,
+            hsma_count: 6,
             unk_60: Unknown(20),
             unk_64_flags: Unknown([2, 1, 1, 0]),
             track_count: 1,
@@ -323,7 +323,7 @@ mod tests {
                 artist_persistent_id_2: 0xBB00_0000_0000_0002,
                 unk_88_96: Unknown([0; 8]),
                 artwork_source_kind: 45,
-                unk_100: Unknown(5),
+                artwork_cache_state: 5,
                 suggestion_flag: 2,
                 unk_103: Unknown(1),
                 artwork_size_kind: 1,
@@ -360,7 +360,10 @@ mod tests {
             unk_37_39: Unknown::new([0; 2]),
             is_available_in_catalog: 1,
             is_local_mp3: 0,
-            unk_41_60: Unknown::new([0; 19]),
+            unk_41_54: Unknown::new([0; 13]),
+            asset_container_kind: 0,
+            unk_55_59: Unknown::new([0; 4]),
+            catalog_lyrics_state: 0,
             sample_rate: 44100.0,
             file_type_fourcc: 0x4D34_4120, // "M4A "
             unk_68_file_type: Unknown::new(0),
@@ -376,7 +379,7 @@ mod tests {
             unk_96_108: Unknown::new([0; 12]),
             gapless_encoder_delay: 2112,
             gapless_encoder_padding: 576,
-            gapless_heuristic_info: 0,
+            unk_116_cloud_timestamp: Unknown::new(0),
             gapless_playback_flags: 1,
             custom_lyrics_hash: 0,
             date_modified: AppleTimestamp::new(3_800_000_000),
@@ -420,6 +423,8 @@ mod tests {
         num_cloud.is_local_subrecord = 0;
         num_cloud.local_artwork_state = 0;
         num_cloud.is_apple_music_catalog = 1;
+        num_cloud.asset_container_kind = 2;
+        num_cloud.catalog_lyrics_state = 1;
         num_cloud.cloud_codec_kind = 2;
         num_cloud.codec_fourcc = 0x6D70_3461; // "mp4a"
         num_cloud.date_cloud_synced = AppleTimestamp::new(3_800_000_000);
@@ -489,8 +494,7 @@ mod tests {
                 checkbox_remember_playback_position: 0,
                 checkbox_show_composer_in_all_views: 0,
                 checkbox_use_work_and_movement: 0,
-                has_work_and_movement_active: 0,
-                unk_54: Unknown::new(0),
+                unk_53_55: Unknown::new([0; 2]),
                 has_playback_or_bounds_activity: 1,
                 unk_56: Unknown::new(0),
                 downloaded_status: 1,
@@ -553,7 +557,7 @@ mod tests {
                 unk_340: Unknown::new(0),
                 artwork_size_kind: 1,
                 artwork_image_format: 1,
-                date_added_most_recent_track: AppleTimestamp::new(0),
+                date_cloud_synced: AppleTimestamp::new(3_800_000_000),
                 unk_356_376: Unknown::new([0; 20]),
                 extra_bytes: Unknown::new(Vec::new()),
             },
@@ -596,10 +600,50 @@ mod tests {
             ],
         };
 
+        let plma_bomas = vec![
+            BomaSection {
+                header_size: 20,
+                total_size: 40,
+                subtype: 0x01F6,
+                unk_16_end: Unknown::new(TailBytes::from([0; 4])),
+                payload: BomaPayload::Unknown {
+                    subtype: 0x01F6,
+                    raw_bytes: vec![
+                        0x01, 0x00, 0x00, 0x08, 0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0x21,
+                    ],
+                },
+            },
+            BomaSection {
+                header_size: 20,
+                total_size: 64,
+                subtype: 0x01FF,
+                unk_16_end: Unknown::new(TailBytes::from([0; 4])),
+                payload: BomaPayload::Unknown {
+                    subtype: 0x01FF,
+                    raw_bytes: vec![0x12; 44],
+                },
+            },
+        ];
+        let plma_section = LibraryMasterSection {
+            header: LibraryMasterHeader {
+                header_size: 160,
+                boma_count: u32::try_from(plma_bomas.len()).unwrap(),
+                apple_store_account_id_1: 2112,
+                library_persistent_id: 0xABCD_0123_4567_89EF,
+                apple_store_account_id_2: 2112,
+                library_persistent_id_2: 0xABCD_0123_4567_89EF,
+                apple_store_account_id: 2112,
+                ..Default::default()
+            },
+            bomas: plma_bomas,
+        };
+
         let raw_file = RawLibraryFile {
             outer_header,
             sections: vec![
                 wrap_hsma(3, HsmaChild::InnerHfma(inner_hfma)),
+                wrap_hsma(6, HsmaChild::LibraryMaster(plma_section)),
                 wrap_hsma(4, HsmaChild::AlbumList(album_list)),
                 wrap_hsma(5, HsmaChild::ArtistList(artist_list)),
                 wrap_hsma(1, HsmaChild::TrackList(track_list)),
@@ -622,6 +666,24 @@ mod tests {
             parsed_raw.outer_header.file_size
         );
         assert_eq!(parsed_raw.to_raw_bytes().unwrap(), decrypted_raw);
+        let parsed_plma = parsed_raw
+            .sections
+            .iter()
+            .find_map(|s| match &s.child {
+                HsmaChild::LibraryMaster(p) => Some(p),
+                _ => None,
+            })
+            .expect("parsed LibraryMaster section");
+        assert_eq!(parsed_plma.header.apple_store_account_id_1, 2112);
+        assert_eq!(parsed_plma.header.apple_store_account_id_2, 2112);
+        assert!(matches!(
+            &parsed_plma.bomas[0].payload,
+            BomaPayload::Unknown { subtype: 0x01F6, raw_bytes } if raw_bytes.len() == 20
+        ));
+        assert!(matches!(
+            &parsed_plma.bomas[1].payload,
+            BomaPayload::Unknown { subtype: 0x01FF, raw_bytes } if raw_bytes.len() == 44
+        ));
 
         // Verify filtered parsing preserves 100% lossless round-trip via HsmaChild::Skipped
         let parsed_filtered = RawLibraryFile::from_raw_bytes_filtered(&decrypted_raw, |kind| {
@@ -683,6 +745,7 @@ mod tests {
         assert_eq!(t.codec_fourcc.as_deref(), Some("mp4a"));
         assert!(t.has_ever_been_played);
         assert_eq!(t.is_apple_digital_master, Some(true));
+        assert_eq!(t.has_catalog_synced_lyrics, Some(true));
         assert_eq!(t.is_cloud_unavailable, Some(false));
         assert_eq!(t.is_available_in_catalog, Some(true));
         assert!(t.audio_traits.contains(AudioTraits::HI_RES_LOSSLESS));
@@ -848,14 +911,22 @@ mod tests {
     fn build_span_test_master_and_lists(outer_header: &HfmaHeader) -> Vec<HsmaSection> {
         use crate::sections::PaddingSection;
         use crate::sections::boma::BomaStringSection;
-        use crate::sections::library_master::{
-            LibraryMasterHeader, LibraryMasterSection, PlmaSub1F6, PlmaSub1FF,
-        };
+        use crate::sections::library_master::{LibraryMasterHeader, LibraryMasterSection};
         use crate::sections::social::{
             SocialProfileItem, SocialProfileItemHeader, SocialProfileListHeader,
             SocialProfileListSection,
         };
 
+        let raw_boma = |subtype, len| {
+            wrap_boma_section(
+                subtype,
+                20 + u32::try_from(len).unwrap(),
+                BomaPayload::Unknown {
+                    subtype,
+                    raw_bytes: vec![0; len],
+                },
+            )
+        };
         let str_boma = wrap_boma_section(
             0x0002,
             36,
@@ -885,11 +956,7 @@ mod tests {
                     header_size: 160,
                     ..Default::default()
                 },
-                bomas: vec![
-                    wrap_boma_section(0x01F6, 20, BomaPayload::Plma1F6(PlmaSub1F6::default())),
-                    wrap_boma_section(0x01FF, 44, BomaPayload::Plma1FF(PlmaSub1FF::default())),
-                    str_boma,
-                ],
+                bomas: vec![raw_boma(0x01F6, 20), raw_boma(0x01FF, 44), str_boma],
             })),
             hsma(HsmaChild::AlbumList(AlbumListSection {
                 header: AlbumListHeader::default(),
@@ -1045,7 +1112,6 @@ mod tests {
 
     fn check_payload_spans() {
         use crate::sections::boma::BomaStringSection;
-        use crate::sections::library_master::{PlmaSub1F6, PlmaSub1FF};
         use crate::sections::playlist::{
             SmartPlaylistOptions, SmartPlaylistRule, SmartPlaylistRuleArguments, SmartRuleChild,
         };
@@ -1058,8 +1124,6 @@ mod tests {
             "SmartPlaylistOptions",
             false,
         );
-        check_struct_spans(&PlmaSub1F6::default(), "plma::0x01F6", false);
-        check_struct_spans(&PlmaSub1FF::default(), "plma::0x01FF", false);
         check_struct_spans(
             &BomaStringSection {
                 encoding: 2,

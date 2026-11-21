@@ -70,8 +70,10 @@ pub struct SocialProfileItemHeader {
     pub artwork_uuid: [u8; 16],
     /// Offset 48..52: Artwork source kind in `artwork.sqlite` (`item_to_artwork.source_kind`; 0x46 = 70 = Social Profile Avatar).
     pub artwork_source_kind: u32,
-    /// Offset 52..56: Unknown flags (e.g. 0x00000005 or 0x00000105).
-    pub unk_52: Unknown<u32>,
+    /// Offset 52: Artwork cache state bitfield matching `itma[328]`, `iAma[100]`, and `lpma[300..304]` (`0` = none, `5` = cached social profile avatar in `artwork.sqlite`).
+    pub artwork_cache_state: u8,
+    /// Offset 53..56: Unknown 3 bytes (byte 53 is `0x00` or `0x01` on social profiles).
+    pub unk_53_56: Unknown<[u8; 3]>,
     /// Offset 56..60: Artwork cache size kind in `artwork.sqlite` (`cache_items.size_kind`; 1 = `_sk1`).
     pub artwork_size_kind: u32,
     /// Offset 60..64: Artwork cached image format in `artwork.sqlite` (`cache_items.extension`; 1 = `jpeg`, 2 = `png`, 0 = not cached).
@@ -88,7 +90,7 @@ impl VisitUnknowns for SocialProfileItemHeader {
             "isma",
             [
                 (self.unk_24_32, 24),
-                (self.unk_52, 52),
+                (self.unk_53_56, 53),
                 (tail: self.unk_64_end, 64),
             ]
         );
