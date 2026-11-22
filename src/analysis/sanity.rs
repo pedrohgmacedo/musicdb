@@ -397,22 +397,18 @@ impl SanityCollector {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "shared timestamp predicate needs section, offset, field, value, policy spec, and item context"
+        reason = "shared timestamp sentinel predicate needs section, offset, field, raw value, policy spec, and item context"
     )]
-    fn check_timestamp(
+    fn check_timestamp_sentinel(
         &mut self,
         section: &str,
         offset: &str,
         field: &str,
-        ts: AppleTimestamp,
+        raw: u32,
         spec: TimestampSpec,
         ctx: &str,
         sub: Option<String>,
-    ) {
-        let raw = ts.raw();
-        if raw == 0 {
-            return;
-        }
+    ) -> bool {
         if raw < APPLE_SENTINEL_CUTOFF {
             let (severity, rule_id, message) = if raw == 2 && spec.allow_known_sentinel_2 {
                 (
@@ -439,6 +435,46 @@ impl SanityCollector {
                 item_context: ctx,
                 subcontext: sub,
             });
+            return true;
+        }
+        if raw > u32::MAX - APPLE_SENTINEL_CUTOFF {
+            let signed = i64::from(raw) - (1i64 << 32);
+            self.record(Finding {
+                category: SanityCategory::Timestamp,
+                severity: SanitySeverity::Warning,
+                rule_id: "timestamp.underflow_sentinel",
+                section,
+                offset,
+                field,
+                message: "AppleTimestamp wrapped within 24h below 0 (e.g. DST underflow or u32::MAX)",
+                value: format!("{raw} (signed={signed})"),
+                item_context: ctx,
+                subcontext: sub,
+            });
+            return true;
+        }
+        false
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "shared timestamp predicate needs section, offset, field, value, policy spec, and item context"
+    )]
+    fn check_timestamp(
+        &mut self,
+        section: &str,
+        offset: &str,
+        field: &str,
+        ts: AppleTimestamp,
+        spec: TimestampSpec,
+        ctx: &str,
+        sub: Option<String>,
+    ) {
+        let raw = ts.raw();
+        if raw == 0 {
+            return;
+        }
+        if self.check_timestamp_sentinel(section, offset, field, raw, spec, ctx, sub.clone()) {
             return;
         }
         if raw < APPLE_UNIX_EPOCH_RAW {
@@ -1893,13 +1929,24 @@ mod tests {
             "hfma[0]",
             None,
         );
+        // DST underflow (-3600 wrapped as u32) -> Warning (timestamp.underflow_sentinel).
+        c.check_timestamp(
+            "TrackPlaysSkips",
+            "8..12",
+            "date_last_played",
+            AppleTimestamp::new(0u32.wrapping_sub(3600)),
+            TimestampSpec::LOCAL,
+            "itma[0]",
+            None,
+        );
 
         let report = c.finish(&opts, &HfmaHeader::default());
-        assert_eq!(report.total_warnings, 3);
+        assert_eq!(report.total_warnings, 4);
         assert_eq!(report.total_info, 2);
         let rules: Vec<&str> = report.findings.iter().map(|g| g.rule_id).collect();
         assert!(rules.contains(&"timestamp.known_sentinel"));
         assert!(rules.contains(&"timestamp.unknown_sentinel"));
+        assert!(rules.contains(&"timestamp.underflow_sentinel"));
         assert!(rules.contains(&"timestamp.before_unix_epoch"));
         assert!(rules.contains(&"timestamp.future_expected"));
         assert!(rules.contains(&"timestamp.future_unexpected"));

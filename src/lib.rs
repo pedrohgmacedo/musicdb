@@ -87,7 +87,16 @@ mod tests {
                 .to_string(),
             "1904-01-02T00:00:00Z"
         );
-        assert!(crate::AppleTimestamp::new(u32::MAX).to_utc().is_some());
+        assert!(
+            crate::AppleTimestamp::new(u32::MAX - 86_400)
+                .to_utc()
+                .is_some()
+        );
+        assert_eq!(crate::AppleTimestamp::new(u32::MAX).to_utc(), None);
+        assert_eq!(
+            crate::AppleTimestamp::new(0u32.wrapping_sub(3600)).to_utc(),
+            None
+        );
         // 2_082_844_800 is 1970-01-01T00:00:00Z in Apple HFS+ epoch (1904-01-01)
         let epoch = apple_timestamp_to_utc(2_082_844_800).unwrap();
         assert_eq!(epoch.as_second(), 0);

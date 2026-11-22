@@ -8,10 +8,19 @@ use jiff::Timestamp;
 /// Seconds between 1904-01-01 00:00:00 UTC (Apple/Mac HFS+ epoch) and 1970-01-01 00:00:00 UTC (Unix epoch).
 pub(crate) const APPLE_TO_UNIX_EPOCH_OFFSET: i64 = 2_082_844_800;
 
+/// Lower sentinel cutoff (values `< 86_400`, i.e., `1904-01-01` within +24h of `0`).
+const LOWER_SENTINEL_CUTOFF: u32 = 86_400;
+
+/// Upper underflow sentinel cutoff (values `> u32::MAX - 86_400`, i.e., within -24h of `0` mod `2^32`,
+/// such as `0u32.wrapping_sub(3600) == 4_294_963_696` from DST shifts on unset local timestamps or `u32::MAX`).
+const UPPER_UNDERFLOW_CUTOFF: u32 = u32::MAX - 86_400;
+
 /// 32-bit unsigned Apple/Mac HFS+ timestamp (seconds since 1904-01-01 UTC/local).
 ///
-/// Values below `86_400` are treated as non-timestamp sentinel values (such as `0` for unset
-/// or `2` on local `TrackNumerics[0].date_cloud_synced`) by [`AppleTimestamp::to_utc`].
+/// Values within `±86_400` seconds of `0` mod `2^32` (`< 86_400` or `> u32::MAX - 86_400`) are
+/// treated as non-timestamp sentinel/underflow values (such as `0` for unset, `2` on local
+/// `date_cloud_synced`, `3600` / `4_294_963_696` from `±1h` DST shifts on unset `date_last_played`,
+/// or `u32::MAX`) by [`AppleTimestamp::to_utc`] and [`AppleTimestamp::to_utc_with_offset`].
 ///
 /// # Examples
 /// ```
@@ -57,7 +66,8 @@ impl AppleTimestamp {
         self.0 == 0
     }
 
-    /// Converts this timestamp to a UTC [`Timestamp`], returning `None` for `0` or sentinel values `< 86_400`.
+    /// Converts this timestamp to a UTC [`Timestamp`], returning `None` for `0` or sentinel/underflow
+    /// values (`< 86_400` or `> u32::MAX - 86_400`).
     ///
     /// Use [`Self::to_utc_with_offset`] for fields that Apple Music stores in local wall-clock seconds
     /// (`TrackNumerics::date_added`, `TrackNumerics::date_modified`, `TrackPlaysSkips::date_last_played`,
@@ -70,7 +80,7 @@ impl AppleTimestamp {
     /// Converts a local-epoch Apple timestamp (`utc_seconds + timezone_offset_seconds`) to a true UTC
     /// [`Timestamp`] by subtracting `timezone_offset_seconds` (from [`crate::sections::HfmaHeader::timezone_offset_seconds`]).
     ///
-    /// Returns `None` for `0` or sentinel values `< 86_400`.
+    /// Returns `None` for `0` or sentinel/underflow values (`< 86_400` or `> u32::MAX - 86_400`).
     ///
     /// # Examples
     /// ```
@@ -83,7 +93,7 @@ impl AppleTimestamp {
     /// ```
     #[must_use]
     pub fn to_utc_with_offset(self, timezone_offset_seconds: i32) -> Option<Timestamp> {
-        if self.0 < 86_400 {
+        if self.0 < LOWER_SENTINEL_CUTOFF || self.0 > UPPER_UNDERFLOW_CUTOFF {
             return None;
         }
         let unix_secs =
@@ -160,9 +170,19 @@ mod tests {
         assert_eq!(cutoff_dt.to_string(), "1904-01-02T00:00:00Z");
         assert_eq!(at_cutoff.to_string(), "1904-01-02T00:00:00Z");
 
-        let max_ts = AppleTimestamp::new(u32::MAX);
-        assert_eq!(max_ts.raw(), u32::MAX);
-        assert!(max_ts.to_utc().is_some());
+        let max_valid_ts = AppleTimestamp::new(UPPER_UNDERFLOW_CUTOFF);
+        assert_eq!(max_valid_ts.raw(), UPPER_UNDERFLOW_CUTOFF);
+        assert!(max_valid_ts.to_utc().is_some());
+
+        let max_sentinel = AppleTimestamp::new(u32::MAX);
+        assert_eq!(max_sentinel.raw(), u32::MAX);
+        assert_eq!(max_sentinel.to_utc(), None);
+        assert_eq!(max_sentinel.to_string(), format!("sentinel({})", u32::MAX));
+
+        let dst_underflow = AppleTimestamp::new(0u32.wrapping_sub(3600));
+        assert_eq!(dst_underflow.to_utc(), None);
+        assert_eq!(dst_underflow.to_utc_with_offset(-10_800), None);
+        assert_eq!(dst_underflow.to_string(), "sentinel(4294963696)");
 
         let unix_epoch = AppleTimestamp::from(2_082_844_800u32);
         let dt = unix_epoch.to_utc().expect("Unix epoch must convert");
