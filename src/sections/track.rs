@@ -89,7 +89,7 @@ pub struct TrackItemHeader {
     pub has_local_custom_lyrics: u8,
     /// Offset 45: Unknown byte.
     pub unk_45: Unknown<u8>,
-    /// Offset 46: Unsynced local metadata changes flag (1 = track metadata/options edited locally and pending iCloud sync, 0 = clean/synced).
+    /// Offset 46: Unsynced local metadata changes flag (`1` = metadata/options edited locally on an already-synced iCloud track and pending push, `0` = clean/synced or newly added offline `LocalOnly` track whose unsynced status is carried by `cloud_status == 0` / `cloud_sync_state == 0`).
     pub has_unsynced_local_changes: u8,
     /// Offset 47..49: Unknown 2 bytes.
     pub unk_47_49: Unknown<[u8; 2]>,
@@ -223,7 +223,7 @@ pub struct TrackItemHeader {
     pub artwork_size_kind: u32,
     /// Offset 348..352: Artwork cached image format in `artwork.sqlite` (`cache_items.extension`; 1 = `jpeg`, 2 = `png`, 0 = none).
     pub artwork_image_format: u32,
-    /// Offset 352..356: Track cloud sync timestamp (Apple UTC timestamp; mirrors `TrackNumerics.date_cloud_synced`, 0 when unsynced).
+    /// Offset 352..356: Track library/cloud UTC sync timestamp (Apple UTC timestamp; mirrors `TrackNumerics.date_cloud_synced`, also stamped on offline local imports and local downloads; `0` when unset).
     pub date_cloud_synced: AppleTimestamp,
     /// Offset 356..376: Unknown 20 bytes.
     pub unk_356_376: Unknown<[u8; 20]>,
@@ -309,7 +309,7 @@ pub struct TrackNumerics {
     pub unk_16: Unknown<u32>,
     /// Offset 20: Cloud catalog unavailability flag (`1` = track no longer available in Apple Music catalog, `0` = available/local).
     pub is_cloud_unavailable: u8,
-    /// Offset 21..24: Unknown flags (`[1, 1, 0]` when Apple Digital Master / catalog traits present, else `[0, 0, 0]`).
+    /// Offset 21..24: Unknown flags (`[1, 1, 0]` on synced `subrecord_kind == 1` local files and on `subrecord_kind == 3` once downloaded locally; `[0, 0, 0]` on newly imported offline `LocalOnly` tracks and many undownloaded `subrecord_kind == 3` records).
     pub unk_21_24: Unknown<[u8; 3]>,
     /// Offset 24..27: Unknown 3 bytes (typically 0).
     pub unk_24_27: Unknown<[u8; 3]>,
@@ -331,11 +331,11 @@ pub struct TrackNumerics {
     pub is_available_in_catalog: u8,
     /// Offset 40: Local MP3 flag (`1` iff `subrecord_kind == 1 && container_format_kind == 12`, `0` otherwise).
     pub is_local_mp3: u8,
-    /// Offset 41..54: Unknown 13 bytes (offset 45 is `1` iff `subrecord_kind == 3 || date_released != 0 || unk_116_cloud_timestamp != 0 || store_track_adam_id != 0`; offset 48 is `1` on an MP3 with trailing `APEv2` artwork anomaly and `3` on downloaded HLS Dolby Atmos `.movpkg`; offsets 49..53 encode iCloud sync/origin states).
+    /// Offset 41..54: Unknown 13 bytes (offset 41 is `1` on downloaded local video `subrecord_kind == 1` and `0` on audio; offset 45 is `1` iff `subrecord_kind == 3 || date_released != 0 || unk_116_cloud_timestamp != 0 || store_track_adam_id != 0` in modern libraries; offset 46 is `1` on downloaded local HD video `subrecord_kind == 1`; offset 48 is `1` on a legacy matched MP3 with 2.2 MB trailing `APEv2` artwork after gapless duration scan — `0` on fresh offline import — and `3` on downloaded HLS Dolby Atmos `.movpkg`; offsets 49..53 encode iCloud sync/origin states).
     pub unk_41_54: Unknown<[u8; 13]>,
-    /// Offset 54: Cloud/source asset container kind (`1` = MP3/MPEG audio, `2` = M4A/AAC audio, `0` = video / `.movpkg` / local `subrecord_kind == 1`).
+    /// Offset 54: Cloud/source asset container or Apple Store flavor ID (`1` = MP3/MPEG audio, `2` = `"2:256"` M4A/AAC audio, `18` = `"18:1080p"` 1080p HD video matching `boma 0x0034` `itunes_store_flavor`; `0` on undownloaded video / `.movpkg` / local `subrecord_kind == 1`).
     pub asset_container_kind: u8,
-    /// Offset 55..59: Unknown 4 bytes.
+    /// Offset 55..59: Unknown 4 bytes (offset 58 is `2` on a downloaded 1080p HD `.m4v` `subrecord_kind == 1`, matching MP4 `hdvd` = `2`, and `0` on all audio tracks and `subrecord_kind == 3`).
     pub unk_55_59: Unknown<[u8; 4]>,
     /// Offset 59: Apple Music catalog time-synced lyrics availability on `subrecord_kind == 3` (`1` = catalog time-synced lyrics available, `2` = no catalog time-synced lyrics / Matched or Uploaded track, `0` = local `subrecord_kind == 1` or format `<= 22.0`).
     pub catalog_lyrics_state: u8,
@@ -367,7 +367,7 @@ pub struct TrackNumerics {
     pub unk_96_100: Unknown<u32>,
     /// Offset 100..104: MP4 `sinf` / `FairPlay` DRM platform ID (`sinf/schi/righ` `Platform` low word; `0` = macOS/none, `1` = Windows / Matched AAC / `.m4p`, `2` = alternate platform).
     pub drm_platform: u32,
-    /// Offset 104..108: `FairPlay` DRM version restrictions (`sinf/schi/righ` `VersionRestrictions`, e.g. `0x07010100` on `FairPlay`-encrypted `.m4p` / `.movpkg` offline downloads; `0` on DRM-free tracks).
+    /// Offset 104..108: `FairPlay` DRM version restrictions (`sinf/schi/righ` `VersionRestrictions`, e.g. `0x07010100` on `FairPlay`-encrypted `.m4p` / `.movpkg` audio downloads and `0x06010100` on `FairPlay`-encrypted `.m4v` music video downloads; `0` on DRM-free tracks).
     pub drm_version_restrictions: u32,
     /// Offset 108..112: Gapless playback encoder delay in samples (word 1 of `iTunSMPB`, e.g. 2112 for AAC or 576 for LAME MP3).
     pub gapless_encoder_delay: u32,
@@ -405,7 +405,7 @@ pub struct TrackNumerics {
     pub apple_store_account_id: u64,
     /// Offset 208..216: 64-bit Apple Music Store Album Artist ID (exceeds `u32::MAX` for modern artists).
     pub apple_music_store_album_artist_id: u64,
-    /// Offset 216..248: Unknown 32 bytes (offsets 232..248 hold `[0x0200000B_u64, 0x0400000B_u64]` `FairPlay` DRM key/rights IDs in the `0x__00000B` `KeyID` namespace on all `.m4p` / `.movpkg` offline downloads with `drm_version_restrictions == 0x07010100`; zeros otherwise).
+    /// Offset 216..248: Unknown 32 bytes (offsets 232..248 hold `[0x0200000B_u64, 0x0400000B_u64]` `FairPlay` DRM key/rights IDs in the `0x__00000B` `KeyID` namespace on all `.m4p` / `.m4v` / `.movpkg` offline downloads with non-zero `drm_version_restrictions`; zeros otherwise).
     pub unk_216_248: Unknown<[u8; 32]>,
     /// Offset 248..256: `FairPlay` DRM authorized Apple Store account ID (`dsid`) on downloaded `.m4p` / `.movpkg` tracks (0 otherwise).
     pub drm_account_id: u64,
@@ -441,7 +441,7 @@ pub struct TrackNumerics {
     pub store_track_adam_id_3: u64,
     /// Offset 348..356: 64-bit Apple Music / iTunes Store Track `adamId` repeated.
     pub store_track_adam_id_4: u64,
-    /// Offset 356..360: Cloud sync timestamp (Apple UTC timestamp, or 2 on local asset).
+    /// Offset 356..360: Library/cloud UTC sync timestamp (Apple UTC timestamp; also stamped with UTC import time on offline local imports, or `2` on legacy local assets).
     pub date_cloud_synced: AppleTimestamp,
     /// Offset 360..364: Unknown 4 bytes.
     pub unk_360: Unknown<u32>,
@@ -557,31 +557,31 @@ pub struct VideoInfo {
     pub height: u32,
     /// Offset 4..8: Horizontal resolution (width in pixels).
     pub width: u32,
-    /// Offset 8..12: Unknown (typically 1).
+    /// Offset 8..12: Unknown (typically `1`; video track ID or track count).
     pub unk_8: Unknown<u32>,
     /// Offset 12..16: Video codec `FourCC` in little-endian (e.g. `0x61766331` = `"avc1"`).
     pub codec_fourcc: u32,
-    /// Offset 16..20: Unknown 4 bytes.
+    /// Offset 16..20: Unknown 4 bytes (e.g. `6060` on a 1080p `avc1` music video).
     pub unk_16: Unknown<u32>,
-    /// Offset 20..24: Unknown (e.g. `0x0000169F`).
-    pub unk_20: Unknown<u32>,
-    /// Offset 24..28: Unknown (often same as `unk_20`).
+    /// Offset 20..24: Video stream average bit rate in kbps (e.g. `5153` for `5,153,690` bps).
+    pub video_bit_rate_kbps: u32,
+    /// Offset 24..28: Unknown 4 bytes (matches `video_bit_rate_kbps` on observed files, e.g. `5153` or `5791`; likely target/average video bit rate).
     pub unk_24: Unknown<u32>,
-    /// Offset 28..32: Unknown 4 bytes.
+    /// Offset 28..32: Unknown 4 bytes (observed `0`).
     pub unk_28: Unknown<u32>,
-    /// Offset 32..36: Unknown (e.g. 100).
-    pub unk_32: Unknown<u32>,
-    /// Offset 36..40: Unknown (e.g. 41).
-    pub unk_36: Unknown<u32>,
-    /// Offset 40..44: Unknown signed int (e.g. -1).
+    /// Offset 32..36: H.264/AVC `profile_idc` from `avcC` (e.g. `100` = High Profile).
+    pub avc_profile_idc: u32,
+    /// Offset 36..40: H.264/AVC `level_idc` from `avcC` (e.g. `40` = Level 4.0, `41` = Level 4.1).
+    pub avc_level_idc: u32,
+    /// Offset 40..44: Unknown signed int (observed `-1` / `0xFFFFFFFF`).
     pub unk_40: Unknown<i32>,
-    /// Offset 44..48: Unknown (e.g. 30416).
-    pub unk_44: Unknown<u32>,
-    /// Offset 48..52: Unknown (often 24).
-    pub unk_48: Unknown<u32>,
-    /// Offset 52..56: Unknown (often 30000 - framerate * 1000?).
+    /// Offset 44..48: Video frame rate in millihertz (`fps * 1000`, e.g. `25000` for 25.000 fps, `30416` for 30.416 fps).
     pub frame_rate_milli: u32,
-    /// Offset 56..84: Unknown 28 bytes.
+    /// Offset 48..52: Video color bit depth from `VisualSampleEntry` (e.g. `24`).
+    pub color_bit_depth: u32,
+    /// Offset 52..56: Unknown 4 bytes (observed `256` on a 25 fps music video and `30000` in AME docs; not frame rate).
+    pub unk_52: Unknown<u32>,
+    /// Offset 56..84: Unknown 28 bytes (first `u32` observed as `17500` / `0x0000445C` on a 1080p music video, remaining 24 bytes zeros).
     pub unk_56_84: Unknown<[u8; 28]>,
 }
 
@@ -593,16 +593,56 @@ impl VisitUnknowns for VideoInfo {
             [
                 (self.unk_8, 8),
                 (self.unk_16, 16),
-                (self.unk_20, 20),
                 (self.unk_24, 24),
                 (self.unk_28, 28),
-                (self.unk_32, 32),
-                (self.unk_36, 36),
                 (self.unk_40, 40),
-                (self.unk_44, 44),
-                (self.unk_48, 48),
+                (self.unk_52, 52),
                 (self.unk_56_84, 56),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use binrw::{BinRead, BinWrite};
+
+    use super::VideoInfo;
+
+    #[test]
+    fn video_info_parses_frame_rate_at_offset_44_and_roundtrips() {
+        // Synthetic 84-byte boma 0x0024 payload (e.g. Rush — "Tom Sawyer" 1920x820 25fps H.264 video).
+        let mut raw = [0u8; 84];
+        raw[0..4].copy_from_slice(&820u32.to_le_bytes()); // height
+        raw[4..8].copy_from_slice(&1920u32.to_le_bytes()); // width
+        raw[8..12].copy_from_slice(&1u32.to_le_bytes()); // unk_8
+        raw[12..16].copy_from_slice(&0x6176_6331u32.to_le_bytes()); // "avc1"
+        raw[16..20].copy_from_slice(&6060u32.to_le_bytes()); // unk_16
+        raw[20..24].copy_from_slice(&5153u32.to_le_bytes()); // video_bit_rate_kbps
+        raw[24..28].copy_from_slice(&5153u32.to_le_bytes()); // unk_24
+        raw[32..36].copy_from_slice(&100u32.to_le_bytes()); // avc_profile_idc (High)
+        raw[36..40].copy_from_slice(&40u32.to_le_bytes()); // avc_level_idc (4.0)
+        raw[40..44].copy_from_slice(&(-1i32).to_le_bytes()); // unk_40
+        raw[44..48].copy_from_slice(&25_000u32.to_le_bytes()); // frame_rate_milli (25.000 fps)
+        raw[48..52].copy_from_slice(&24u32.to_le_bytes()); // color_bit_depth
+        raw[52..56].copy_from_slice(&256u32.to_le_bytes()); // unk_52 (not frame rate)
+        raw[56..60].copy_from_slice(&17_500u32.to_le_bytes()); // unk_56_84[0..4]
+
+        let parsed = VideoInfo::read_le(&mut Cursor::new(&raw)).expect("parse VideoInfo");
+        assert_eq!(parsed.height, 820);
+        assert_eq!(parsed.width, 1920);
+        assert_eq!(parsed.codec_fourcc, 0x6176_6331);
+        assert_eq!(parsed.video_bit_rate_kbps, 5153);
+        assert_eq!(parsed.avc_profile_idc, 100);
+        assert_eq!(parsed.avc_level_idc, 40);
+        assert_eq!(parsed.frame_rate_milli, 25_000);
+        assert_eq!(parsed.color_bit_depth, 24);
+        assert_eq!(*parsed.unk_52, 256);
+
+        let mut out = Cursor::new(Vec::new());
+        parsed.write_le(&mut out).expect("write VideoInfo");
+        assert_eq!(out.into_inner().as_slice(), &raw);
     }
 }
