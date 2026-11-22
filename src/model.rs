@@ -2397,6 +2397,8 @@ pub struct Track {
     pub is_available_in_catalog: Option<bool>,
     /// Apple Music catalog `audioTraits` bitmask (`itma` offset 331).
     pub audio_traits: AudioTraits,
+    /// Downloaded local asset `audioTraits` bitmask (`TrackNumerics` offset 336..340 on `subrecord_kind == 1`; empty when not downloaded or stereo-only).
+    pub downloaded_audio_traits: AudioTraits,
     /// Purchaser Apple Store account ID (`dsid`, `TrackNumerics` offset 280..288).
     pub purchaser_account_id: Option<u64>,
     /// `FairPlay` DRM authorized Apple Store account ID (`dsid`) on downloaded tracks (`TrackNumerics` offset 248..256).
@@ -3693,6 +3695,11 @@ fn apply_primary_track_numerics(track: &mut Track, num: &TrackNumerics, tz_offse
     if num.drm_account_id != 0 {
         track.drm_account_id = Some(num.drm_account_id);
     }
+    if let Ok(bits) = u8::try_from(num.downloaded_audio_traits)
+        && bits != 0
+    {
+        track.downloaded_audio_traits = AudioTraits::from_bits_retain(bits);
+    }
     if num.store_track_adam_id != 0 {
         track.store_track_adam_id = Some(num.store_track_adam_id);
     }
@@ -3789,6 +3796,12 @@ fn apply_secondary_track_numerics(track: &mut Track, num: &TrackNumerics) {
     }
     if track.drm_account_id.is_none() && num.drm_account_id != 0 {
         track.drm_account_id = Some(num.drm_account_id);
+    }
+    if track.downloaded_audio_traits.is_empty()
+        && let Ok(bits) = u8::try_from(num.downloaded_audio_traits)
+        && bits != 0
+    {
+        track.downloaded_audio_traits = AudioTraits::from_bits_retain(bits);
     }
     if track.codec_fourcc.is_none() {
         track.codec_fourcc = num.codec_fourcc_str();

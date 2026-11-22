@@ -235,6 +235,8 @@ fn create_tables(conn: &Connection) -> Result<()> {
             is_available_in_catalog INTEGER,
             audio_traits_raw INTEGER NOT NULL,
             audio_traits TEXT NOT NULL,
+            downloaded_audio_traits_raw INTEGER NOT NULL,
+            downloaded_audio_traits TEXT NOT NULL,
             purchaser_account_id INTEGER,
             drm_account_id INTEGER,
             cloud_saga_id INTEGER,
@@ -513,10 +515,10 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "full-row 124-column SQLite track binding"
+    reason = "full-row 126-column SQLite track binding"
 )]
 fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
-    let placeholders: Vec<String> = (1..=124).map(|i| format!("?{i}")).collect();
+    let placeholders: Vec<String> = (1..=126).map(|i| format!("?{i}")).collect();
     let sql = format!(
         "INSERT INTO tracks (
             persistent_id, title, album, artist, album_artist, composer, genre,
@@ -539,7 +541,8 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             has_catalog_synced_lyrics, is_itunes_matched,
             is_apple_music_catalog, is_apple_digital_master,
             is_cloud_unavailable, is_available_in_catalog, audio_traits_raw,
-            audio_traits, purchaser_account_id, drm_account_id, cloud_saga_id,
+            audio_traits, downloaded_audio_traits_raw, downloaded_audio_traits,
+            purchaser_account_id, drm_account_id, cloud_saga_id,
             store_track_adam_id, apple_music_store_album_id,
             apple_music_store_artist_id, apple_music_store_album_artist_id,
             storefront_id, purchaser_email, purchaser_name, downloaded_status,
@@ -639,6 +642,8 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             t.is_available_in_catalog.map(i32::from),
             t.audio_traits.bits(),
             t.audio_traits.to_string(),
+            t.downloaded_audio_traits.bits(),
+            t.downloaded_audio_traits.to_string(),
             t.purchaser_account_id.map(u64_to_sqlite_i64),
             t.drm_account_id.map(u64_to_sqlite_i64),
             t.cloud_saga_id.map(u64_to_sqlite_i64),

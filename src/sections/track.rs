@@ -101,7 +101,7 @@ pub struct TrackItemHeader {
     pub checkbox_show_composer_in_all_views: u8,
     /// Offset 52: Checkbox "Use work and movement" (0 or 1).
     pub checkbox_use_work_and_movement: u8,
-    /// Offset 53..55: Unknown 2 bytes (offset 53 is `1` on most catalog tracks and edited local tracks, `0` otherwise).
+    /// Offset 53..55: Unknown 2 bytes (offset 53 is `1` on most catalog tracks and edited local tracks; offset 54 is `1` on tracks with `boma 0x001D` `iTunMOVI` / `PlayGap` in modern libraries and certain artwork-bearing tracks in Monterey).
     pub unk_53_55: Unknown<[u8; 2]>,
     /// Offset 55: Playback or custom start/stop bounds activity flag (changes 0 -> 1 on first play or when playback start/stop bounds are set).
     pub has_playback_or_bounds_activity: u8,
@@ -331,7 +331,7 @@ pub struct TrackNumerics {
     pub is_available_in_catalog: u8,
     /// Offset 40: Local MP3 flag (`1` iff `subrecord_kind == 1 && container_format_kind == 12`, `0` otherwise).
     pub is_local_mp3: u8,
-    /// Offset 41..54: Unknown 13 bytes (offset 48 = `3` on downloaded HLS Dolby Atmos `.movpkg`; offsets 49..53 encode iCloud sync/origin states).
+    /// Offset 41..54: Unknown 13 bytes (offset 45 is `1` iff `subrecord_kind == 3 || date_released != 0 || unk_116_cloud_timestamp != 0 || store_track_adam_id != 0`; offset 48 is `1` on an MP3 with trailing `APEv2` artwork anomaly and `3` on downloaded HLS Dolby Atmos `.movpkg`; offsets 49..53 encode iCloud sync/origin states).
     pub unk_41_54: Unknown<[u8; 13]>,
     /// Offset 54: Cloud/source asset container kind (`1` = MP3/MPEG audio, `2` = M4A/AAC audio, `0` = video / `.movpkg` / local `subrecord_kind == 1`).
     pub asset_container_kind: u8,
@@ -363,8 +363,12 @@ pub struct TrackNumerics {
     pub bit_rate: u32,
     /// Offset 92..96: Date Added (Apple local timestamp; non-zero iff track is in Master Playlist `####!####`).
     pub date_added: AppleTimestamp,
-    /// Offset 96..108: Unknown 12 bytes (offset 100..104 = `1` on AAC-LC `.m4p`/Matched/Purchased; offset 105..108 = `[0x01, 0x01, 0x07]` on `FairPlay` DRM offline downloads).
-    pub unk_96_108: Unknown<[u8; 12]>,
+    /// Offset 96..100: Unknown 4 bytes (all zeros across observed libraries).
+    pub unk_96_100: Unknown<u32>,
+    /// Offset 100..104: MP4 `sinf` / `FairPlay` DRM platform ID (`sinf/schi/righ` `Platform` low word; `0` = macOS/none, `1` = Windows / Matched AAC / `.m4p`, `2` = alternate platform).
+    pub drm_platform: u32,
+    /// Offset 104..108: `FairPlay` DRM version restrictions (`sinf/schi/righ` `VersionRestrictions`, e.g. `0x07010100` on `FairPlay`-encrypted `.m4p` / `.movpkg` offline downloads; `0` on DRM-free tracks).
+    pub drm_version_restrictions: u32,
     /// Offset 108..112: Gapless playback encoder delay in samples (word 1 of `iTunSMPB`, e.g. 2112 for AAC or 576 for LAME MP3).
     pub gapless_encoder_delay: u32,
     /// Offset 112..116: Gapless playback encoder padding in samples (word 2 of `iTunSMPB`).
@@ -401,7 +405,7 @@ pub struct TrackNumerics {
     pub apple_store_account_id: u64,
     /// Offset 208..216: 64-bit Apple Music Store Album Artist ID (exceeds `u32::MAX` for modern artists).
     pub apple_music_store_album_artist_id: u64,
-    /// Offset 216..248: Unknown 32 bytes (`FairPlay` DRM offline download tokens when downloaded as `.m4p` or `.movpkg`; zeros otherwise).
+    /// Offset 216..248: Unknown 32 bytes (offsets 232..248 hold `[0x0200000B_u64, 0x0400000B_u64]` `FairPlay` DRM key/rights IDs in the `0x__00000B` `KeyID` namespace on all `.m4p` / `.movpkg` offline downloads with `drm_version_restrictions == 0x07010100`; zeros otherwise).
     pub unk_216_248: Unknown<[u8; 32]>,
     /// Offset 248..256: `FairPlay` DRM authorized Apple Store account ID (`dsid`) on downloaded `.m4p` / `.movpkg` tracks (0 otherwise).
     pub drm_account_id: u64,
@@ -431,8 +435,8 @@ pub struct TrackNumerics {
     pub store_track_adam_id_2: u64,
     /// Offset 328..336: iCloud Music Library `sagaId` (matches `sagaId=` in `boma 0x0038`, or `0xFFFFFFFFFFFFFFFD` for catalog tracks).
     pub cloud_saga_id_2: u64,
-    /// Offset 336..340: Unknown 4 bytes (typically 0).
-    pub unk_336_340: Unknown<u32>,
+    /// Offset 336..340: Downloaded local asset `audioTraits` bitmask on `subrecord_kind == 1` (same bit layout as [`TrackItemHeader::audio_traits`], e.g. `0x21` = Dolby Atmos + Spatial Audio on downloaded `.movpkg` HLS Atmos assets; `0` on stereo AAC/MP3 or cloud `subrecord_kind == 3`).
+    pub downloaded_audio_traits: u32,
     /// Offset 340..348: 64-bit Apple Music / iTunes Store Track `adamId` repeated.
     pub store_track_adam_id_3: u64,
     /// Offset 348..356: 64-bit Apple Music / iTunes Store Track `adamId` repeated.
@@ -457,7 +461,7 @@ impl VisitUnknowns for TrackNumerics {
                 (self.unk_41_54, 41),
                 (self.unk_55_59, 55),
                 (self.unk_68_file_type, 68),
-                (self.unk_96_108, 96),
+                (self.unk_96_100, 96),
                 (self.unk_116_cloud_timestamp, 116),
                 (self.unk_152, 152),
                 (self.unk_176_200, 176),
@@ -465,7 +469,6 @@ impl VisitUnknowns for TrackNumerics {
                 (self.unk_268_272, 268),
                 (self.unk_300, 300),
                 (self.unk_316_320, 316),
-                (self.unk_336_340, 336),
                 (self.unk_360, 360),
             ]
         );
