@@ -484,7 +484,9 @@ mod tests {
                 unk_28_30: Unknown::new([0; 2]),
                 checkbox_skip_when_shuffling: 0,
                 has_ever_been_played: 1,
-                unk_32_38: Unknown::new([0; 6]),
+                unk_32: Unknown::new(0),
+                is_cloud_synced: 1,
+                unk_34_38: Unknown::new([0, 1, 0, 0]),
                 checkbox_album_is_compilation: 0,
                 playlist_only: 0,
                 unk_40_42: Unknown::new([0; 2]),
@@ -631,13 +633,16 @@ mod tests {
         ];
         let plma_section = LibraryMasterSection {
             header: LibraryMasterHeader {
-                header_size: 160,
+                header_size: 194,
                 boma_count: u32::try_from(plma_bomas.len()).unwrap(),
                 apple_store_account_id_1: 2112,
                 library_persistent_id: 0xABCD_0123_4567_89EF,
                 apple_store_account_id_2: 2112,
                 library_persistent_id_2: 0xABCD_0123_4567_89EF,
                 apple_store_account_id: 2112,
+                unk_160_182: Some(Unknown::new([0; 22])),
+                date_local_lease_expires: Some(AppleTimestamp::new(3_877_000_000)),
+                unk_tail: Unknown::new(vec![0; 8]),
                 ..Default::default()
             },
             bomas: plma_bomas,
@@ -680,6 +685,19 @@ mod tests {
             .expect("parsed LibraryMaster section");
         assert_eq!(parsed_plma.header.apple_store_account_id_1, 2112);
         assert_eq!(parsed_plma.header.apple_store_account_id_2, 2112);
+        assert_eq!(
+            parsed_plma.header.date_local_lease_expires,
+            Some(AppleTimestamp::new(3_877_000_000))
+        );
+        let parsed_track = parsed_raw
+            .sections
+            .iter()
+            .find_map(|s| match &s.child {
+                HsmaChild::TrackList(tl) => tl.tracks.first(),
+                _ => None,
+            })
+            .expect("parsed TrackItem");
+        assert_eq!(parsed_track.header.is_cloud_synced, 1);
         assert!(matches!(
             &parsed_plma.bomas[0].payload,
             BomaPayload::Unknown { subtype: 0x01F6, raw_bytes } if raw_bytes.len() == 20
@@ -1182,6 +1200,14 @@ mod tests {
         check_struct_spans(&raw.outer_header, "hfma", true);
         check_struct_spans(&HsmaHeader::default(), "hsma", true);
         check_struct_spans(&LibraryMasterHeader::default(), "plma", true);
+        let plma_194 = LibraryMasterHeader {
+            header_size: 194,
+            unk_160_182: Some(Unknown::new([1; 22])),
+            date_local_lease_expires: Some(AppleTimestamp::new(3_877_000_000)),
+            unk_tail: Unknown::new(vec![2; 8]),
+            ..Default::default()
+        };
+        check_struct_spans(&plma_194, "plma", true);
         check_struct_spans(&AlbumListHeader::default(), "lama", true);
         check_struct_spans(&AlbumItemHeader::default(), "iama", true);
         check_struct_spans(&ArtistListHeader::default(), "lAma", true);

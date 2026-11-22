@@ -73,8 +73,12 @@ pub struct TrackItemHeader {
     pub checkbox_skip_when_shuffling: u8,
     /// Offset 31: Ever-played flag (`1` if the track has ever been played; persists across play-count resets).
     pub has_ever_been_played: u8,
-    /// Offset 32..38: Unknown 6 bytes (offsets 33, 35 are boolean-like flags).
-    pub unk_32_38: Unknown<[u8; 6]>,
+    /// Offset 32: Unknown byte (`1` on Purchased cloud-only music videos in macOS Monterey, `0` elsewhere).
+    pub unk_32: Unknown<u8>,
+    /// Offset 33: Cloud-synced track flag (`1` on iCloud-synced and Purchased cloud tracks where `cloud_sync_state != 0`, `0` on `LocalOnly` and `Error/Ineligible` tracks).
+    pub is_cloud_synced: u8,
+    /// Offset 34..38: Unknown 4 bytes (offset 35 is `1` across tracks in iCloud-enabled libraries and `0` in non-iCloud local libraries).
+    pub unk_34_38: Unknown<[u8; 4]>,
     /// Offset 38: Checkbox "Album is a compilation of songs by various artists" (0 or 1).
     pub checkbox_album_is_compilation: u8,
     /// Offset 39: Playlist-only / not-in-iCloud-library flag (`<key>Playlist Only</key><true/>` in iTunes XML; 0 = synced to user's iCloud Music Library, 1 = playlist-only or unsynced error).
@@ -101,7 +105,7 @@ pub struct TrackItemHeader {
     pub checkbox_show_composer_in_all_views: u8,
     /// Offset 52: Checkbox "Use work and movement" (0 or 1).
     pub checkbox_use_work_and_movement: u8,
-    /// Offset 53..55: Unknown 2 bytes (offset 53 is `1` on most catalog tracks and edited local tracks; offset 54 is `1` on tracks with `boma 0x001D` `iTunMOVI` / `PlayGap` in modern libraries and certain artwork-bearing tracks in Monterey).
+    /// Offset 53..55: Unknown 2 bytes (offset 53 is `1` on 100% of tracks carrying extended text metadata `boma`s `0x0012`/`0x002E`/`0x003F`/`0x0040` in modern Windows iCloud libraries — 33,969/33,969 exact match — but is also `1` on legacy `LocalOnly` imports without those `boma`s in macOS Monterey; offset 54 is `1` on tracks with `boma 0x001D` `iTunMOVI` / `PlayGap` in modern libraries and certain artwork-bearing tracks in Monterey).
     pub unk_53_55: Unknown<[u8; 2]>,
     /// Offset 55: Playback or custom start/stop bounds activity flag (changes 0 -> 1 on first play or when playback start/stop bounds are set).
     pub has_playback_or_bounds_activity: u8,
@@ -239,7 +243,8 @@ impl VisitUnknowns for TrackItemHeader {
             "itma",
             [
                 (self.unk_28_30, 28),
-                (self.unk_32_38, 32),
+                (self.unk_32, 32),
+                (self.unk_34_38, 34),
                 (self.unk_40_42, 40),
                 (self.unk_43, 43),
                 (self.unk_45, 45),

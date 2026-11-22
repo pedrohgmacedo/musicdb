@@ -86,7 +86,7 @@ pub struct PlaylistItemHeader {
     pub is_master_playlist: u8,
     /// Offset 45: Unknown byte.
     pub unk_45: Unknown<u8>,
-    /// Offset 46..48: Smart playlist / folder flag 1 (`0x0100` on some smart playlists/folders).
+    /// Offset 46..48: Folder smart-backing flag (`0x0100` exclusively on playlist folders `is_folder == 1`, which Apple Music backs with smart-playlist rules matching child playlists; `0` otherwise).
     pub unk_46_smart_flag: Unknown<u16>,
     /// Offset 48: Unknown byte.
     pub unk_48: Unknown<u8>,
@@ -120,7 +120,7 @@ pub struct PlaylistItemHeader {
     pub unk_186_flags: Unknown<[u8; 4]>,
     /// Offset 190..192: Ownership / origin flags (`[1, 1]` = user-created playlist/folder, `[0, 0]` = subscribed external playlist, `[0, 1]` = system smart playlist, `[1, 0]` = Favourite Songs).
     pub ownership_flags: [u8; 2],
-    /// Offset 192..196: Unknown u32 (0, 6, or 46).
+    /// Offset 192..196: Unknown u32 (`46` on `"Downloaded"` and `"Loved"`, `6` on `"Music"`, `0` on other playlists; likely a view or sort column identifier).
     pub unk_192: Unknown<u32>,
     /// Offset 196..204: iCloud Music Library Playlist `sagaId` repeated.
     pub cloud_playlist_saga_id_2: u64,
@@ -279,7 +279,7 @@ pub struct PlaylistTrackItem {
     pub unk_28_40: Unknown<[u8; 12]>,
     /// Offset 40..44: Original insertion-time `global_counter` / persistent container item ID (`container_item_id`).
     pub container_item_id: u32,
-    /// Offset 44..52: Repeated `item_persistent_id` (often non-zero on last track in playlist).
+    /// Offset 44..52: Repeated `item_persistent_id` (100% equal to `item_persistent_id` when non-zero; populated across all items of select playlists such as the master playlist in format `<= 21.1`, not only the last track).
     pub item_persistent_id_2: u64,
     /// Offset 52..`section_size`: Remaining bytes (16 bytes `52..68` when `section_size == 68`),
     /// stored inline without heap allocation up to 16 bytes.
@@ -351,7 +351,7 @@ pub struct SmartPlaylistOptions {
     pub unk_14_genius_flag: Unknown<u8>,
     /// Offset 15: Unknown byte.
     pub unk_15: Unknown<u8>,
-    /// Offset 16: Unknown byte (typically 7).
+    /// Offset 16: Smart playlist sort/selection field ID (`7` / `0x07` on standard smart playlists, `123` / `0x7B` on `"Favourite Songs"` matching its `limit_selection_method`).
     pub unk_16: Unknown<u8>,
     /// Offset 17..112: Remaining 95 bytes.
     pub unk_17_112: Unknown<[u8; 95]>,

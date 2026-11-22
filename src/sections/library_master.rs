@@ -66,13 +66,34 @@ pub struct LibraryMasterHeader {
     pub checkbox_keep_media_folder_organized: u8,
     /// Offset 149..160: Unknown 11 bytes.
     pub unk_149_160: Unknown<[u8; 11]>,
-    /// Offset 160..`header_size`: Remaining bytes (34 bytes when `header_size == 194`).
-    #[br(parse_with = read_unknown_tail, args(header_size, 160, "plma"))]
-    pub unk_160_end: Unknown<Vec<u8>>,
+    /// Offset 160..182: Unknown 22 bytes (present when `header_size >= 182`; offsets `174..178` and `178..182` hold monotonically increasing app/schema version counters across Apple Music releases).
+    #[br(if(header_size >= 182))]
+    pub unk_160_182: Option<Unknown<[u8; 22]>>,
+    /// Offset 182..186: Secondary ~7-day periodic / local lease expiration timestamp (UTC Apple timestamp; tracks `date_cloud_lease_expires` within seconds when online, advances independently offline, and is `0` on non-iCloud local libraries; present when `header_size >= 186`).
+    #[br(if(header_size >= 186))]
+    pub date_local_lease_expires: Option<AppleTimestamp>,
+    /// Remaining bytes up to `header_size` beyond 186 (e.g. 8 zero bytes `186..194` when `header_size == 194`).
+    #[br(parse_with = read_unknown_tail, args(header_size, LibraryMasterHeader::tail_start_offset(header_size), "plma"))]
+    pub unk_tail: Unknown<Vec<u8>>,
+}
+
+impl LibraryMasterHeader {
+    /// Returns the minimum byte offset at which `unk_tail` begins for a given `header_size`.
+    #[must_use]
+    pub(crate) const fn tail_start_offset(header_size: u32) -> u32 {
+        if header_size >= 186 {
+            186
+        } else if header_size >= 182 {
+            182
+        } else {
+            160
+        }
+    }
 }
 
 impl VisitUnknowns for LibraryMasterHeader {
     fn visit_unknowns<V: UnknownVisitor>(&self, _section: &str, visitor: &mut V) {
+        let tail_start = usize::try_from(Self::tail_start_offset(self.header_size)).unwrap_or(160);
         visit_unknowns!(
             visitor,
             "plma",
@@ -91,7 +112,8 @@ impl VisitUnknowns for LibraryMasterHeader {
                 (self.unk_140, 140),
                 (self.unk_144, 144),
                 (self.unk_149_160, 149),
-                (tail: self.unk_160_end, 160),
+                (?self.unk_160_182, 160),
+                (tail: self.unk_tail, tail_start),
             ]
         );
     }

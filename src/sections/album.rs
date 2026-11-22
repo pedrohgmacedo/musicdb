@@ -105,7 +105,7 @@ pub struct AlbumItemHeader {
     /// Offset 124..128: Album release date (UTC Apple timestamp; present when `header_size >= 128`).
     #[br(if(header_size >= 128))]
     pub date_released: Option<AppleTimestamp>,
-    /// Offset 128..136: Unknown 8 bytes (present when `header_size >= 136`).
+    /// Offset 128..136: Unknown 8 bytes (present when `header_size >= 136`; bytes `128..132` hold a future UTC `AppleTimestamp` on select catalog albums in format `23.1`, with `132..136` zero).
     #[br(if(header_size >= 136))]
     pub unk_128_136: Option<Unknown<[u8; 8]>>,
     /// Offset 136..140: Apple Music catalog album release/edition type (`0` = none/local, `1` = Standard Album, `3` = Bonus/Deluxe/Expanded Edition, `4` = EP, `5` = Single; present when `header_size >= 140`).
