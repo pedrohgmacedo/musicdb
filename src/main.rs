@@ -225,25 +225,12 @@ enum Commands {
         shell: Shell,
     },
 
-    /// Run ad-hoc corpus verification across .musicdb snapshots and optional iTunes XML
+    /// Run optional ad-hoc reverse-engineering probes (requires `--features adhoc`)
     #[cfg(feature = "adhoc")]
-    CorpusAudit {
-        /// Directories or .musicdb files to scan recursively
-        #[arg(required = true)]
-        paths: Vec<PathBuf>,
-        /// Optional path to iTunes Music Library.xml for timestamp verification
-        #[arg(long)]
-        xml: Option<PathBuf>,
-        /// Optional pair of snapshots across a timezone change (`A` then `B`)
-        #[arg(long, num_args = 2)]
-        tz_pair: Option<Vec<PathBuf>>,
-    },
-
-    /// Run ad-hoc sandwiched-unknown field probes across a corpus directory
-    #[cfg(feature = "adhoc")]
-    UnknownsProbe {
-        /// Corpus directory to inspect
-        corpus_dir: PathBuf,
+    Adhoc {
+        /// Specific ad-hoc probe to run
+        #[command(subcommand)]
+        command: crate::analysis::adhoc::AdhocCommand,
     },
 }
 
@@ -323,28 +310,8 @@ fn dispatch_command(command: Commands) -> Result<()> {
             Ok(())
         }
         #[cfg(feature = "adhoc")]
-        Commands::CorpusAudit {
-            paths,
-            xml,
-            tz_pair,
-        } => run_corpus_audit_cmd(&paths, xml.as_deref(), tz_pair.as_deref()),
-        #[cfg(feature = "adhoc")]
-        Commands::UnknownsProbe { corpus_dir } => {
-            crate::analysis::adhoc::unknowns_probe::run_unknowns_probe(&corpus_dir)
-        }
+        Commands::Adhoc { command } => crate::analysis::adhoc::run(command),
     }
-}
-
-#[cfg(feature = "adhoc")]
-fn run_corpus_audit_cmd(
-    paths: &[PathBuf],
-    xml: Option<&Path>,
-    tz_pair: Option<&[PathBuf]>,
-) -> Result<()> {
-    let pair = tz_pair.and_then(|v| Some((v.first()?.as_path(), v.get(1)?.as_path())));
-    let report = crate::analysis::adhoc::corpus_audit::run_corpus_audit(paths, xml, pair)?;
-    print!("{report}");
-    Ok(())
 }
 
 fn prompt_yes_no(question: &str) -> Result<bool> {

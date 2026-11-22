@@ -108,7 +108,7 @@ Much of the existing code predates these rules.
 - Human-readable output comes from `Display` impls on the report types, not from long chains of `println!`.
 - `anyhow` with `.context("…")` is fine here, and so are `unwrap`/`expect` where an explanation is given.
 - Reverse-engineering and research code (analysis reports, offset diffing, library donation) belongs to the CLI side, not the library's public API.
-- Experimental or one-off RE tools belong in `src/analysis/adhoc/` behind `--features adhoc` so temporary investigations stay out of default CLI commands.
+- Experimental or one-off RE probes belong in `src/analysis/adhoc/` behind `--features adhoc`, with **one file per probe**, shared corpus helpers in `src/analysis/adhoc/helpers.rs`, and wired as a subcommand under `musicdb adhoc <probe>` (in `src/analysis/adhoc/mod.rs`) so temporary investigations stay out of default CLI builds and can be run individually without re-running unrelated probes.
 
 ## Tests
 - **Never commit real Apple Music libraries or anything derived from them.** They contain personal data (purchaser names and emails, account IDs). Build fixtures **synthetically** in code (see the synthetic round-trip test in `src/lib.rs`).
