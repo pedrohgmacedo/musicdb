@@ -15,12 +15,15 @@ use super::helpers::{boma_str, collect_mdb, load_raw, tracks_of};
 pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
     println!("=== 2026-11-21 EXPERIMENTS (CITY LIFE A/B + STYLO VIDEO + CORPUS VIDEOINFO) ===");
 
-    let base_p = corpus_dir
-        .join("snapshots/2026-11-21-baseline/Apple Music Library.musiclibrary/Library.musicdb");
-    let mut_p = corpus_dir
-        .join("snapshots/2026-11-21-mutated/Apple Music Library.musiclibrary/Library.musicdb");
-    let vid_p = corpus_dir
-        .join("snapshots/2026-11-21-video/Apple Music Library.musiclibrary/Library.musicdb");
+    let base_p = corpus_dir.join(
+        "snapshots/2026-11-21-city-life-and-video/baseline/Apple Music Library.musiclibrary/Library.musicdb",
+    );
+    let mut_p = corpus_dir.join(
+        "snapshots/2026-11-21-city-life-and-video/mutated/Apple Music Library.musiclibrary/Library.musicdb",
+    );
+    let vid_p = corpus_dir.join(
+        "snapshots/2026-11-21-city-life-and-video/video/Apple Music Library.musiclibrary/Library.musicdb",
+    );
 
     let raw_base = load_raw(&base_p)?;
     let raw_mut = load_raw(&mut_p)?;
@@ -239,7 +242,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
             .unwrap_or(path)
             .display()
             .to_string();
-        let is_vid_snap = rel.contains("2026-11-21-video");
+        let is_vid_snap = rel.contains("2026-11-21-city-life-and-video/video");
         for t in tracks_of(&raw) {
             let title = boma_str(&t.bomas, 0x0002).unwrap_or("");
             let artist = boma_str(&t.bomas, 0x0004).unwrap_or("");

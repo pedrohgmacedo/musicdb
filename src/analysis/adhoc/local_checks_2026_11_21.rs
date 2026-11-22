@@ -20,15 +20,24 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         "=== 2026-11-21 LOCAL CORPUS CHECKS (itma[53], TrackPlaysSkips::unk_40, itma[33], iama[128..136], plma[182..186], ipfa[44..52], lpma[192], SmartPlaylistOptions[16]) ==="
     );
 
-    let vid_p = corpus_dir
-        .join("snapshots/2026-11-21-video/Apple Music Library.musiclibrary/Library.musicdb");
+    let vid_p = corpus_dir.join(
+        "snapshots/2026-11-21-city-life-and-video/video/Apple Music Library.musiclibrary/Library.musicdb",
+    );
     let raw_vid = load_raw(&vid_p)?;
 
     // 10.1 itma[53] across 00_baseline -> 01_working_man_mutations -> 02_mystery_outliers + distribution
     println!("--- 10.1 itma[53] (unk_53_55[0]) in 00_baseline -> 01 -> 02 & 2026-11-21-video ---");
-    let s00 = load_raw(&corpus_dir.join("snapshots/00_baseline/Library.musicdb"))?;
-    let s01 = load_raw(&corpus_dir.join("snapshots/01_working_man_mutations/Library.musicdb"))?;
-    let s02 = load_raw(&corpus_dir.join("snapshots/02_mystery_outliers/Library.musicdb"))?;
+    let s00 = load_raw(
+        &corpus_dir.join("snapshots/2026-11-07-initial-bitflags/00_baseline/Library.musicdb"),
+    )?;
+    let s01 = load_raw(
+        &corpus_dir
+            .join("snapshots/2026-11-07-initial-bitflags/01_working_man_mutations/Library.musicdb"),
+    )?;
+    let s02 = load_raw(
+        &corpus_dir
+            .join("snapshots/2026-11-07-initial-bitflags/02_mystery_outliers/Library.musicdb"),
+    )?;
 
     let map00: BTreeMap<u64, &TrackItem> = tracks_of(&s00)
         .iter()
@@ -291,14 +300,14 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         "library-data/2025/Apple Music Library.musiclibrary/Library.musicdb",
         "library-data/Previous Libraries/Apple Music Library [2025-09-28 20.36.49].musiclibrary/Library.musicdb",
         "library-data/Previous Libraries/Apple Music Library [2026-10-28 22.33.41].musiclibrary/Library.musicdb",
-        "snapshots/00_baseline/Library.musicdb",
-        "snapshots/05_settings_favoriting/Library.musicdb",
-        "snapshots/06_noop_reopen/Library.musicdb",
-        "snapshots/2026-11-14-offline-delete/Apple Music Library.musiclibrary/Library.musicdb",
+        "snapshots/2026-11-07-initial-bitflags/00_baseline/Library.musicdb",
+        "snapshots/2026-11-07-initial-bitflags/05_settings_favoriting/Library.musicdb",
+        "snapshots/2026-11-07-initial-bitflags/06_noop_reopen/Library.musicdb",
+        "snapshots/2026-11-14-offline-delete/offline-delete/Apple Music Library.musiclibrary/Library.musicdb",
         "snapshots/2026-11-19/Apple Music Library.musiclibrary/Library.musicdb",
-        "snapshots/2026-11-21-baseline/Apple Music Library.musiclibrary/Library.musicdb",
-        "snapshots/2026-11-21-mutated/Apple Music Library.musiclibrary/Library.musicdb",
-        "snapshots/2026-11-21-video/Apple Music Library.musiclibrary/Library.musicdb",
+        "snapshots/2026-11-21-city-life-and-video/baseline/Apple Music Library.musiclibrary/Library.musicdb",
+        "snapshots/2026-11-21-city-life-and-video/mutated/Apple Music Library.musiclibrary/Library.musicdb",
+        "snapshots/2026-11-21-city-life-and-video/video/Apple Music Library.musiclibrary/Library.musicdb",
         "libraries-music-samples/Monterey/SmallerLibrary.musicdb",
         "libraries-music-samples/Sequoia/MiniLibraryV7.musicdb",
     ];
@@ -476,7 +485,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
     // 10.8 Follow-up exact checks
     println!("\n--- 10.8 Follow-up exact checks ---");
     for rel in [
-        "snapshots/2026-11-21-video/Apple Music Library.musiclibrary/Library.musicdb",
+        "snapshots/2026-11-21-city-life-and-video/video/Apple Music Library.musiclibrary/Library.musicdb",
         "libraries-music-samples/Monterey/SmallerLibrary.musicdb",
         "libraries-music-samples/Sequoia/MiniLibraryV7.musicdb",
     ] {
@@ -534,10 +543,9 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         }
     }
 
-    let raw_mut = load_raw(
-        &corpus_dir
-            .join("snapshots/2026-11-21-mutated/Apple Music Library.musiclibrary/Library.musicdb"),
-    )?;
+    let raw_mut = load_raw(&corpus_dir.join(
+        "snapshots/2026-11-21-city-life-and-video/mutated/Apple Music Library.musiclibrary/Library.musicdb",
+    ))?;
     println!("  itma[32..38] on City Life A/B in 2026-11-21-mutated:");
     for t in tracks_of(&raw_mut) {
         if matches!(
@@ -562,9 +570,9 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
     for rel in [
         "library-data/Previous Libraries/Apple Music Library [2025-09-28 20.36.49].musiclibrary/Library.musicdb",
         "library-data/Previous Libraries/Apple Music Library [2026-10-28 22.33.41].musiclibrary/Library.musicdb",
-        "snapshots/00_baseline/Library.musicdb",
+        "snapshots/2026-11-07-initial-bitflags/00_baseline/Library.musicdb",
         "snapshots/2026-11-19/Apple Music Library.musiclibrary/Library.musicdb",
-        "snapshots/2026-11-21-video/Apple Music Library.musiclibrary/Library.musicdb",
+        "snapshots/2026-11-21-city-life-and-video/video/Apple Music Library.musiclibrary/Library.musicdb",
     ] {
         let p = corpus_dir.join(rel);
         if !p.exists() {

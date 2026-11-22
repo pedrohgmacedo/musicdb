@@ -25,7 +25,8 @@ fn corpus_path(rel: &str) -> PathBuf {
 
 #[test]
 fn test_snapshot_library_and_smart_playlists() {
-    let snap = corpus_path("snapshots/03_smart_playlists/Library.musicdb");
+    let snap =
+        corpus_path("snapshots/2026-11-07-initial-bitflags/03_smart_playlists/Library.musicdb");
     if !snap.exists() {
         return;
     }

@@ -624,8 +624,8 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         "library-data/Previous Libraries/Apple Music Library [2026-10-28 22.33.41].musiclibrary/Library.musicdb",
         "library-data/2026-11-01/Apple Music Library.musiclibrary/Library.musicdb",
         "library-data/2026-11-07/Apple Music Library.musiclibrary/Library.musicdb",
-        "snapshots/00_baseline/Library.musicdb",
-        "snapshots/06_noop_reopen/Library.musicdb",
+        "snapshots/2026-11-07-initial-bitflags/00_baseline/Library.musicdb",
+        "snapshots/2026-11-07-initial-bitflags/06_noop_reopen/Library.musicdb",
         "snapshots/2026-11-11/Apple Music Library.musiclibrary/Library.musicdb",
         "snapshots/2026-11-19/Apple Music Library.musiclibrary/Library.musicdb",
         "libraries-music-samples/Monterey/SmallerLibrary.musicdb",
@@ -666,7 +666,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
     // 7.9 Diff between 2026-11-14-offline-delete and 2026-11-19
     println!("\n--- 7.9 DIFF BETWEEN 2026-11-14-OFFLINE-DELETE AND 2026-11-19 ---");
     let base_p = corpus_dir.join(
-        "snapshots/2026-11-14-offline-delete/Apple Music Library.musiclibrary/Library.musicdb",
+        "snapshots/2026-11-14-offline-delete/offline-delete/Apple Music Library.musiclibrary/Library.musicdb",
     );
     if base_p.exists() {
         let raw_base = load_raw(&base_p)?;

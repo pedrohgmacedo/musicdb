@@ -80,7 +80,10 @@ pub(crate) fn run_corpus_audit(
         inspect_sections(mdb, &raw, &mut report);
         inspect_sibling_prefs_and_sidecars(mdb, &raw, &mut report)?;
 
-        if mdb.to_string_lossy().contains("2026-11-14-baseline")
+        if (mdb.to_string_lossy().contains("2026-11-14-baseline")
+            || mdb
+                .to_string_lossy()
+                .contains("2026-11-14-offline-delete/baseline"))
             && mdb.file_name().and_then(|s| s.to_str()) == Some("Library.musicdb")
         {
             check_reencrypt_mirror(&raw, &mut report)?;
