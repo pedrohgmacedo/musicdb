@@ -158,7 +158,7 @@ pub struct PlaylistItemHeader {
     pub artwork_cache_state: u32,
     /// Offset 304..308: Cloud publish / artwork generation date (UTC Apple timestamp).
     pub date_cloud_published: AppleTimestamp,
-    /// Offset 308..312: Cloud share / visibility mode (0 = private user playlist, 2 = subscribed catalog playlist, 4 = public shared user playlist on profile).
+    /// Offset 308..312: Cloud share / visibility mode (`0` = private user playlist, `1` = subscribed personalized playlist e.g. Replay, `2` = subscribed catalog playlist, `4` = public shared user playlist on profile).
     pub cloud_share_mode: u32,
     /// Offset 312..316: Uninitialized 4-byte padding (preserved losslessly for round-tripping).
     pub unk_312: Unknown<u32>,
@@ -337,7 +337,7 @@ pub struct SmartPlaylistOptions {
     pub checkbox_enable_limit: u8,
     /// Offset 3: Limit unit (1=minutes, 2=MB, 3=items, 4=hours, 5=GB).
     pub limit_unit: u8,
-    /// Offset 4: Selection method for limit (2=random, 5=title, 6=album, 7=artist, 9=genre, 0x15=recently added, 0x19=often played, 0x1a=recently played, 0x1c=rating).
+    /// Offset 4: Selection method for limit (2=random, 5=title, 6=album, 7=artist, 9=genre, 0x15=recently added, 0x19=often played, 0x1a=recently played, 0x1c=rating, 0x7b=recently favorited).
     pub limit_selection_method: u8,
     /// Offset 5..8: Unknown 3 bytes.
     pub unk_5_8: Unknown<[u8; 3]>,

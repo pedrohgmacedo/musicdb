@@ -483,6 +483,8 @@ impl fmt::Display for ContentRating {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DownloadedStatus {
+    /// `0`: Unspecified / unset download state (observed on legacy local tracks in macOS Monterey).
+    Unspecified,
     /// `1`: Downloaded locally on disk.
     #[default]
     DownloadedLocal,
@@ -499,6 +501,7 @@ impl DownloadedStatus {
     #[must_use]
     pub const fn raw(self) -> u8 {
         match self {
+            Self::Unspecified => 0,
             Self::DownloadedLocal => 1,
             Self::CloudOnly => 3,
             Self::NoLongerAvailable => 5,
@@ -510,6 +513,7 @@ impl DownloadedStatus {
 impl From<u8> for DownloadedStatus {
     fn from(v: u8) -> Self {
         match v {
+            0 => Self::Unspecified,
             1 => Self::DownloadedLocal,
             3 => Self::CloudOnly,
             5 => Self::NoLongerAvailable,
@@ -521,6 +525,7 @@ impl From<u8> for DownloadedStatus {
 impl fmt::Display for DownloadedStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Unspecified => f.write_str("Unspecified"),
             Self::DownloadedLocal => f.write_str("DownloadedLocal"),
             Self::CloudOnly => f.write_str("CloudOnly"),
             Self::NoLongerAvailable => f.write_str("NoLongerAvailable"),
@@ -1064,6 +1069,8 @@ pub enum PlaylistShareMode {
     /// `0`: Private user playlist.
     #[default]
     Private,
+    /// `1`: Subscribed personalized Apple Music playlist (e.g. Apple Music Replay).
+    Personalized,
     /// `2`: Subscribed Apple Music catalog playlist.
     SubscribedCatalog,
     /// `4`: Publicly shared user playlist shown on profile.
@@ -1078,6 +1085,7 @@ impl PlaylistShareMode {
     pub const fn raw(self) -> u32 {
         match self {
             Self::Private => 0,
+            Self::Personalized => 1,
             Self::SubscribedCatalog => 2,
             Self::PublicShared => 4,
             Self::Unknown(v) => v,
@@ -1089,6 +1097,7 @@ impl From<u32> for PlaylistShareMode {
     fn from(v: u32) -> Self {
         match v {
             0 => Self::Private,
+            1 => Self::Personalized,
             2 => Self::SubscribedCatalog,
             4 => Self::PublicShared,
             other => Self::Unknown(other),
@@ -1100,6 +1109,7 @@ impl fmt::Display for PlaylistShareMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Private => f.write_str("Private"),
+            Self::Personalized => f.write_str("Personalized"),
             Self::SubscribedCatalog => f.write_str("SubscribedCatalog"),
             Self::PublicShared => f.write_str("PublicShared"),
             Self::Unknown(v) => write!(f, "Unknown({v})"),
@@ -1379,6 +1389,10 @@ pub enum SmartSelectionMethod {
     HighestRating,
     /// `0x1C` (`negate = 1`): Lowest star rating.
     LowestRating,
+    /// `0x7B` (`negate = 0`): Most recently favorited (inferred from Apple Music's built-in `"Favourite Songs"` smart playlist).
+    MostRecentlyFavorited,
+    /// `0x7B` (`negate = 1`): Least recently favorited (inferred from `0x7B` with `negate = 1`).
+    LeastRecentlyFavorited,
     /// Unrecognized raw `(method, negate)` pair.
     Unknown {
         /// Raw `limit_selection_method` byte.
@@ -1404,6 +1418,8 @@ impl From<(u8, u8)> for SmartSelectionMethod {
             (0x1A, _) => Self::LeastRecentlyPlayed,
             (0x1C, 0) => Self::HighestRating,
             (0x1C, _) => Self::LowestRating,
+            (0x7B, 0) => Self::MostRecentlyFavorited,
+            (0x7B, _) => Self::LeastRecentlyFavorited,
             (m, n) => Self::Unknown {
                 method: m,
                 negate: n,
@@ -1428,6 +1444,8 @@ impl fmt::Display for SmartSelectionMethod {
             Self::LeastRecentlyPlayed => f.write_str("LeastRecentlyPlayed"),
             Self::HighestRating => f.write_str("HighestRating"),
             Self::LowestRating => f.write_str("LowestRating"),
+            Self::MostRecentlyFavorited => f.write_str("MostRecentlyFavorited"),
+            Self::LeastRecentlyFavorited => f.write_str("LeastRecentlyFavorited"),
             Self::Unknown { method, negate } => {
                 write!(f, "Unknown {{ method: {method}, negate: {negate} }}")
             }
@@ -4053,6 +4071,7 @@ impl Playlist {
         } else if self.is_smart {
             PlaylistKind::Smart
         } else if self.share_mode == PlaylistShareMode::SubscribedCatalog
+            || self.share_mode == PlaylistShareMode::Personalized
             || self.subscribed_container_url.is_some()
         {
             PlaylistKind::SubscribedCatalog
@@ -4941,5 +4960,26 @@ mod tests {
             );
             assert_eq!(artist.artwork_url_plist.as_deref(), Some(xml_text.as_str()));
         }
+    }
+
+    #[test]
+    fn tier1_discovered_enum_values_do_not_fall_through() {
+        let ds = DownloadedStatus::from(0);
+        assert_eq!(ds, DownloadedStatus::Unspecified);
+        assert_eq!(ds.raw(), 0);
+        assert_eq!(ds.to_string(), "Unspecified");
+
+        let sm = PlaylistShareMode::from(1);
+        assert_eq!(sm, PlaylistShareMode::Personalized);
+        assert_eq!(sm.raw(), 1);
+        assert_eq!(sm.to_string(), "Personalized");
+
+        let fav_most = SmartSelectionMethod::from((0x7B, 0));
+        assert_eq!(fav_most, SmartSelectionMethod::MostRecentlyFavorited);
+        assert_eq!(fav_most.to_string(), "MostRecentlyFavorited");
+
+        let fav_least = SmartSelectionMethod::from((0x7B, 1));
+        assert_eq!(fav_least, SmartSelectionMethod::LeastRecentlyFavorited);
+        assert_eq!(fav_least.to_string(), "LeastRecentlyFavorited");
     }
 }

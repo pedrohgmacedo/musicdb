@@ -111,7 +111,7 @@ pub struct TrackItemHeader {
     pub has_playback_or_bounds_activity: u8,
     /// Offset 56: Unknown byte.
     pub unk_56: Unknown<u8>,
-    /// Offset 57: Downloaded status (`1` = downloaded locally on disk, `3` = in cloud / not downloaded, `5` = no longer available in catalog).
+    /// Offset 57: Downloaded status (`0` = unspecified/legacy local track in Monterey, `1` = downloaded locally on disk, `3` = in cloud / not downloaded, `5` = no longer available in catalog).
     pub downloaded_status: u8,
     /// Offset 58: iCloud Status (`cloud_status`, Smart Playlist field `0x86`: 2 = Matched, 3 = Uploaded, 5 = Error/Ineligible, 8 = Apple Music, 9 = No Longer Available).
     pub cloud_status: u8,
