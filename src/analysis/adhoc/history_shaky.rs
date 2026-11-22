@@ -575,7 +575,10 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
                         hash_sub3 = n.custom_lyrics_hash;
                     }
                 }
-                BomaPayload::RawStringUtf8 { raw_bytes, .. } if b.subtype == 0x0036 => {
+                BomaPayload::RawStringUtf8 { raw_bytes, .. }
+                | BomaPayload::BinaryPlist { raw_bytes, .. }
+                    if b.subtype == 0x0036 =>
+                {
                     if let Ok(plist::Value::Dictionary(d)) =
                         plist::Value::from_reader(Cursor::new(raw_bytes))
                         && let Some(plist::Value::String(s)) = d.get("cloud-lyrics")

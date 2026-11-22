@@ -2252,7 +2252,9 @@ pub struct Artist {
     pub apple_music_store_artist_id: u64,
     /// Artwork UUID in `artwork.sqlite` (`iAma` offset 64..80).
     pub artwork_uuid: Option<String>,
-    /// Raw XML plist containing artist artwork URLs (`boma 0x0192`).
+    /// Decoded artist artwork URL from `boma 0x0192` XML or binary plist (`artwork-url` key).
+    pub artwork_url: Option<String>,
+    /// Raw XML plist containing artist artwork URLs (`boma 0x0192`; `None` when stored as binary `bplist00`).
     pub artwork_url_plist: Option<String>,
 }
 
@@ -3449,11 +3451,41 @@ fn apply_album_motion_artwork_plist(
     }
 }
 
-fn apply_artist_string(artist: &mut Artist, subtype: u32, val: String) {
+#[cfg(feature = "serde")]
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct ArtistArtworkPlist {
+    #[serde(rename = "artwork-url")]
+    artwork_url: LossyPlistString,
+}
+
+fn apply_artist_artwork_plist(artist: &mut Artist, raw_bytes: &[u8]) {
+    #[cfg(feature = "serde")]
+    if let Ok(parsed) = plist::from_bytes::<ArtistArtworkPlist>(raw_bytes)
+        && let Some(v) = parsed.artwork_url.0
+    {
+        artist.artwork_url.get_or_insert(v);
+    }
+
+    #[cfg(not(feature = "serde"))]
+    if let Ok(plist::Value::Dictionary(dict)) =
+        plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
+        && let Some(v) = dict.get("artwork-url").and_then(plist::Value::as_string)
+    {
+        artist.artwork_url.get_or_insert_with(|| v.to_owned());
+    }
+}
+
+fn apply_artist_string(artist: &mut Artist, subtype: u32, raw_bytes: Option<&[u8]>, val: String) {
     match subtype {
         0x0190 | 0x0004 => artist.name = Some(val),
         0x0191 => artist.sort_name = Some(val),
-        0x0192 => artist.artwork_url_plist = Some(val),
+        0x0192 => {
+            if let Some(bytes) = raw_bytes {
+                apply_artist_artwork_plist(artist, bytes);
+            }
+            artist.artwork_url_plist = Some(val);
+        }
         0x0193 => artist.cloud_artist_id = Some(val),
         _ => {}
     }
@@ -3484,8 +3516,19 @@ impl Artist {
         let mut artist = Self::from_header(&i_ama.header);
         for boma in i_ama.bomas {
             let subtype = boma.subtype;
-            if let Some(s) = boma.into_string() {
-                apply_artist_string(&mut artist, subtype, s);
+            match boma.payload {
+                BomaPayload::BinaryPlist { raw_bytes, .. } if subtype == 0x0192 => {
+                    apply_artist_artwork_plist(&mut artist, &raw_bytes);
+                }
+                BomaPayload::RawStringUtf8 { text, raw_bytes } => {
+                    apply_artist_string(&mut artist, subtype, Some(&raw_bytes), text);
+                }
+                payload => {
+                    let owned_boma = BomaSection { payload, ..boma };
+                    if let Some(s) = owned_boma.into_string() {
+                        apply_artist_string(&mut artist, subtype, None, s);
+                    }
+                }
             }
         }
         artist
@@ -3496,8 +3539,18 @@ impl From<&ArtistItem> for Artist {
     fn from(i_ama: &ArtistItem) -> Self {
         let mut artist = Self::from_header(&i_ama.header);
         for boma in &i_ama.bomas {
-            if let Some(s) = boma.as_str() {
-                apply_artist_string(&mut artist, boma.subtype, s.to_owned());
+            match &boma.payload {
+                BomaPayload::BinaryPlist { raw_bytes, .. } if boma.subtype == 0x0192 => {
+                    apply_artist_artwork_plist(&mut artist, raw_bytes);
+                }
+                BomaPayload::RawStringUtf8 { text, raw_bytes } => {
+                    apply_artist_string(&mut artist, boma.subtype, Some(raw_bytes), text.clone());
+                }
+                _ => {
+                    if let Some(s) = boma.as_str() {
+                        apply_artist_string(&mut artist, boma.subtype, None, s.to_owned());
+                    }
+                }
             }
         }
         artist
@@ -3607,6 +3660,9 @@ fn apply_track_boma(track: &mut Track, boma: &BomaSection, tz_offset_seconds: i3
                 track.book_path.clone_from(extracted_path);
             }
         }
+        BomaPayload::BinaryPlist { raw_bytes, .. } if boma.subtype == 0x0036 => {
+            apply_track_cloud_plist(track, Some(raw_bytes), None);
+        }
         BomaPayload::RawStringUtf8 { text, raw_bytes } => {
             apply_track_string_boma(track, boma.subtype, Some(raw_bytes), text.clone());
         }
@@ -3635,6 +3691,9 @@ fn apply_track_boma_owned(track: &mut Track, boma: BomaSection, tz_offset_second
             if track.book_path.is_none() {
                 track.book_path = extracted_path;
             }
+        }
+        BomaPayload::BinaryPlist { raw_bytes, .. } if subtype == 0x0036 => {
+            apply_track_cloud_plist(track, Some(&raw_bytes), None);
         }
         BomaPayload::RawStringUtf8 { text, raw_bytes } => {
             apply_track_string_boma(track, subtype, Some(&raw_bytes), text);
@@ -3848,7 +3907,7 @@ fn apply_track_string_boma(track: &mut Track, subtype: u32, raw_bytes: Option<&[
         0x0040 => &mut track.movement_name,
         0x0043 => &mut track.legacy_file_path,
         0x0036 => {
-            apply_track_cloud_plist(track, raw_bytes, val);
+            apply_track_cloud_plist(track, raw_bytes, Some(val));
             return;
         }
         other => {
@@ -3878,7 +3937,7 @@ struct TrackCloudPlist {
     lyrics_token: LossyPlistString,
 }
 
-fn apply_track_cloud_plist(track: &mut Track, raw_bytes: Option<&[u8]>, val: String) {
+fn apply_track_cloud_plist(track: &mut Track, raw_bytes: Option<&[u8]>, val: Option<String>) {
     if let Some(raw_bytes) = raw_bytes {
         #[cfg(feature = "serde")]
         if let Ok(parsed) = plist::from_bytes::<TrackCloudPlist>(raw_bytes) {
@@ -3926,10 +3985,12 @@ fn apply_track_cloud_plist(track: &mut Track, raw_bytes: Option<&[u8]>, val: Str
             }
         }
     }
-    track
-        .extra_strings
-        .entry(extra_string_key(0x0036))
-        .or_insert(val);
+    if let Some(val) = val {
+        track
+            .extra_strings
+            .entry(extra_string_key(0x0036))
+            .or_insert(val);
+    }
 }
 
 impl Playlist {
@@ -4082,7 +4143,8 @@ fn apply_playlist_boma<'a>(
             {
                 pl.name = Some(s.to_owned());
             } else if boma.subtype == 0x00CD
-                && let BomaPayload::RawStringUtf8 { raw_bytes, .. } = &boma.payload
+                && let BomaPayload::RawStringUtf8 { raw_bytes, .. }
+                | BomaPayload::BinaryPlist { raw_bytes, .. } = &boma.payload
             {
                 apply_playlist_cloud_plist(pl, raw_bytes);
             }
@@ -4111,7 +4173,10 @@ fn apply_playlist_boma_owned(
         BomaPayload::SmartPlaylistOptions(opts) => {
             *raw_smart_options = Some(opts);
         }
-        BomaPayload::RawStringUtf8 { raw_bytes, .. } if subtype == 0x00CD => {
+        BomaPayload::RawStringUtf8 { raw_bytes, .. }
+        | BomaPayload::BinaryPlist { raw_bytes, .. }
+            if subtype == 0x00CD =>
+        {
             apply_playlist_cloud_plist(pl, &raw_bytes);
         }
         payload if subtype == 0x00C8 => {
@@ -4649,7 +4714,7 @@ mod tests {
         apply_track_cloud_plist(
             &mut track,
             Some(xml),
-            String::from_utf8_lossy(xml).into_owned(),
+            Some(String::from_utf8_lossy(xml).into_owned()),
         );
         assert_eq!(
             track.cloud_album_id.as_deref(),
@@ -4667,7 +4732,11 @@ mod tests {
         let truncated =
             b"<plist version=\"1.0\"><dict><key>cloud-album-id</key><string>l.partial</string>";
         let mut partial_track = Track::default();
-        apply_track_cloud_plist(&mut partial_track, Some(truncated), "partial".to_owned());
+        apply_track_cloud_plist(
+            &mut partial_track,
+            Some(truncated),
+            Some("partial".to_owned()),
+        );
         assert_eq!(partial_track.cloud_album_id, None);
     }
 
@@ -4726,6 +4795,151 @@ mod tests {
                 extra_string_key(subtype),
                 format!("0x{subtype:04X}_{}", boma_subtype_name(subtype))
             );
+        }
+    }
+
+    fn make_binary_plist_boma(subtype: u32, dict: &plist::Dictionary) -> BomaSection {
+        let mut raw_bytes = Vec::new();
+        plist::Value::Dictionary(dict.clone())
+            .to_writer_binary(&mut raw_bytes)
+            .expect("encode binary plist");
+        BomaSection {
+            header_size: 20,
+            total_size: 20,
+            subtype,
+            unk_16_end: crate::sections::Unknown::new(crate::sections::TailBytes::from([0u8; 4])),
+            payload: BomaPayload::BinaryPlist { subtype, raw_bytes },
+        }
+    }
+
+    #[test]
+    fn binary_plist_boma_populates_track_cloud_fields() {
+        let mut dict = plist::Dictionary::new();
+        dict.insert(
+            "cloud-album-id".to_owned(),
+            plist::Value::String("l.rush-permanent-waves".to_owned()),
+        );
+        dict.insert(
+            "cloud-artist-id".to_owned(),
+            plist::Value::String("r.rush".to_owned()),
+        );
+        dict.insert(
+            "cloud-artwork-token".to_owned(),
+            plist::Value::String("tok-spirit-of-radio".to_owned()),
+        );
+        dict.insert(
+            "cloud-lyrics-token".to_owned(),
+            plist::Value::String("lyr-freewill".to_owned()),
+        );
+
+        let track_item = TrackItem {
+            header: TrackItemHeader::default(),
+            bomas: vec![
+                make_binary_plist_boma(0x0036, &dict),
+                make_binary_plist_boma(0x0038, &dict),
+            ],
+        };
+        for track in [
+            Track::from_raw_with_tz(&track_item, 0),
+            Track::from_owned_with_tz(track_item.clone(), 0),
+        ] {
+            assert_eq!(
+                track.cloud_album_id.as_deref(),
+                Some("l.rush-permanent-waves")
+            );
+            assert_eq!(track.cloud_artist_id.as_deref(), Some("r.rush"));
+            assert_eq!(
+                track.cloud_artwork_token.as_deref(),
+                Some("tok-spirit-of-radio")
+            );
+            assert_eq!(track.cloud_lyrics_token.as_deref(), Some("lyr-freewill"));
+            assert!(!track.extra_strings.contains_key("0x0036_plist_artwork"));
+            assert!(
+                !track
+                    .extra_strings
+                    .contains_key("0x0038_plist_redownload_params")
+            );
+        }
+    }
+
+    #[test]
+    fn binary_plist_boma_populates_playlist_cloud_fields() {
+        let mut dict = plist::Dictionary::new();
+        dict.insert(
+            "universal-library-id".to_owned(),
+            plist::Value::String("pl.u-rush2112".to_owned()),
+        );
+        dict.insert(
+            "cloud-artwork-url".to_owned(),
+            plist::Value::String("https://example.invalid/rush/2112.jpg".to_owned()),
+        );
+        let pl_item = PlaylistItem {
+            header: PlaylistItemHeader::default(),
+            bomas: vec![make_binary_plist_boma(0x00CD, &dict)],
+        };
+        for pl in [
+            Playlist::from(&pl_item),
+            Playlist::from_owned(pl_item.clone()),
+        ] {
+            assert_eq!(pl.universal_library_id.as_deref(), Some("pl.u-rush2112"));
+            assert_eq!(
+                pl.cloud_artwork_url.as_deref(),
+                Some("https://example.invalid/rush/2112.jpg")
+            );
+        }
+    }
+
+    #[test]
+    fn artist_0x0192_populates_artwork_url_from_binary_and_xml_plists() {
+        let mut dict = plist::Dictionary::new();
+        dict.insert(
+            "artwork-url".to_owned(),
+            plist::Value::String("https://example.invalid/rush/artist.jpg".to_owned()),
+        );
+        let art_item_bin = ArtistItem {
+            header: ArtistItemHeader::default(),
+            bomas: vec![make_binary_plist_boma(0x0192, &dict)],
+        };
+        for artist in [
+            Artist::from(&art_item_bin),
+            Artist::from_owned(art_item_bin.clone()),
+        ] {
+            assert_eq!(
+                artist.artwork_url.as_deref(),
+                Some("https://example.invalid/rush/artist.jpg")
+            );
+            assert_eq!(artist.artwork_url_plist, None);
+        }
+
+        let mut xml_bytes = Vec::new();
+        plist::Value::Dictionary(dict)
+            .to_writer_xml(&mut xml_bytes)
+            .expect("encode xml plist");
+        let xml_text = String::from_utf8(xml_bytes.clone()).expect("utf8 xml");
+        let art_item_xml = ArtistItem {
+            header: ArtistItemHeader::default(),
+            bomas: vec![BomaSection {
+                header_size: 20,
+                total_size: 20,
+                subtype: 0x0192,
+                unk_16_end: crate::sections::Unknown::new(crate::sections::TailBytes::from(
+                    [0u8; 4],
+                )),
+                payload: BomaPayload::RawStringUtf8 {
+                    text: xml_text.clone(),
+                    raw_bytes: xml_bytes,
+                },
+            }],
+        };
+        for artist in [
+            Artist::from(&art_item_xml),
+            Artist::from_owned(art_item_xml.clone()),
+        ] {
+            assert_eq!(
+                artist.artwork_url.as_deref(),
+                Some("https://example.invalid/rush/artist.jpg")
+            );
+            assert_eq!(artist.artwork_url_plist.as_deref(), Some(xml_text.as_str()));
         }
     }
 }

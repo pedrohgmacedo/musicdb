@@ -52,11 +52,14 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
                             n.subrecord_kind, n.catalog_lyrics_state
                         ));
                     }
-                    BomaPayload::RawStringUtf8 { raw_bytes, text } if b.subtype == 0x0036 => {
+                    BomaPayload::RawStringUtf8 { raw_bytes, .. }
+                    | BomaPayload::BinaryPlist { raw_bytes, .. }
+                        if b.subtype == 0x0036 =>
+                    {
                         if let Ok(val) = plist::Value::from_reader(Cursor::new(raw_bytes)) {
                             b36_desc = format!("{val:?}");
                         } else {
-                            b36_desc = format!("utf8:{text:?}");
+                            b36_desc = format!("raw({} bytes)", raw_bytes.len());
                         }
                     }
                     _ => {}
@@ -87,7 +90,8 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
             {
                 off59_3 = Some(n.catalog_lyrics_state);
             } else if b.subtype == 0x0036
-                && let BomaPayload::RawStringUtf8 { raw_bytes, .. } = &b.payload
+                && let BomaPayload::RawStringUtf8 { raw_bytes, .. }
+                | BomaPayload::BinaryPlist { raw_bytes, .. } = &b.payload
             {
                 if let Ok(plist::Value::Dictionary(dict)) =
                     plist::Value::from_reader(Cursor::new(raw_bytes))

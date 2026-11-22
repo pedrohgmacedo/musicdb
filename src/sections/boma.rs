@@ -132,7 +132,8 @@ pub enum BomaPayload {
         /// Exact raw bookmark payload bytes.
         raw_bytes: Vec<u8>,
     },
-    /// Binary property list (`bplist00`) payload (e.g., `0x0135` album motion artwork metadata).
+    /// Binary property list (`bplist00`) payload (e.g., `0x0135` album motion artwork metadata,
+    /// and format 23.x `0x0036`, `0x0038`, `0x00CD`, and `0x0192` cloud metadata plists).
     BinaryPlist {
         /// `boma` subtype identifier.
         subtype: u32,
@@ -581,6 +582,13 @@ fn parse_unstructured_boma_payload(subtype: u32, payload_bytes: Vec<u8>) -> Boma
         return build_boma_string_section(str_header, raw_slice.to_vec());
     }
 
+    if payload_bytes.starts_with(b"bplist00") {
+        return BomaPayload::BinaryPlist {
+            subtype,
+            raw_bytes: payload_bytes,
+        };
+    }
+
     // Check known Raw String subtypes
     match subtype {
         0x0036 | 0x0038 | 0x00CD | 0x0192 | 0x01FC | 0x02BC | 0x03CC => {
@@ -598,13 +606,6 @@ fn parse_unstructured_boma_payload(subtype: u32, payload_bytes: Vec<u8>) -> Boma
             };
         }
         _ => {}
-    }
-
-    if payload_bytes.starts_with(b"bplist00") {
-        return BomaPayload::BinaryPlist {
-            subtype,
-            raw_bytes: payload_bytes,
-        };
     }
 
     BomaPayload::Unknown {
@@ -696,5 +697,58 @@ mod tests {
         // Unpaired high surrogate (0xD800) followed by 'A'
         let malformed = [0x00, 0xD8, 0x41, 0x00];
         assert_eq!(decode_utf16le(&malformed), "\u{FFFD}A");
+    }
+
+    #[test]
+    fn format_23_binary_plists_parse_as_binary_plist_and_roundtrip() {
+        let mut dict = plist::Dictionary::new();
+        dict.insert(
+            "artwork-url".to_owned(),
+            plist::Value::String("https://example.invalid/rush/moving-pictures.jpg".to_owned()),
+        );
+        let mut bplist_bytes = Vec::new();
+        plist::Value::Dictionary(dict)
+            .to_writer_binary(&mut bplist_bytes)
+            .expect("encode binary plist");
+        assert!(bplist_bytes.starts_with(b"bplist00"));
+
+        let wrap_boma = |subtype: u32, payload: &[u8]| -> Vec<u8> {
+            let total_size = u32::try_from(20 + payload.len()).expect("total_size");
+            let mut buf = Vec::with_capacity(20 + payload.len());
+            buf.extend_from_slice(b"boma");
+            buf.extend_from_slice(&20u32.to_le_bytes());
+            buf.extend_from_slice(&total_size.to_le_bytes());
+            buf.extend_from_slice(&subtype.to_le_bytes());
+            buf.extend_from_slice(&[0u8; 4]);
+            buf.extend_from_slice(payload);
+            buf
+        };
+
+        for subtype in [0x0036, 0x0038, 0x00CD, 0x0192] {
+            let raw = wrap_boma(subtype, &bplist_bytes);
+            let parsed = BomaSection::read_le(&mut Cursor::new(&raw)).expect("parse boma");
+            assert!(
+                matches!(
+                    &parsed.payload,
+                    BomaPayload::BinaryPlist { subtype: s, raw_bytes }
+                        if *s == subtype && raw_bytes == &bplist_bytes
+                ),
+                "subtype {subtype:#06x} with bplist00 payload should parse as BinaryPlist, got {:?}",
+                parsed.payload
+            );
+            let mut out = Cursor::new(Vec::new());
+            parsed.write_le(&mut out).expect("write boma");
+            assert_eq!(out.into_inner(), raw);
+        }
+
+        // Legacy XML plist on 0x0036 must still parse as RawStringUtf8.
+        let xml =
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict/></plist>";
+        let raw_xml = wrap_boma(0x0036, xml);
+        let parsed_xml = BomaSection::read_le(&mut Cursor::new(&raw_xml)).expect("parse xml boma");
+        assert!(matches!(
+            parsed_xml.payload,
+            BomaPayload::RawStringUtf8 { .. }
+        ));
     }
 }

@@ -157,6 +157,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             date_cloud_synced_utc TEXT,
             apple_music_store_artist_id INTEGER NOT NULL,
             artwork_uuid TEXT,
+            artwork_url TEXT,
             artwork_url_plist TEXT
         );
 
@@ -490,8 +491,8 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             cloud_artist_id, playlist_only, suggestion_flag,
             suggestion_locally_modified, date_suggestion_flag_modified_utc,
             date_cloud_synced_utc, apple_music_store_artist_id, artwork_uuid,
-            artwork_url_plist
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            artwork_url, artwork_url_plist
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
     )?;
     for a in &lib.artists {
         stmt.execute(params![
@@ -507,6 +508,7 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             a.date_cloud_synced.map(|d| d.to_string()),
             u64_to_sqlite_i64(a.apple_music_store_artist_id),
             a.artwork_uuid,
+            a.artwork_url,
             a.artwork_url_plist,
         ])?;
     }
