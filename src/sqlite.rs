@@ -214,6 +214,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             stars INTEGER NOT NULL,
             suggestion_flag TEXT NOT NULL,
             suggestion_locally_modified INTEGER NOT NULL,
+            date_suggestion_flag_modified_utc TEXT,
             disabled INTEGER NOT NULL,
             skip_when_shuffling INTEGER NOT NULL,
             has_ever_been_played INTEGER NOT NULL,
@@ -517,10 +518,10 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "full-row 126-column SQLite track binding"
+    reason = "full-row 127-column SQLite track binding"
 )]
 fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
-    let placeholders: Vec<String> = (1..=126).map(|i| format!("?{i}")).collect();
+    let placeholders: Vec<String> = (1..=127).map(|i| format!("?{i}")).collect();
     let sql = format!(
         "INSERT INTO tracks (
             persistent_id, title, album, artist, album_artist, composer, genre,
@@ -534,7 +535,8 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             gapless_encoder_delay, gapless_encoder_padding, gapless_total_samples,
             gapless_last_eight_frames_offset, equalizer_raw, equalizer_preset_id,
             equalizer_name, star_rating, stars, suggestion_flag,
-            suggestion_locally_modified, disabled, skip_when_shuffling,
+            suggestion_locally_modified, date_suggestion_flag_modified_utc,
+            disabled, skip_when_shuffling,
             has_ever_been_played, remember_playback_position,
             show_composer_in_all_views, use_work_and_movement,
             album_is_compilation, part_of_gapless_album, playlist_only, purchased,
@@ -622,6 +624,7 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             t.stars(),
             t.suggestion_flag.to_string(),
             i32::from(t.suggestion_locally_modified),
+            t.date_suggestion_flag_modified.map(|d| d.to_string()),
             i32::from(t.disabled),
             i32::from(t.skip_when_shuffling),
             i32::from(t.has_ever_been_played),

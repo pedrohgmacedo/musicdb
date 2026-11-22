@@ -2375,6 +2375,8 @@ pub struct Track {
     pub suggestion_flag: SuggestionFlag,
     /// Whether `suggestion_flag` has the `0x0100` locally-modified bit set.
     pub suggestion_locally_modified: bool,
+    /// Timestamp when `suggestion_flag` was last modified (`itma` offset 336..340).
+    pub date_suggestion_flag_modified: Option<Timestamp>,
     /// Whether the track is unchecked/disabled (`itma` offset 42).
     pub disabled: bool,
     /// "Skip when shuffling" checkbox (`itma` offset 30).
@@ -3601,6 +3603,7 @@ impl Track {
             star_rating: h.star_rating,
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
             suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
+            date_suggestion_flag_modified: h.date_suggestion_flag_modified.to_utc(),
             disabled: h.checkbox_disabled != 0,
             skip_when_shuffling: h.checkbox_skip_when_shuffling != 0,
             has_ever_been_played: h.has_ever_been_played != 0,
@@ -4981,5 +4984,20 @@ mod tests {
         let fav_least = SmartSelectionMethod::from((0x7B, 1));
         assert_eq!(fav_least, SmartSelectionMethod::LeastRecentlyFavorited);
         assert_eq!(fav_least.to_string(), "LeastRecentlyFavorited");
+    }
+
+    #[test]
+    fn track_exposes_date_suggestion_flag_modified() {
+        let mut header = TrackItemHeader::default();
+        let unset = Track::from_header(&header);
+        assert_eq!(unset.date_suggestion_flag_modified, None);
+
+        // 2024-01-01T00:00:00Z in Apple HFS+ epoch = 1_704_067_200 + 2_082_844_800 = 3_786_912_000
+        header.date_suggestion_flag_modified = AppleTimestamp::new(3_786_912_000);
+        let set = Track::from_header(&header);
+        assert_eq!(
+            set.date_suggestion_flag_modified.map(|t| t.to_string()),
+            Some("2024-01-01T00:00:00Z".to_owned())
+        );
     }
 }
