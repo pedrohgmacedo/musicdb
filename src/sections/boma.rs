@@ -125,9 +125,9 @@ pub enum BomaPayload {
     },
     /// macOS `book` (Bookmark / Alias) structure (e.g., `0x0042`, `0x01FC`, `0x01FD`, `0x0200` on macOS).
     Book {
-        /// Extracted filesystem path from `0x0101` path components, if present.
+        /// Extracted POSIX filesystem path from TOC key `0x1004` (`kBookmarkPath`), if present.
         extracted_path: Option<String>,
-        /// All decoded string components inside the bookmark record.
+        /// Decoded UTF-8 string and URL components referenced by the bookmark TOC (`0x0101` / `0x0901`).
         components: Vec<String>,
         /// Exact raw bookmark payload bytes.
         raw_bytes: Vec<u8>,
@@ -265,47 +265,165 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes(slice))
 }
 
-fn parse_book_components(payload: &[u8]) -> (Option<String>, Vec<String>) {
-    let mut all_parts = Vec::new();
-    let mut path_parts = Vec::new();
-    let mut pos = 4usize; // skip "book"
-    while let (Some(str_len_u32), Some(marker)) = (
-        read_u32_le(payload, pos),
-        read_u32_le(payload, pos.saturating_add(4)),
-    ) {
-        let str_len = usize::try_from(str_len_u32).unwrap_or(usize::MAX);
-        let str_start = pos.saturating_add(8);
-        let str_end = str_start.saturating_add(str_len);
-        if (marker == 0x0101 || marker == 0x0901 || marker == 0x0201)
-            && (1..4096).contains(&str_len)
-            && let Some(str_bytes) = payload.get(str_start..str_end)
+const BOOK_TOC_MAGIC: u32 = 0xFFFF_FFFE;
+const BOOK_KEY_PATH: u32 = 0x1004;
+const BOOK_TYPE_STRING: u32 = 0x0101;
+const BOOK_TYPE_ARRAY: u32 = 0x0601;
+const BOOK_TYPE_URL: u32 = 0x0901;
+const MAX_BOOK_TOC_COUNT: usize = 64;
+const MAX_BOOK_ARRAY_ITEMS: usize = 1024;
+
+fn read_book_record(data_section: &[u8], rel: usize) -> Option<(u32, &[u8])> {
+    let len_u32 = read_u32_le(data_section, rel)?;
+    let data_type = read_u32_le(data_section, rel.checked_add(4)?)?;
+    let len = usize::try_from(len_u32).ok()?;
+    let start = rel.checked_add(8)?;
+    let end = start.checked_add(len)?;
+    let body = data_section.get(start..end)?;
+    Some((data_type, body))
+}
+
+fn decode_book_utf8(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?.trim_end_matches('\0');
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+fn read_book_string_array(data_section: &[u8], body: &[u8]) -> Vec<String> {
+    let mut items = Vec::new();
+    for chunk in body.as_chunks::<4>().0.iter().take(MAX_BOOK_ARRAY_ITEMS) {
+        let Ok(item_rel) = usize::try_from(u32::from_le_bytes(*chunk)) else {
+            continue;
+        };
+        if let Some((item_type, item_body)) = read_book_record(data_section, item_rel)
+            && (item_type == BOOK_TYPE_STRING || item_type == BOOK_TYPE_URL)
+            && let Some(s) = decode_book_utf8(item_body)
         {
-            let s = String::from_utf8_lossy(str_bytes)
-                .trim_end_matches('\0')
-                .to_string();
-            if !s.is_empty() {
-                all_parts.push(s.clone());
-                if marker == 0x0101 {
-                    let is_uuid = s.len() == 36 && s.chars().filter(|&c| c == '-').count() == 4;
-                    let is_protocol = s.starts_with("file:///");
-                    let is_separator = s == "/";
-                    if !is_uuid && !is_protocol && !is_separator {
-                        path_parts.push(s);
-                    }
-                }
-            }
-            let padding = (4 - (str_len % 4)) % 4;
-            pos = str_end.saturating_add(padding);
-        } else {
-            pos = pos.saturating_add(4);
+            items.push(s);
         }
     }
-    let extracted_path = if path_parts.is_empty() {
-        None
-    } else {
-        Some(path_parts.join("/"))
+    items
+}
+
+fn format_book_path(parts: &[String]) -> Option<String> {
+    let cleaned: Vec<&str> = parts
+        .iter()
+        .map(|s| s.trim_matches('/'))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if cleaned.is_empty() {
+        return parts.iter().any(|s| s == "/").then(|| "/".to_owned());
+    }
+    Some(format!("/{}", cleaned.join("/")))
+}
+
+fn parse_book_toc_entries(
+    data_section: &[u8],
+    entries_slice: &[u8],
+    path_parts: &mut Option<Vec<String>>,
+    components: &mut Vec<String>,
+) {
+    for entry in entries_slice.as_chunks::<12>().0 {
+        let Some(raw_key) = read_u32_le(entry, 0) else {
+            continue;
+        };
+        let key = raw_key & 0x7FFF_FFFF;
+        let Some(val_rel) = read_u32_le(entry, 4).and_then(|v| usize::try_from(v).ok()) else {
+            continue;
+        };
+        let Some((data_type, body)) = read_book_record(data_section, val_rel) else {
+            continue;
+        };
+        match data_type {
+            BOOK_TYPE_STRING | BOOK_TYPE_URL => {
+                if let Some(s) = decode_book_utf8(body) {
+                    if key == BOOK_KEY_PATH && path_parts.is_none() {
+                        *path_parts = Some(vec![s.clone()]);
+                    }
+                    components.push(s);
+                }
+            }
+            BOOK_TYPE_ARRAY => {
+                let strings = read_book_string_array(data_section, body);
+                if key == BOOK_KEY_PATH && path_parts.is_none() && !strings.is_empty() {
+                    *path_parts = Some(strings.clone());
+                }
+                components.extend(strings);
+            }
+            // Skip binary CFData (`0x0201`), numbers, dates, booleans, dicts, and unknown types.
+            _ => {}
+        }
+    }
+}
+
+fn parse_book_components(payload: &[u8]) -> (Option<String>, Vec<String>) {
+    if payload.get(0..4) != Some(b"book") {
+        return (None, Vec::new());
+    }
+    let Some(data_offset) = read_u32_le(payload, 12).and_then(|v| usize::try_from(v).ok()) else {
+        return (None, Vec::new());
     };
-    (extracted_path, all_parts)
+    if data_offset < 16 {
+        return (None, Vec::new());
+    }
+    let Some(data_section) = payload.get(data_offset..) else {
+        return (None, Vec::new());
+    };
+    let Some(mut toc_rel) = read_u32_le(data_section, 0).and_then(|v| usize::try_from(v).ok())
+    else {
+        return (None, Vec::new());
+    };
+
+    let mut visited_tocs = Vec::new();
+    let mut path_parts: Option<Vec<String>> = None;
+    let mut components = Vec::new();
+
+    while toc_rel != 0
+        && visited_tocs.len() < MAX_BOOK_TOC_COUNT
+        && !visited_tocs.contains(&toc_rel)
+    {
+        visited_tocs.push(toc_rel);
+        let (Some(toc_magic), Some(next_toc_rel), Some(entry_count)) = (
+            toc_rel
+                .checked_add(4)
+                .and_then(|o| read_u32_le(data_section, o)),
+            toc_rel
+                .checked_add(12)
+                .and_then(|o| read_u32_le(data_section, o))
+                .and_then(|v| usize::try_from(v).ok()),
+            toc_rel
+                .checked_add(16)
+                .and_then(|o| read_u32_le(data_section, o))
+                .and_then(|v| usize::try_from(v).ok()),
+        ) else {
+            break;
+        };
+        if toc_magic != BOOK_TOC_MAGIC {
+            break;
+        }
+        let Some(entries_slice) = toc_rel
+            .checked_add(20)
+            .and_then(|start| {
+                entry_count
+                    .checked_mul(12)
+                    .and_then(|bytes| start.checked_add(bytes))
+                    .map(|end| (start, end))
+            })
+            .and_then(|(start, end)| data_section.get(start..end))
+        else {
+            break;
+        };
+
+        parse_book_toc_entries(
+            data_section,
+            entries_slice,
+            &mut path_parts,
+            &mut components,
+        );
+        toc_rel = next_toc_rel;
+    }
+
+    let extracted_path = path_parts.and_then(|parts| format_book_path(&parts));
+    (extracted_path, components)
 }
 
 impl BinRead for BomaSection {
@@ -775,5 +893,146 @@ mod tests {
         let mut out = Cursor::new(Vec::new());
         parsed.write_le(&mut out).expect("round-trip boma");
         assert_eq!(out.into_inner(), raw);
+    }
+
+    fn append_book_record(data: &mut Vec<u8>, data_type: u32, payload: &[u8]) -> u32 {
+        let rel = u32::try_from(data.len()).expect("rel fits u32");
+        let len = u32::try_from(payload.len()).expect("len fits u32");
+        data.extend_from_slice(&len.to_le_bytes());
+        data.extend_from_slice(&data_type.to_le_bytes());
+        data.extend_from_slice(payload);
+        let pad = (4 - (payload.len() % 4)) % 4;
+        data.resize(data.len() + pad, 0);
+        rel
+    }
+
+    fn build_synthetic_rush_bookmark() -> Vec<u8> {
+        let mut data = Vec::new();
+        // Reserve 4 bytes at data_offset+0 for first_toc_rel
+        data.extend_from_slice(&0u32.to_le_bytes());
+
+        let off_users = append_book_record(&mut data, 0x0101, b"Users");
+        let off_geddy = append_book_record(&mut data, 0x0101, b"geddy");
+        // Stored once in data pool and referenced twice by the 0x1004 path array!
+        let off_music = append_book_record(&mut data, 0x0101, b"Music");
+        let off_rush = append_book_record(&mut data, 0x0101, b"Rush");
+        let off_uuid_dir =
+            append_book_record(&mut data, 0x0101, b"12345678-1234-1234-1234-1234567890ab");
+        let off_song = append_book_record(&mut data, 0x0101, b"01 Tom Sawyer.m4a");
+        let off_vol_name = append_book_record(&mut data, 0x0101, b"Macintosh HD");
+        let off_vol_url = append_book_record(&mut data, 0x0901, b"file:///");
+        let off_bin_blob =
+            append_book_record(&mut data, 0x0201, &[0xFF, 0xFE, 0x80, 0x81, 0x00, 0x42]);
+
+        let mut path_array_bytes = Vec::new();
+        for off in [
+            off_users,
+            off_geddy,
+            off_music,
+            off_music,
+            off_rush,
+            off_uuid_dir,
+            off_song,
+        ] {
+            path_array_bytes.extend_from_slice(&off.to_le_bytes());
+        }
+        let off_path_array = append_book_record(&mut data, 0x0601, &path_array_bytes);
+
+        let toc_rel = u32::try_from(data.len()).expect("toc_rel fits u32");
+        data[0..4].copy_from_slice(&toc_rel.to_le_bytes());
+
+        let entries: &[(u32, u32)] = &[
+            (0x1004, off_path_array),
+            (0x2005, off_vol_url),
+            (0x2010, off_vol_name),
+            (0xF020, off_bin_blob),
+        ];
+        let toc_size = u32::try_from(12 + entries.len() * 12).expect("toc_size");
+        data.extend_from_slice(&toc_size.to_le_bytes());
+        data.extend_from_slice(&0xFFFF_FFFEu32.to_le_bytes()); // TOC magic
+        data.extend_from_slice(&1u32.to_le_bytes()); // toc_id
+        data.extend_from_slice(&0u32.to_le_bytes()); // next_toc_rel = 0
+        data.extend_from_slice(&u32::try_from(entries.len()).unwrap().to_le_bytes());
+        for &(key, val_rel) in entries {
+            data.extend_from_slice(&key.to_le_bytes());
+            data.extend_from_slice(&val_rel.to_le_bytes());
+            data.extend_from_slice(&0u32.to_le_bytes());
+        }
+
+        let header_size = 48usize;
+        let total_len = u32::try_from(header_size + data.len()).expect("total_len");
+        let mut blob = vec![0u8; header_size];
+        blob[0..4].copy_from_slice(b"book");
+        blob[4..8].copy_from_slice(&total_len.to_le_bytes());
+        blob[8..12].copy_from_slice(&0x1004_0000u32.to_le_bytes());
+        blob[12..16].copy_from_slice(&u32::try_from(header_size).unwrap().to_le_bytes());
+        blob.extend_from_slice(&data);
+        blob
+    }
+
+    #[test]
+    fn book_toc_parser_extracts_path_with_deduped_components_and_uuid_folder() {
+        let blob = build_synthetic_rush_bookmark();
+        let total_size = u32::try_from(20 + blob.len()).expect("total_size");
+        let mut raw = Vec::with_capacity(20 + blob.len());
+        raw.extend_from_slice(b"boma");
+        raw.extend_from_slice(&20u32.to_le_bytes());
+        raw.extend_from_slice(&total_size.to_le_bytes());
+        raw.extend_from_slice(&0x0042u32.to_le_bytes());
+        raw.extend_from_slice(&[0u8; 4]);
+        raw.extend_from_slice(&blob);
+
+        let parsed = BomaSection::read_le(&mut Cursor::new(&raw)).expect("parse book boma");
+        let BomaPayload::Book {
+            extracted_path,
+            components,
+            raw_bytes,
+        } = &parsed.payload
+        else {
+            panic!("expected BomaPayload::Book, got {:?}", parsed.payload);
+        };
+        assert_eq!(
+            extracted_path.as_deref(),
+            Some(
+                "/Users/geddy/Music/Music/Rush/12345678-1234-1234-1234-1234567890ab/01 Tom Sawyer.m4a"
+            )
+        );
+        assert!(
+            components.iter().all(|c| !c.contains('\u{FFFD}')),
+            "binary 0x0201 CFData must not leak replacement chars into components: {components:?}"
+        );
+        assert!(
+            components.iter().filter(|c| c.as_str() == "Music").count() == 2,
+            "deduplicated path component 'Music' should appear twice: {components:?}"
+        );
+        assert_eq!(raw_bytes, &blob);
+
+        let mut out = Cursor::new(Vec::new());
+        parsed.write_le(&mut out).expect("round-trip book boma");
+        assert_eq!(out.into_inner(), raw);
+    }
+
+    #[test]
+    fn book_toc_parser_handles_malformed_and_cyclic_inputs_without_panicking() {
+        // 1. Minimal truncated header
+        assert_eq!(parse_book_components(b"book\0\0\0\0"), (None, Vec::new()));
+
+        // 2. Out-of-bounds data_offset
+        let mut oob_data = vec![0u8; 20];
+        oob_data[0..4].copy_from_slice(b"book");
+        oob_data[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(parse_book_components(&oob_data), (None, Vec::new()));
+
+        // 3. Self-referential cyclic TOC with huge entry_count
+        let mut cyclic = vec![0u8; 48];
+        cyclic[0..4].copy_from_slice(b"book");
+        cyclic[12..16].copy_from_slice(&48u32.to_le_bytes());
+        cyclic.extend_from_slice(&4u32.to_le_bytes()); // first_toc_rel = 4
+        cyclic.extend_from_slice(&12u32.to_le_bytes()); // toc_size
+        cyclic.extend_from_slice(&0xFFFF_FFFEu32.to_le_bytes()); // magic
+        cyclic.extend_from_slice(&0u32.to_le_bytes()); // toc_id
+        cyclic.extend_from_slice(&4u32.to_le_bytes()); // next_toc_rel = 4 (cycle!)
+        cyclic.extend_from_slice(&u32::MAX.to_le_bytes()); // absurd entry_count
+        assert_eq!(parse_book_components(&cyclic), (None, Vec::new()));
     }
 }
