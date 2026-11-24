@@ -50,7 +50,7 @@ Much of the existing code predates these rules.
 
 ### Parsing and safety
 - No `unwrap`, `expect`, `panic!`, `unreachable!` or `todo!` on any path that touches input data. No slice indexing (`buf[a..b]`) on input-derived bounds. Use `get(..)`, `split_at_checked`, `binrw` or a checked helper.
-- **Check the length before allocating.** Check every length or count against the bytes actually left in the stream *before* `vec![0; n]`, `Vec::with_capacity(n)` or `#[br(count = n)]`. Use `checked_add`/`checked_sub` for arithmetic on offsets.
+- **Check the length before allocating.** Check every length or count against the bytes actually left in the stream *before* `vec![0; n]`, `Vec::with_capacity(n)` or `#[br(count = n)]`. Use `checked_add`/`checked_sub` for arithmetic on offsets, and avoid unchecked negation or overflow on signed untrusted integers (e.g. use `unsigned_abs()` / `checked_*` instead of `-x` on `i32`/`i64`).
 - No silent narrowing casts. Use `u64::from(x)` to widen and `usize::try_from(x)?` / `u32::try_from(x)?` to narrow. A bare `as` is only acceptable where the conversion is obviously lossless and a comment says so.
 - Reject `header_size` values below a structure's minimum. Don't hide them with `saturating_sub`.
 - Decompression must have an output size limit.
@@ -67,13 +67,13 @@ Much of the existing code predates these rules.
 ### Public API design (Rust API Guidelines)
 - **Every public struct and enum is `#[non_exhaustive]`** (except 1-field newtype wrappers such as `PersistentId`, `ParsePersistentIdError`, `Unknown<T>`, and `AppleTimestamp`). Read-only domain records (`Track`, `Album`, `Artist`, `Playlist`, `LibraryMetadata`) may expose `pub` data fields for ergonomic access and pattern matching (`#[non_exhaustive]` prevents external struct-literal construction), while container internals (such as `Library` indexes) stay private behind methods. Derived or computed values (`stars()`, `flags()`, `raw()`) are methods, not fields.
 - **Undecoded binary fields & format newtypes in `src/sections/`:**
-  - Wrap undecoded binary fields in `Unknown<T>` (never bare `u8`/`u32`/`[u8; N]`/`Vec<u8>`) and register every one in that struct's `VisitUnknowns` impl via `visit_unknowns!`. Use `Unknown<TailBytes>` for hot per-item variable-length header tails and `Unknown<Vec<u8>>` for rare once-per-section tails. Split partially-decoded byte arrays cleanly into known fields plus `Unknown<T>` rather than leaving known flags inside `Unknown<[u8; N]>`.
-  - Use `AppleTimestamp` for 32-bit Apple epoch timestamp fields in `src/sections/`, and use `SectionKind` for `hsma` section filtering and dispatch.
+  - Wrap undecoded binary fields in `Unknown<T>` (never bare `u8`/`u32`/`[u8; N]`/`Vec<u8>`) and register every one in that struct's `VisitUnknowns` impl via `visit_unknowns!`. Use `Unknown<TailBytes>` for hot per-item variable-length header tails and `Unknown<Vec<u8>>` for rare once-per-section tails. Split partially-decoded byte arrays cleanly into known fields plus `Unknown<T>` rather than leaving known flags inside `Unknown<[u8; N]>`. Never dereference `Unknown<T>` fields (`*h.unk_*`) in `model.rs` or `sqlite.rs` — promote the field out of `Unknown<T>` first once its semantics are verified.
+  - Use `AppleTimestamp` for 32-bit Apple epoch timestamp fields in `src/sections/`, and use `SectionKind` for `hsma` section filtering and dispatch. Never chain `Option<AppleTimestamp>` fields with `.or()` before converting via `.and_then(AppleTimestamp::to_utc)`, since `Some(AppleTimestamp(0))` is `Some` and silently shadows the fallback.
   - `VisitUnknowns` / `UnknownVisitor` format introspection belongs in `src/sections/`, while `analysis` reports stay CLI-only.
 - **Be careful with what you make `pub`.** Helpers, serde `with` modules and research utilities are `pub(crate)`. Everything `pub` falls under semver.
 - **Don't put dependency types in public domain signatures** (e.g. `plist::Value`) without asking. In `MusicDbError`, existing `#[from]`/`#[source]` wrappers for `binrw::Error`, `plist::Error` and `#[cfg(feature = "sqlite")] rusqlite::Error` are acceptable while on `0.x`; ask before exposing any new dependency error type publicly.
 - **Use newtypes for identifiers:** persistent IDs are a `PersistentId(u64)` with `Display`/`FromStr` as 16-digit uppercase hex, not a `String` and a `u64` side by side.
-- **Name types after what they mean.** Put the 4-character file magic in the doc comment (`/// Album record (`iAma`).`). **Never** add type names that differ from another type only by letter case. They collide on case-insensitive file systems (macOS/Windows), and rustdoc output breaks.
+- **Name types after what they mean.** Put the 4-character file magic in the doc comment (`/// Album record (`iama`).`). **Never** add type names that differ from another type only by letter case. They collide on case-insensitive file systems (macOS/Windows), and rustdoc output breaks.
 - **Use standard conversion traits:** `From`/`TryFrom`/`FromStr`/`Display` instead of ad-hoc `parse`/`from_raw`/`to_string` methods. Don't name safe constructors `from_raw`; in Rust that name means raw pointers.
 - **Implement the common traits** on public types where they make sense: `Debug`, `Clone`, `PartialEq`, `Eq`, `Hash`, `Default`. Enums shown to users implement `Display`. **Never use `{:?}` output as data** (in SQLite, JSON keys, or anything stored).
 - **Return iterators, not `Vec`s:** `impl Iterator<Item = &Track> + '_` instead of `Vec<&Track>`.
@@ -101,7 +101,8 @@ Much of the existing code predates these rules.
 - Aim for procedural functions under ~80 lines. Split large control-flow `match` arms and long mapping code into named helpers. Flat 1-to-1 lookup tables (such as format-ID-to-enum `match` tables) and full-row SQL column bindings may use a local `#[expect(clippy::too_many_lines, reason = "...")]` when splitting them would hurt readability.
 - Use `#[derive(Default)]` and `..Default::default()` instead of initializing dozens of fields by hand.
 - SQL `INSERT` statements always list their column names.
-- When writing output files, write to a temporary file in the same directory and `rename` on success. Finish encoders explicitly (`GzEncoder::finish()`); never rely on `Drop` to flush.
+- Keep format lookup tables (such as smart playlist selection methods or field names) single-sourced or covered by parity tests so `src/sections/` and `src/model.rs` cannot drift.
+- When writing output files, write to a temporary sibling file in the same directory and `rename` on success. Include both PID and an atomic sequence counter in the temporary filename (e.g. `.{name}.{pid}.{seq}.tmp`) so concurrent calls cannot collide. Finish encoders explicitly (`GzEncoder::finish()`); never rely on `Drop` to flush.
 
 ## CLI rules (`src/main.rs` and CLI-only modules)
 - One function per subcommand (`fn run_info(args) -> anyhow::Result<()>`). `main` only parses arguments and dispatches.
@@ -114,6 +115,7 @@ Much of the existing code predates these rules.
 - **Never commit real Apple Music libraries or anything derived from them.** They contain personal data (purchaser names and emails, account IDs). Build fixtures **synthetically** in code (see the synthetic round-trip test in `src/lib.rs`).
 - **Synthetic test fixtures must use Rush metadata.** All synthetic corpus/library tests and fixtures must use examples related to the band Rush and its albums/songs where applicable.
 - Tests against the private corpus (`MUSICDB_CORPUS_DIR`) intentionally return early when it isn't present. **Keep that behavior.** Don't remove these tests or make them fail without the corpus.
+- **Do not test against or file issues from `corpus/libraries-music-samples/`.** Those third-party sample files have unproven provenance and may contain unverifiable errors or corruptions. Never add or run tests targeting `corpus/libraries-music-samples/`, and do not investigate, report, or work around issues that only appear in `corpus/libraries-music-samples/`. Restrict real-corpus testing and reverse-engineering verification to captured libraries and controlled mutation snapshots under `corpus/library-data/` and `corpus/snapshots/`.
 - **Every bug fix comes with a regression test.** For parser bugs, add the minimal malformed byte sequence as a test.
 - **Confirm new tests fail before applying the fix.** After writing a new test, run it against the old code first to verify the test hypothesis fails for the expected reason; only then apply the fix and verify it passes.
 - Use `tempfile::tempdir()` for filesystem tests. Never use fixed paths in `/tmp` or `std::env::temp_dir()`.
@@ -169,5 +171,6 @@ Run `cargo deny check` after adding, removing or updating any dependency. The ad
 - Don't make `pub` things that only tests or the CLI need.
 - Don't catch-all-and-ignore errors to make a feature "work".
 - Don't change the corpus-test skip behavior or commit corpus files.
+- Don't run tests against `corpus/libraries-music-samples/` or report/chase issues that only appear there.
 - Don't loosen lint, clippy or deny configuration to get a green build.
 - Don't claim something is verified unless you actually ran the command and saw it pass.

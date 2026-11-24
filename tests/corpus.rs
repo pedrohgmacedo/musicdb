@@ -4,9 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use musicdb::{
-    CloudStatus, DistinguishedPlaylistKind, Library, SmartLimitUnit, SmartSelectionMethod,
-};
+use musicdb::{DistinguishedPlaylistKind, Library, SmartLimitUnit, SmartSelectionMethod};
 
 /// Resolves a path inside the local test corpus directory (`MUSICDB_CORPUS_DIR` if set,
 /// otherwise the parent workspace directory of `CARGO_MANIFEST_DIR`).
@@ -103,34 +101,6 @@ fn test_historical_bundles_and_sidecar_plists() {
         .expect("Playlist_120cfe21fe026f37.plist loaded");
     assert_eq!(r_vp.view_as.as_deref(), Some("Albums"));
     assert_eq!(r_vp.sort_field.as_deref(), Some("Album"));
-}
-
-#[test]
-fn test_macos_monterey_and_sequoia_samples() {
-    let monterey = corpus_path("libraries-music-samples/Monterey/SmallerLibrary.musicdb");
-    if monterey.exists() {
-        let lib = Library::open(&monterey).expect("open Monterey SmallerLibrary.musicdb");
-        assert_eq!(lib.tracks.len(), 745);
-        assert_eq!(lib.albums.len(), 606);
-        assert_eq!(lib.artists.len(), 421);
-        assert_eq!(lib.playlists.len(), 6);
-        assert_eq!(lib.tracks[0].cloud_status, CloudStatus::LocalOnly);
-    }
-
-    let sequoia = corpus_path("libraries-music-samples/Sequoia/MiniLibraryV5.musicdb");
-    if sequoia.exists() {
-        let lib = Library::open(&sequoia).expect("open Sequoia MiniLibraryV5.musicdb");
-        assert_eq!(lib.tracks.len(), 6);
-        assert_eq!(lib.albums.len(), 1);
-        assert_eq!(lib.artists.len(), 1);
-        assert_eq!(lib.playlists.len(), 12);
-        let genius = lib.playlist_by_name("Genius").expect("Genius playlist");
-        assert_eq!(genius.system_kind, DistinguishedPlaylistKind::Genius);
-        let tv = lib
-            .playlist_by_name("Séries et films")
-            .expect("Séries et films playlist");
-        assert_eq!(tv.system_kind, DistinguishedPlaylistKind::TvAndMovies);
-    }
 }
 
 #[test]
