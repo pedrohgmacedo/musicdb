@@ -207,7 +207,7 @@ pub struct TrackItemHeader {
     pub album_artist_sort_order: u32,
     /// Offset 304..308: Album artist or artist sort order index (multiple of 1000).
     pub album_artist_or_artist_sort_order: u32,
-    /// Offset 308..312: Artwork source kind in `artwork.sqlite` (`item_to_artwork.source_kind`; 6 = Local Embedded Artwork, 12 = Apple Music Catalog Artwork, 13 = Cloud Uploaded/Matched Artwork).
+    /// Offset 308..312: Artwork source kind in `artwork.sqlite` (`item_to_artwork.source_kind`; 6 = Local Embedded Artwork, 12 = Apple Music Catalog Artwork, 13 = Subscribed Catalog Playlist Track Artwork).
     pub artwork_source_kind: u32,
     /// Offset 312..320: Unknown 8 bytes (64-bit artwork content hash / persistent ID on macOS; 0 on Windows).
     pub unk_312_320: Unknown<u64>,

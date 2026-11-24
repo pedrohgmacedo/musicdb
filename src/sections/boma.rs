@@ -469,7 +469,7 @@ fn parse_boma_string_header(bytes: &[u8], payload_len: usize) -> Option<(u32, u3
     let string_byte_len = read_u32_le(bytes, 4)?;
     let parent_subtype_counter = read_u32_le(bytes, 8)?;
     let unk_12 = read_u32_le(bytes, 12)?;
-    if (encoding == 1 || encoding == 2)
+    if (encoding == 2 || (encoding == 1 && string_byte_len.is_multiple_of(2)))
         && usize::try_from(string_byte_len)
             .ok()
             .and_then(|n| n.checked_add(16))
@@ -750,5 +750,30 @@ mod tests {
             parsed_xml.payload,
             BomaPayload::RawStringUtf8 { .. }
         ));
+    }
+
+    #[test]
+    fn odd_length_utf16le_header_is_not_parsed_as_string_section() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u32.to_le_bytes()); // encoding = 1 (UTF-16LE)
+        payload.extend_from_slice(&5u32.to_le_bytes()); // odd byte length (invalid UTF-16LE)
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(b"Rush!");
+
+        let total_size = u32::try_from(20 + payload.len()).expect("total_size");
+        let mut raw = Vec::with_capacity(20 + payload.len());
+        raw.extend_from_slice(b"boma");
+        raw.extend_from_slice(&20u32.to_le_bytes());
+        raw.extend_from_slice(&total_size.to_le_bytes());
+        raw.extend_from_slice(&0x0099u32.to_le_bytes());
+        raw.extend_from_slice(&[0u8; 4]);
+        raw.extend_from_slice(&payload);
+
+        let parsed = BomaSection::read_le(&mut Cursor::new(&raw)).expect("parse boma");
+        assert!(matches!(parsed.payload, BomaPayload::Unknown { .. }));
+        let mut out = Cursor::new(Vec::new());
+        parsed.write_le(&mut out).expect("round-trip boma");
+        assert_eq!(out.into_inner(), raw);
     }
 }

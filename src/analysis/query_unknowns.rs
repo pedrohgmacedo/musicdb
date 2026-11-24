@@ -263,6 +263,8 @@ const CANONICAL_SECTIONS: &[&str] = &[
     "SLst",
     "SmartPlaylistRule",
     "SmartPlaylistRuleArguments",
+    "DCma",
+    "dCma",
     "Lsma",
     "isma",
     "boma::str",
@@ -383,6 +385,18 @@ const STRUCT_ALIASES: &[AliasMapping] = &[
     AliasMapping {
         alias: "SmartPlaylistRuleArguments",
         sections: &["SmartPlaylistRuleArguments"],
+    },
+    AliasMapping {
+        alias: "CloudDeletionListHeader",
+        sections: &["DCma"],
+    },
+    AliasMapping {
+        alias: "CloudDeletionListSection",
+        sections: &["DCma"],
+    },
+    AliasMapping {
+        alias: "CloudDeletionItem",
+        sections: &["dCma"],
     },
     AliasMapping {
         alias: "SocialProfileListHeader",
@@ -1708,6 +1722,50 @@ fn walk_social_profile_list(
     }
 }
 
+fn walk_cloud_deletion_list(
+    dcma: &musicdb::sections::CloudDeletionListSection,
+    lib_allowed: bool,
+    collector: &mut Collector<'_>,
+) {
+    if !lib_allowed {
+        return;
+    }
+    visit_header_with_key(&dcma.header, "DCma", EntityKey::Library, None, collector);
+    for (i, item) in dcma.items.iter().enumerate() {
+        let sub = format!("dCma[{i}] saga_id={}", item.cloud_saga_id);
+        visit_header_with_key(item, "dCma", EntityKey::Library, Some(&sub), collector);
+    }
+}
+
+fn walk_unknown_hsma_child(
+    hsma_idx: usize,
+    subtype: u32,
+    kind: musicdb::SectionKind,
+    signature: [u8; 4],
+    raw_bytes: &[u8],
+    collector: &mut Collector<'_>,
+) {
+    let field_name = format!("unknown_child_{subtype}");
+    let sub = format!(
+        "hsma[{hsma_idx}] kind={kind} sig={}",
+        hex::encode(signature)
+    );
+    collector.record_field(
+        FieldVisitMeta {
+            section: "hsma",
+            field_name: &field_name,
+            span: UnknownSpan::Tail {
+                start: 0,
+                len: raw_bytes.len(),
+            },
+            entity_key: EntityKey::Library,
+            subcontext: Some(&sub),
+            is_zero: raw_bytes.iter().all(|&b| b == 0),
+        },
+        || format!("{} ({} bytes)", hex::encode(raw_bytes), raw_bytes.len()),
+    );
+}
+
 fn walk_raw_library(raw: &RawLibraryFile, collector: &mut Collector<'_>) {
     let lib_allowed = collector
         .entity_filter
@@ -1758,6 +1816,9 @@ fn walk_raw_library(raw: &RawLibraryFile, collector: &mut Collector<'_>) {
             HsmaChild::PlaylistList(playlists) => {
                 walk_playlist_list(playlists, lib_allowed, collector);
             }
+            HsmaChild::PendingCloudDeletions(dcma) => {
+                walk_cloud_deletion_list(dcma, lib_allowed, collector);
+            }
             HsmaChild::SocialProfileList(lsma) => {
                 walk_social_profile_list(lsma, lib_allowed, collector);
             }
@@ -1766,26 +1827,16 @@ fn walk_raw_library(raw: &RawLibraryFile, collector: &mut Collector<'_>) {
                 signature,
                 raw_bytes,
             } if lib_allowed => {
-                let field_name = format!("unknown_child_{}", hsma.header.subtype);
-                let sub = format!(
-                    "hsma[{hsma_idx}] kind={kind} sig={}",
-                    hex::encode(signature)
-                );
-                collector.record_field(
-                    FieldVisitMeta {
-                        section: "hsma",
-                        field_name: &field_name,
-                        span: UnknownSpan::Tail {
-                            start: 0,
-                            len: raw_bytes.len(),
-                        },
-                        entity_key: EntityKey::Library,
-                        subcontext: Some(&sub),
-                        is_zero: raw_bytes.iter().all(|&b| b == 0),
-                    },
-                    || format!("{} ({} bytes)", hex::encode(raw_bytes), raw_bytes.len()),
+                walk_unknown_hsma_child(
+                    hsma_idx,
+                    hsma.header.subtype,
+                    *kind,
+                    *signature,
+                    raw_bytes,
+                    collector,
                 );
             }
+            // Filtered-out library-level sections, `HsmaChild::Skipped`, or future `#[non_exhaustive]` variants.
             _ => {}
         }
     }
@@ -3335,5 +3386,69 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(empty_err.contains("missing a search query"));
+    }
+
+    #[test]
+    fn query_unknowns_walks_pending_cloud_deletions_dcma() {
+        use binrw::BinRead;
+        use musicdb::sections::HsmaSection;
+        use std::io::Cursor;
+
+        let mut raw = build_synthetic_raw_library();
+        // Build a valid hsma(subtype=8) wrapping DCma (16 B) + 1 dCma item (24 B)
+        let mut child_bytes = Vec::new();
+        child_bytes.extend_from_slice(b"DCma");
+        child_bytes.extend_from_slice(&16u32.to_le_bytes()); // header_size
+        child_bytes.extend_from_slice(&1u32.to_le_bytes()); // item_count
+        child_bytes.extend_from_slice(&1u32.to_le_bytes()); // unk_12_end (4 B)
+        child_bytes.extend_from_slice(b"dCma");
+        child_bytes.extend_from_slice(&24u32.to_le_bytes()); // section_size
+        child_bytes.extend_from_slice(&2112u64.to_le_bytes()); // cloud_saga_id
+        child_bytes.push(0); // deletion_kind
+        child_bytes.push(2); // unk_17
+        child_bytes.extend_from_slice(&[0, 0]); // unk_18_20
+        child_bytes.extend_from_slice(&1u32.to_le_bytes()); // unk_20
+
+        let total_size = u64::try_from(56 + child_bytes.len()).unwrap();
+        let mut hsma_bytes = Vec::new();
+        hsma_bytes.extend_from_slice(b"hsma");
+        hsma_bytes.extend_from_slice(&56u32.to_le_bytes());
+        hsma_bytes.extend_from_slice(&0u32.to_le_bytes());
+        hsma_bytes.extend_from_slice(&8u32.to_le_bytes()); // subtype 8 = PendingCloudDeletions
+        hsma_bytes.extend_from_slice(&total_size.to_le_bytes());
+        hsma_bytes.extend_from_slice(&[0u8; 32]);
+        hsma_bytes.extend_from_slice(&child_bytes);
+
+        let hsma = HsmaSection::read_le(&mut Cursor::new(hsma_bytes)).expect("parse hsma DCma");
+        raw.sections.push(hsma);
+
+        let item_report = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                field: Some("dCma.unk_17".into()),
+                ..Default::default()
+            },
+        )
+        .expect("query dCma.unk_17");
+        let QueryResults::GroupedByValue { fields } = item_report.results else {
+            panic!("expected GroupedByValue");
+        };
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].section, "dCma");
+        assert_eq!(fields[0].matched_instances, 1);
+
+        let alias_report = query_unknowns(
+            &raw,
+            &QueryUnknownsOptions {
+                field: Some("CloudDeletionListHeader.unk_12_end".into()),
+                ..Default::default()
+            },
+        )
+        .expect("query CloudDeletionListHeader.unk_12_end");
+        let QueryResults::GroupedByValue { fields: hdr_fields } = alias_report.results else {
+            panic!("expected GroupedByValue");
+        };
+        assert_eq!(hdr_fields.len(), 1);
+        assert_eq!(hdr_fields[0].section, "DCma");
     }
 }

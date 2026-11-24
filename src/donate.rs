@@ -64,58 +64,12 @@ fn is_regular_dir_no_symlink(path: &Path) -> bool {
 /// or a direct path to `Library.musicdb`).
 #[must_use]
 pub(crate) fn find_musiclibrary_bundle(path: &Path) -> Option<PathBuf> {
-    if path.is_file() {
-        if path.file_name().and_then(|s| s.to_str()) == Some("Library.musicdb") {
-            return path.parent().map(Path::to_path_buf);
-        }
-        return None;
+    let resolved = musicdb::RawLibraryFile::resolve_musicdb_path(path);
+    if resolved.is_file()
+        && resolved.file_name().and_then(|s| s.to_str()) == Some("Library.musicdb")
+    {
+        return resolved.parent().map(Path::to_path_buf);
     }
-    if !path.is_dir() {
-        return None;
-    }
-
-    // 1. `path` itself is a `.musiclibrary` bundle containing `Library.musicdb`
-    if path.join("Library.musicdb").is_file() {
-        return Some(path.to_path_buf());
-    }
-
-    // 2. Well-known Windows and macOS relative locations under `path`
-    let well_known = [
-        path.join("Apple Music Library.musiclibrary"),
-        path.join("Music Library.musiclibrary"),
-        path.join("Apple Music")
-            .join("Apple Music Library.musiclibrary"),
-        path.join("Music").join("Music Library.musiclibrary"),
-    ];
-    for candidate in well_known {
-        if candidate.join("Library.musicdb").is_file() {
-            return Some(candidate);
-        }
-    }
-
-    // 3. Scan direct subdirectories for any `*.musiclibrary` or folder containing `Library.musicdb`
-    // Best-effort discovery: ignore unreadable directory entries during auto-discovery.
-    if let Ok(entries) = fs::read_dir(path) {
-        let mut subdirs = Vec::new();
-        for entry_res in entries {
-            if let Ok(entry) = entry_res
-                && entry.file_type().is_ok_and(|ft| ft.is_dir())
-            {
-                subdirs.push(entry.path());
-            }
-        }
-        subdirs.sort();
-        for dir in subdirs {
-            let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if name == "Previous Libraries" || name == "Media" || name == "Media.localized" {
-                continue;
-            }
-            if dir.join("Library.musicdb").is_file() {
-                return Some(dir);
-            }
-        }
-    }
-
     None
 }
 
@@ -340,6 +294,7 @@ pub(crate) fn package_donated_previous_libraries(
 }
 
 fn temp_sibling_path(output_archive: &Path) -> PathBuf {
+    static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let parent = output_archive
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -349,7 +304,8 @@ fn temp_sibling_path(output_archive: &Path) -> PathBuf {
         .and_then(|s| s.to_str())
         .unwrap_or("archive.tar");
     let pid = std::process::id();
-    parent.join(format!(".{file_name}.{pid}.tmp"))
+    let seq = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    parent.join(format!(".{file_name}.{pid}.{seq}.tmp"))
 }
 
 fn with_tar_builder_atomic<F>(output_archive: &Path, mut f: F) -> Result<()>

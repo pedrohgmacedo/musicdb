@@ -86,7 +86,7 @@ pub struct PlaylistItemHeader {
     pub is_master_playlist: u8,
     /// Offset 45: Unknown byte.
     pub unk_45: Unknown<u8>,
-    /// Offset 46..48: Folder smart-backing flag (`0x0100` exclusively on playlist folders `is_folder == 1`, which Apple Music backs with smart-playlist rules matching child playlists; `0` otherwise).
+    /// Offset 46..48: Legacy folder flag (`0x0100` observed on older July 2023 playlist folders, `0x0000` on newer folders and non-folders).
     pub unk_46_smart_flag: Unknown<u16>,
     /// Offset 48: Unknown byte.
     pub unk_48: Unknown<u8>,
@@ -787,6 +787,8 @@ impl SmartPlaylistOptions {
             (0x1A, _) => "least recently played",
             (0x1C, 0) => "highest rating",
             (0x1C, _) => "lowest rating",
+            (0x7B, 0) => "most recently favorited",
+            (0x7B, _) => "least recently favorited",
             _ => "unknown_selection_method",
         }
     }
@@ -878,5 +880,27 @@ impl SmartPlaylistRule {
             (SmartOperatorFlags::IN_THE_LAST, _, true) => "is not in the last",
             _ => "unknown_comparison",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_method_name_covers_favorited_0x7b() {
+        let most = SmartPlaylistOptions {
+            limit_selection_method: 0x7B,
+            negate_limit_selection_method: 0,
+            ..Default::default()
+        };
+        assert_eq!(most.selection_method_name(), "most recently favorited");
+
+        let least = SmartPlaylistOptions {
+            limit_selection_method: 0x7B,
+            negate_limit_selection_method: 1,
+            ..Default::default()
+        };
+        assert_eq!(least.selection_method_name(), "least recently favorited");
     }
 }

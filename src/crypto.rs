@@ -234,11 +234,37 @@ pub fn compress_and_encrypt_bytes(raw_bytes: &[u8], key: &[u8; 16]) -> Result<Ve
     if let Some(file_size_slot) = out.get_mut(8..12) {
         file_size_slot.copy_from_slice(&new_file_size.to_le_bytes());
     }
-    if (env.major_version >= 23 || read_u32_le(header, 128).unwrap_or(0) != 0)
+    if header_size >= 132
+        && (env.major_version >= 23 || read_u32_le(header, 128).unwrap_or(0) != 0)
         && let Some(mirror_slot) = out.get_mut(128..132)
     {
         mirror_slot.copy_from_slice(&new_file_size.to_le_bytes());
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compress_and_encrypt_format_23_short_header_does_not_corrupt_payload() {
+        let header_size = 92u32;
+        let mut raw = vec![0u8; header_size as usize];
+        raw[0..4].copy_from_slice(b"hfma");
+        raw[4..8].copy_from_slice(&header_size.to_le_bytes());
+        raw[12..14].copy_from_slice(&23u16.to_le_bytes());
+        raw[84..88].copy_from_slice(&4096u32.to_le_bytes());
+        // Enough non-trivial inner bytes so compressed payload spans across byte offset 128..132.
+        let payload = b"Rush - Moving Pictures (1981): Tom Sawyer, Red Barchetta, YYZ, Limelight, The Camera Eye, Witch Hunt, Vital Signs.";
+        raw.extend_from_slice(payload);
+
+        let encrypted =
+            compress_and_encrypt_bytes(&raw, DEFAULT_MUSICDB_KEY).expect("compress and encrypt");
+        assert!(encrypted.len() >= 132);
+        let decrypted =
+            decrypt_and_decompress_bytes(&encrypted, DEFAULT_MUSICDB_KEY).expect("decrypt");
+        assert_eq!(decrypted[header_size as usize..], payload[..]);
+    }
 }

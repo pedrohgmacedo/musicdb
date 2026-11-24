@@ -2558,6 +2558,8 @@ pub struct Playlist {
     pub suggestion_flag: SuggestionFlag,
     /// Whether `suggestion_flag` has the `0x0100` locally-modified bit set.
     pub suggestion_locally_modified: bool,
+    /// Suggestion flag modification timestamp (`lpma` offset 324..328, when `header_size >= 328`).
+    pub date_suggestion_flag_modified: Option<Timestamp>,
     /// Creation timestamp (`lpma` offset 22..26).
     pub date_created: Option<Timestamp>,
     /// Modification timestamp (`lpma` offset 138..142).
@@ -2566,7 +2568,7 @@ pub struct Playlist {
     pub date_last_played: Option<Timestamp>,
     /// Cloud publish / artwork generation timestamp (`lpma` offset 304..308).
     pub date_cloud_published: Option<Timestamp>,
-    /// Cloud sync timestamp (`lpma` offset 324..328 / 356..360).
+    /// Cloud sync timestamp (`lpma` offset 356..360, when `header_size >= 368`).
     pub date_cloud_synced: Option<Timestamp>,
     /// User-visible play count (`lpma` offset 174..178).
     pub play_count: u32,
@@ -3221,6 +3223,8 @@ impl From<&SocialProfileItem> for SocialProfile {
     }
 }
 
+/// Converts a standalone [`AlbumItem`] assuming `tz_offset_seconds = 0` (UTC) for local timestamps
+/// such as `date_last_played`. Use [`Library::from`] to apply the library header's timezone offset.
 impl From<&AlbumItem> for Album {
     fn from(iama: &AlbumItem) -> Self {
         Self::from_raw_with_tz(iama, 0)
@@ -3577,6 +3581,9 @@ impl From<&ArtistItem> for Artist {
     }
 }
 
+/// Converts a standalone [`TrackItem`] assuming `tz_offset_seconds = 0` (UTC) for local timestamps
+/// such as `date_added`, `date_modified`, and `date_last_played`. Use [`Library::from`] to apply
+/// the library header's timezone offset.
 impl From<&TrackItem> for Track {
     fn from(itma: &TrackItem) -> Self {
         Self::from_raw_with_tz(itma, 0)
@@ -4027,14 +4034,14 @@ impl Playlist {
             system_kind: DistinguishedPlaylistKind::from(h.distinguished_kind),
             suggestion_flag: SuggestionFlag::from(h.suggestion_flag),
             suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
+            date_suggestion_flag_modified: h
+                .date_suggestion_flag_modified
+                .and_then(AppleTimestamp::to_utc),
             date_created: h.date_created.to_utc(),
             date_modified: h.date_modified.to_utc(),
             date_last_played: h.date_last_played.to_utc(),
             date_cloud_published: h.date_cloud_published.to_utc(),
-            date_cloud_synced: h
-                .date_suggestion_flag_modified
-                .or(h.date_cloud_synced_2)
-                .and_then(AppleTimestamp::to_utc),
+            date_cloud_synced: h.date_cloud_synced_2.and_then(AppleTimestamp::to_utc),
             play_count: h.play_count,
             true_play_count: h.true_play_count,
             refresh_interval_seconds: h.refresh_interval_seconds,
@@ -4343,7 +4350,7 @@ fn decode_smart_rule(rule: &SmartPlaylistRule) -> SmartRuleNode {
     let operator = SmartOperator::from(rule.comparison_method);
     let value = match &rule.child {
         SmartRuleChild::StringUtf16Be { text, .. } => SmartRuleValue::Text { text: text.clone() },
-        SmartRuleChild::Arguments(args) => decode_smart_rule_arguments(rule, field, operator, args),
+        SmartRuleChild::Arguments(args) => decode_smart_rule_arguments(field, operator, args),
         SmartRuleChild::Raw(bytes) => SmartRuleValue::Raw {
             hex: bytes_to_lower_hex(bytes),
         },
@@ -4363,7 +4370,6 @@ fn decode_smart_rule(rule: &SmartPlaylistRule) -> SmartRuleNode {
 }
 
 fn decode_smart_rule_arguments(
-    rule: &SmartPlaylistRule,
     field: SmartField,
     operator: SmartOperator,
     args: &crate::sections::SmartPlaylistRuleArguments,
@@ -4372,7 +4378,11 @@ fn decode_smart_rule_arguments(
         operator,
         SmartOperator::InTheLast | SmartOperator::NotInTheLast
     ) {
-        let amount = u64::try_from((-args.arg_1).max(0)).unwrap_or(0);
+        let amount = if args.arg_1 < 0 {
+            args.arg_1.unsigned_abs()
+        } else {
+            0
+        };
         let unit = match args.arg_2 {
             86_400 | 1 => RelativeTimeUnit::Days,
             604_800 | 2 => RelativeTimeUnit::Weeks,
@@ -4393,7 +4403,7 @@ fn decode_smart_rule_arguments(
         | SmartField::AlbumArtwork
         | SmartField::Purchased
         | SmartField::HasVideo => SmartRuleValue::Boolean {
-            value: rule.comparison_method == 0x0000_0001 && args.arg_0 != 0,
+            value: args.arg_0 != 0,
         },
         SmartField::Rating | SmartField::AlbumRating => decode_smart_rating_arg(args, is_range),
         SmartField::Playlist => SmartRuleValue::PlaylistRef {
@@ -4998,6 +5008,125 @@ mod tests {
         assert_eq!(
             set.date_suggestion_flag_modified.map(|t| t.to_string()),
             Some("2024-01-01T00:00:00Z".to_owned())
+        );
+    }
+
+    fn make_arg_rule(
+        field_id: u32,
+        comparison_method: u32,
+        args: crate::sections::SmartPlaylistRuleArguments,
+    ) -> SmartPlaylistRule {
+        SmartPlaylistRule {
+            field_id,
+            comparison_method,
+            unk_8: crate::sections::Unknown::new(0),
+            unk_12_44: crate::sections::Unknown::new([0; 32]),
+            unk_44: crate::sections::Unknown::new(0),
+            unk_48: crate::sections::Unknown::new(0),
+            child_size: 68,
+            child: SmartRuleChild::Arguments(args),
+        }
+    }
+
+    #[test]
+    fn smart_rule_in_the_last_i64_min_does_not_overflow() {
+        let rule = make_arg_rule(
+            0x17,        // Last Played
+            0x0000_0200, // InTheLast
+            crate::sections::SmartPlaylistRuleArguments {
+                arg_1: i64::MIN,
+                arg_2: 86_400,
+                ..Default::default()
+            },
+        );
+        let node = decode_smart_rule(&rule);
+        let SmartRuleNode::Condition(cond) = node else {
+            panic!("expected SmartRuleNode::Condition");
+        };
+        assert_eq!(
+            cond.value,
+            SmartRuleValue::RelativeTime {
+                amount: i64::MIN.unsigned_abs(),
+                unit: RelativeTimeUnit::Days,
+                seconds_per_unit: 86_400,
+            }
+        );
+    }
+
+    #[test]
+    fn smart_rule_boolean_is_not_does_not_double_negate() {
+        let is_not_true = make_arg_rule(
+            0x1D,        // Checked
+            0x0200_0001, // IsNot
+            crate::sections::SmartPlaylistRuleArguments {
+                arg_0: 1,
+                ..Default::default()
+            },
+        );
+        let SmartRuleNode::Condition(cond) = decode_smart_rule(&is_not_true) else {
+            panic!("expected SmartRuleNode::Condition");
+        };
+        assert_eq!(cond.operator, SmartOperator::IsNot);
+        assert_eq!(cond.value, SmartRuleValue::Boolean { value: true });
+        assert_eq!(cond.description, "Checked is not true");
+
+        let bitwise_true = make_arg_rule(
+            0x1F,        // Compilation
+            0x0000_0400, // BITWISE_SET
+            crate::sections::SmartPlaylistRuleArguments {
+                arg_0: 1,
+                ..Default::default()
+            },
+        );
+        let SmartRuleNode::Condition(bw_cond) = decode_smart_rule(&bitwise_true) else {
+            panic!("expected SmartRuleNode::Condition");
+        };
+        assert_eq!(bw_cond.operator, SmartOperator::Is);
+        assert_eq!(bw_cond.value, SmartRuleValue::Boolean { value: true });
+
+        let is_false = make_arg_rule(
+            0x1D,
+            0x0000_0001,
+            crate::sections::SmartPlaylistRuleArguments {
+                arg_0: 0,
+                ..Default::default()
+            },
+        );
+        let SmartRuleNode::Condition(false_cond) = decode_smart_rule(&is_false) else {
+            panic!("expected SmartRuleNode::Condition");
+        };
+        assert_eq!(false_cond.value, SmartRuleValue::Boolean { value: false });
+    }
+
+    #[test]
+    fn playlist_cloud_synced_uses_offset_356_when_offset_324_is_zero() {
+        let header = PlaylistItemHeader {
+            header_size: 368,
+            date_suggestion_flag_modified: Some(AppleTimestamp::new(0)),
+            date_cloud_synced_2: Some(AppleTimestamp::new(3_786_912_000)),
+            ..Default::default()
+        };
+        let pl = Playlist::from_header(&header);
+        assert_eq!(pl.date_suggestion_flag_modified, None);
+        assert_eq!(
+            pl.date_cloud_synced.map(|t| t.to_string()),
+            Some("2024-01-01T00:00:00Z".to_owned())
+        );
+
+        let distinct = PlaylistItemHeader {
+            header_size: 368,
+            date_suggestion_flag_modified: Some(AppleTimestamp::new(3_786_912_000)),
+            date_cloud_synced_2: Some(AppleTimestamp::new(3_786_998_400)),
+            ..Default::default()
+        };
+        let pl2 = Playlist::from_header(&distinct);
+        assert_eq!(
+            pl2.date_suggestion_flag_modified.map(|t| t.to_string()),
+            Some("2024-01-01T00:00:00Z".to_owned())
+        );
+        assert_eq!(
+            pl2.date_cloud_synced.map(|t| t.to_string()),
+            Some("2024-01-02T00:00:00Z".to_owned())
         );
     }
 }

@@ -94,7 +94,7 @@ enum Commands {
     QueryUnknowns {
         /// Path to Library.musicdb or .musiclibrary directory (defaults to user Music library if omitted)
         path: Option<PathBuf>,
-        /// Field or section selector in code notation (e.g. `iama.unk_28`, `AlbumItemHeader.unk_28`, `TrackNumerics.unk_200_shared_val`, `iama.*`, `boma:0x0042`)
+        /// Field or section selector in code notation (e.g. `iama.unk_28`, `AlbumItemHeader.unk_28`, `TrackNumerics.unk_116`, `iama.*`, `boma:0x0042`)
         #[arg(short, long, required_unless_present_any = ["entity", "list_fields"])]
         field: Option<String>,
         /// Filter by entity: `[album|artist|track|playlist|profile|library:]<persistent_id|substring>`
@@ -353,12 +353,17 @@ fn resolve_path(path: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 fn write_file_atomic(output_path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+    static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let parent = output_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let file_name = output_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("musicdb.out");
-    let temp_path = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    let seq = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp_path = parent.join(format!(".{file_name}.{}.{seq}.tmp", std::process::id()));
     if let Err(err) = fs::write(&temp_path, bytes) {
         let _ = fs::remove_file(&temp_path);
         return Err(err.into());

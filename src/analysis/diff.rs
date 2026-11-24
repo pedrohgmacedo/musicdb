@@ -158,6 +158,16 @@ fn diff_plma(
             ));
         }
     }
+    for boma_a in &left.bomas {
+        if !right.bomas.iter().any(|b| b.subtype == boma_a.subtype) {
+            let hex_a = encode_boma_body_hex(boma_a);
+            boma_changes.push(format!(
+                "plma boma 0x{:04X} ({}) removed:\n      A: {hex_a}\n      B: <none>",
+                boma_a.subtype,
+                boma_a.subtype_name()
+            ));
+        }
+    }
     (changed_offsets, boma_changes)
 }
 
@@ -280,11 +290,13 @@ fn diff_playlists(
 }
 
 fn diff_changed_playlist(ppid: u64, pl_a: &PlaylistItem, pl_b: &PlaylistItem) -> Option<String> {
-    let mut ignore = vec![8, 16];
-    if pl_a.header.date_created == pl_b.header.date_created {
-        ignore.push(24);
-    }
-    let off_diffs = diff_4byte_words(&pl_a.header, &pl_b.header, &ignore);
+    // Zero `global_counter` (unaligned bytes 26..30, straddling 4-byte words 24 and 28)
+    // so changes to it are ignored without masking `date_created` (22..26) or `playlist_persistent_id` (30..38).
+    let mut hdr_a = pl_a.header.clone();
+    let mut hdr_b = pl_b.header.clone();
+    hdr_a.global_counter = 0;
+    hdr_b.global_counter = 0;
+    let off_diffs = diff_4byte_words(&hdr_a, &hdr_b, &[8, 16]);
     let mod_a = Playlist::from(pl_a);
     let mod_b = Playlist::from(pl_b);
     let mut boma_diffs = Vec::new();
@@ -305,6 +317,18 @@ fn diff_changed_playlist(ppid: u64, pl_a: &PlaylistItem, pl_b: &PlaylistItem) ->
                 "boma 0x{:04X} ({}) changed",
                 boma_b.subtype,
                 boma_b.subtype_name()
+            ));
+        }
+    }
+    for boma_a in &pl_a.bomas {
+        if boma_a.subtype == 0x00DA || boma_a.subtype == 0x00CE {
+            continue;
+        }
+        if !pl_b.bomas.iter().any(|bb| bb.subtype == boma_a.subtype) {
+            boma_diffs.push(format!(
+                "boma 0x{:04X} ({}) removed",
+                boma_a.subtype,
+                boma_a.subtype_name()
             ));
         }
     }
@@ -794,4 +818,84 @@ fn collect_track_stat_changes(ta: &Track, tb: &Track, changes: &mut Vec<String>)
         &ta.date_modified,
         &tb.date_modified,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use binrw::BinRead;
+    use musicdb::AppleTimestamp;
+    use std::io::Cursor;
+
+    fn make_raw_boma(subtype: u32, payload: &[u8]) -> BomaSection {
+        let total_size = 20 + u32::try_from(payload.len()).unwrap();
+        let mut buf = Vec::with_capacity(20 + payload.len());
+        buf.extend_from_slice(b"boma");
+        buf.extend_from_slice(&20u32.to_le_bytes());
+        buf.extend_from_slice(&total_size.to_le_bytes());
+        buf.extend_from_slice(&subtype.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(payload);
+        BomaSection::read_le(&mut Cursor::new(buf)).expect("parse synthetic boma")
+    }
+
+    fn make_playlist_item(
+        pid: u64,
+        date_created: u32,
+        global_counter: u32,
+        bomas: Vec<BomaSection>,
+    ) -> PlaylistItem {
+        let mut buf = vec![0u8; 324];
+        buf[0..4].copy_from_slice(b"lpma");
+        buf[4..8].copy_from_slice(&324u32.to_le_bytes());
+        buf[8..12].copy_from_slice(&324u32.to_le_bytes());
+        let mut item = PlaylistItem::read_le(&mut Cursor::new(buf)).expect("parse synthetic lpma");
+        item.header.playlist_persistent_id = pid;
+        item.header.date_created = AppleTimestamp::new(date_created);
+        item.header.global_counter = global_counter;
+        item.bomas = bomas;
+        item
+    }
+
+    #[test]
+    fn diff_reports_removed_bomas_and_handles_lpma_unaligned_fields() {
+        // 1. diff_plma reports bomas removed from A -> B
+        let mut plma_a = LibraryMasterSection::default();
+        plma_a.bomas.push(make_raw_boma(0x01F6, &[1, 2, 3, 4]));
+        let plma_b = LibraryMasterSection::default();
+        let (_, plma_boma_changes) = diff_plma(Some(&plma_a), Some(&plma_b));
+        assert!(
+            plma_boma_changes
+                .iter()
+                .any(|m| m.contains("0x01F6") && m.contains("removed")),
+            "expected removed plma boma to be reported, got {plma_boma_changes:?}"
+        );
+
+        // 2. diff_changed_playlist reports bomas removed from A -> B and ignores global_counter
+        let pl_a = make_playlist_item(
+            0x2112,
+            0x0001_0002,
+            0x0003_0004,
+            vec![make_raw_boma(0x00CD, b"rush-playlist-cloud")],
+        );
+        let pl_b = make_playlist_item(0x2112, 0x0001_0002, 0x0005_0006, Vec::new());
+        let msg = diff_changed_playlist(0x2112, &pl_a, &pl_b).expect("playlist changed");
+        assert!(
+            msg.contains("0x00CD") && msg.contains("removed"),
+            "expected removed playlist boma 0x00CD in: {msg}"
+        );
+        assert!(
+            msg.contains("offsets=[]"),
+            "changing only global_counter should not report word 24/28 diffs, got: {msg}"
+        );
+
+        // 3. Changing date_created upper 16 bits (bytes 24..26) must still be reported
+        let pl_c = make_playlist_item(0x2112, 0x0002_0002, 0x0003_0004, Vec::new());
+        let pl_d = make_playlist_item(0x2112, 0x0001_0002, 0x0003_0004, Vec::new());
+        let date_msg = diff_changed_playlist(0x2112, &pl_d, &pl_c).expect("date_created changed");
+        assert!(
+            date_msg.contains("(24,"),
+            "expected word 24 diff for date_created change, got: {date_msg}"
+        );
+    }
 }

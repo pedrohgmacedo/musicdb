@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rusqlite::{Connection, Transaction, params};
 
@@ -15,6 +16,7 @@ const fn u64_to_sqlite_i64(v: u64) -> i64 {
 }
 
 fn temp_sibling_sqlite_path(target: &Path) -> PathBuf {
+    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
     let parent = target
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -24,7 +26,8 @@ fn temp_sibling_sqlite_path(target: &Path) -> PathBuf {
         .and_then(|s| s.to_str())
         .unwrap_or("library.sqlite");
     let pid = std::process::id();
-    parent.join(format!(".{file_name}.{pid}.tmp"))
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(".{file_name}.{pid}.{seq}.tmp"))
 }
 
 impl Library {
@@ -306,6 +309,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             system_kind TEXT NOT NULL,
             suggestion_flag TEXT NOT NULL,
             suggestion_locally_modified INTEGER NOT NULL,
+            date_suggestion_flag_modified_utc TEXT,
             date_created_utc TEXT,
             date_modified_utc TEXT,
             date_last_played_utc TEXT,
@@ -706,16 +710,17 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "full-row 48-column SQLite playlist binding"
+    reason = "full-row 49-column SQLite playlist binding"
 )]
 fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
-    let placeholders: Vec<String> = (1..=48).map(|i| format!("?{i}")).collect();
+    let placeholders: Vec<String> = (1..=49).map(|i| format!("?{i}")).collect();
     let sql = format!(
         "INSERT INTO playlists (
             persistent_id, parent_persistent_id, name, description, kind,
             is_master, is_folder, is_smart, is_subscribed,
             show_in_profile_and_search, distinguished_kind, system_kind,
-            suggestion_flag, suggestion_locally_modified, date_created_utc,
+            suggestion_flag, suggestion_locally_modified,
+            date_suggestion_flag_modified_utc, date_created_utc,
             date_modified_utc, date_last_played_utc, date_cloud_published_utc,
             date_cloud_synced_utc, play_count, true_play_count,
             refresh_interval_seconds, cloud_share_mode, share_mode,
@@ -770,6 +775,7 @@ fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             p.system_kind.to_string(),
             p.suggestion_flag.to_string(),
             i32::from(p.suggestion_locally_modified),
+            p.date_suggestion_flag_modified.map(|d| d.to_string()),
             p.date_created.map(|d| d.to_string()),
             p.date_modified.map(|d| d.to_string()),
             p.date_last_played.map(|d| d.to_string()),
