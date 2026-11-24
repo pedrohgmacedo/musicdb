@@ -132,3 +132,94 @@ fn test_macos_monterey_and_sequoia_samples() {
         assert_eq!(tv.system_kind, DistinguishedPlaylistKind::TvAndMovies);
     }
 }
+
+#[test]
+fn test_2026_11_23_offline_local_probes() {
+    let snap = corpus_path(
+        "snapshots/2026-11-23-offline-local-probes/03_local_video_and_lossless_audio/Apple Music Library.musiclibrary/Library.musicdb",
+    );
+    if !snap.exists() {
+        return;
+    }
+    let raw =
+        musicdb::RawLibraryFile::open(&snap).expect("parse 03_local_video_and_lossless_audio");
+    let tracks = raw
+        .sections
+        .iter()
+        .find_map(|s| match &s.child {
+            musicdb::sections::HsmaChild::TrackList(tl) => Some(tl.tracks.as_slice()),
+            _ => None,
+        })
+        .expect("TrackList section");
+
+    // 1. itma[54] (has_asset_info_plist) is an exact bijection with boma 0x001D across all 33,980 tracks
+    let mut with_1d = 0usize;
+    for t in tracks {
+        let has_1d = t.bomas.iter().any(|b| b.subtype == 0x001D);
+        assert_eq!(
+            t.header.has_asset_info_plist != 0,
+            has_1d,
+            "itma[54] mismatch on track {:016X}",
+            t.header.track_persistent_id,
+        );
+        if has_1d {
+            with_1d += 1;
+        }
+    }
+    assert_eq!(with_1d, 15);
+
+    // 2. Local 720p 29.97fps MP4 video: is_local_video == 1 and VideoInfo matches avcC/stts
+    let local_vid = tracks
+        .iter()
+        .find(|t| t.header.track_persistent_id == 0xAC4A_A560_6D9B_880C)
+        .expect("local 720p video track");
+    let vid_num = local_vid
+        .bomas
+        .iter()
+        .find_map(|b| match &b.payload {
+            musicdb::sections::BomaPayload::TrackNumerics(n) => Some(n),
+            _ => None,
+        })
+        .expect("local video TrackNumerics");
+    assert_eq!(vid_num.is_local_video, 1);
+    assert_eq!(vid_num.file_type_fourcc_str().as_deref(), Some("MP4 "));
+    assert_eq!(vid_num.container_format_kind, 51);
+    assert_eq!(vid_num.has_embedded_artwork, 128);
+
+    let vi = local_vid
+        .bomas
+        .iter()
+        .find_map(|b| match &b.payload {
+            musicdb::sections::BomaPayload::VideoInfo(v) => Some(v),
+            _ => None,
+        })
+        .expect("local video VideoInfo");
+    assert_eq!((vi.width, vi.height), (1280, 720));
+    assert_eq!(vi.avc_profile_idc, 100);
+    assert_eq!(vi.avc_level_idc, 31);
+    assert_eq!(vi.frame_rate_milli, 29_970);
+    assert_eq!(vi.color_bit_depth, 24);
+
+    // 3. ALAC (fmt=60), WAV (fmt=70), AIFF (fmt=70) format codes
+    for (pid, expected_fcc, expected_fmt) in [
+        (0xD98A_C926_FB1A_C81B, "M4A ", 60u16),
+        (0x8B60_5B7E_8111_8CE6, "WAV ", 70u16),
+        (0x989C_F90D_6A53_71D8, "AIFF", 70u16),
+    ] {
+        let track = tracks
+            .iter()
+            .find(|t| t.header.track_persistent_id == pid)
+            .expect("local format probe track");
+        let num = track
+            .bomas
+            .iter()
+            .find_map(|b| match &b.payload {
+                musicdb::sections::BomaPayload::TrackNumerics(n) => Some(n),
+                _ => None,
+            })
+            .expect("local format TrackNumerics");
+        assert_eq!(num.is_local_video, 0);
+        assert_eq!(num.file_type_fourcc_str().as_deref(), Some(expected_fcc));
+        assert_eq!(num.container_format_kind, expected_fmt);
+    }
+}

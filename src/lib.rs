@@ -369,7 +369,8 @@ mod tests {
             unk_37_39: Unknown::new([0; 2]),
             is_available_in_catalog: 1,
             is_local_mp3: 0,
-            unk_41_54: Unknown::new([0; 13]),
+            is_local_video: 0,
+            unk_42_54: Unknown::new([0; 12]),
             asset_container_kind: 0,
             unk_55_59: Unknown::new([0; 4]),
             catalog_lyrics_state: 0,
@@ -509,7 +510,8 @@ mod tests {
                 checkbox_remember_playback_position: 0,
                 checkbox_show_composer_in_all_views: 0,
                 checkbox_use_work_and_movement: 0,
-                unk_53_55: Unknown::new([0; 2]),
+                unk_53: Unknown::new(0),
+                has_asset_info_plist: 1,
                 has_playback_or_bounds_activity: 1,
                 unk_56: Unknown::new(0),
                 downloaded_status: 1,
@@ -707,6 +709,16 @@ mod tests {
             })
             .expect("parsed TrackItem");
         assert_eq!(parsed_track.header.is_cloud_synced, 1);
+        assert_eq!(parsed_track.header.has_asset_info_plist, 1);
+        let parsed_local_num = parsed_track
+            .bomas
+            .iter()
+            .find_map(|b| match &b.payload {
+                BomaPayload::TrackNumerics(n) if n.subrecord_kind == 1 => Some(n),
+                _ => None,
+            })
+            .expect("parsed local TrackNumerics");
+        assert_eq!(parsed_local_num.is_local_video, 0);
         assert!(matches!(
             &parsed_plma.bomas[0].payload,
             BomaPayload::Unknown { subtype: 0x01F6, raw_bytes } if raw_bytes.len() == 20

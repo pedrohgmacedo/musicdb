@@ -73,7 +73,7 @@ pub struct TrackItemHeader {
     pub checkbox_skip_when_shuffling: u8,
     /// Offset 31: Ever-played flag (`1` if the track has ever been played; persists across play-count resets).
     pub has_ever_been_played: u8,
-    /// Offset 32: Unknown byte (`1` on Purchased cloud-only music videos in macOS Monterey, `0` elsewhere).
+    /// Offset 32: Unknown byte (`1` on local `.mp4` video and purchased cloud videos, `0` on audio and catalog subscription videos).
     pub unk_32: Unknown<u8>,
     /// Offset 33: Cloud-synced track flag (`1` on iCloud-synced and Purchased cloud tracks where `cloud_sync_state != 0`, `0` on `LocalOnly` and `Error/Ineligible` tracks).
     pub is_cloud_synced: u8,
@@ -95,7 +95,7 @@ pub struct TrackItemHeader {
     pub unk_45: Unknown<u8>,
     /// Offset 46: Unsynced local metadata changes flag (`1` = metadata/options edited locally on an already-synced iCloud track and pending push, `0` = clean/synced or newly added offline `LocalOnly` track whose unsynced status is carried by `cloud_status == 0` / `cloud_sync_state == 0`).
     pub has_unsynced_local_changes: u8,
-    /// Offset 47..49: Unknown 2 bytes.
+    /// Offset 47..49: Unknown 2 bytes (offset 47 is `1` on local untagged WAV/AIFF PCM imports with no artist/album tags, `0` elsewhere).
     pub unk_47_49: Unknown<[u8; 2]>,
     /// Offset 49: Checkbox "Part of a gapless album" (`<key>Part Of Gapless Album</key><true/>` in iTunes XML; 0 or 1).
     pub checkbox_part_of_gapless_album: u8,
@@ -105,8 +105,10 @@ pub struct TrackItemHeader {
     pub checkbox_show_composer_in_all_views: u8,
     /// Offset 52: Checkbox "Use work and movement" (0 or 1).
     pub checkbox_use_work_and_movement: u8,
-    /// Offset 53..55: Unknown 2 bytes (offset 53 is `1` on 100% of tracks carrying extended text metadata `boma`s `0x0012`/`0x002E`/`0x003F`/`0x0040` in modern Windows iCloud libraries — 33,969/33,969 exact match — but is also `1` on legacy `LocalOnly` imports without those `boma`s in macOS Monterey; offset 54 is `1` on tracks with `boma 0x001D` `iTunMOVI` / `PlayGap` in modern libraries and certain artwork-bearing tracks in Monterey).
-    pub unk_53_55: Unknown<[u8; 2]>,
+    /// Offset 53: Unknown byte (`1` on 100% of tracks carrying extended text metadata `boma`s `0x0012`/`0x002E`/`0x003F`/`0x0040` in modern Windows iCloud libraries — 33,969/33,969 exact match).
+    pub unk_53: Unknown<u8>,
+    /// Offset 54: Asset info plist presence flag (`1` iff `boma 0x001D` `plist_asset_info` / MP4 `iTunMOVI` atom is present, `0` otherwise; verified by controlled M4A `pgap` / `iTunMOVI` / MP3 artwork A/B tests and 33,980/33,980 bijection).
+    pub has_asset_info_plist: u8,
     /// Offset 55: Playback or custom start/stop bounds activity flag (changes 0 -> 1 on first play or when playback start/stop bounds are set).
     pub has_playback_or_bounds_activity: u8,
     /// Offset 56: Unknown byte.
@@ -249,7 +251,7 @@ impl VisitUnknowns for TrackItemHeader {
                 (self.unk_43, 43),
                 (self.unk_45, 45),
                 (self.unk_47_49, 47),
-                (self.unk_53_55, 53),
+                (self.unk_53, 53),
                 (self.unk_56, 56),
                 (self.unk_60_62, 60),
                 (self.unk_64_store_flag, 64),
@@ -314,7 +316,7 @@ pub struct TrackNumerics {
     pub unk_16: Unknown<u32>,
     /// Offset 20: Cloud catalog unavailability flag (`1` = track no longer available in Apple Music catalog, `0` = available/local).
     pub is_cloud_unavailable: u8,
-    /// Offset 21..24: Unknown flags (`[1, 1, 0]` on synced `subrecord_kind == 1` local files and on `subrecord_kind == 3` once downloaded locally; `[0, 0, 0]` on newly imported offline `LocalOnly` tracks and many undownloaded `subrecord_kind == 3` records).
+    /// Offset 21..24: Unknown flags (`[1, 1, 0]` immediately on import for local MP4/M4A/ALAC containers, on synced local files, on downloaded `subrecord_kind == 3`, and on local MP3s once played; `[0, 0, 0]` on newly imported unplayed MP3/WAV/AIFF even after background gapless/Sound Check scanning and on many undownloaded `subrecord_kind == 3` records).
     pub unk_21_24: Unknown<[u8; 3]>,
     /// Offset 24..27: Unknown 3 bytes (typically 0).
     pub unk_24_27: Unknown<[u8; 3]>,
@@ -336,17 +338,19 @@ pub struct TrackNumerics {
     pub is_available_in_catalog: u8,
     /// Offset 40: Local MP3 flag (`1` iff `subrecord_kind == 1 && container_format_kind == 12`, `0` otherwise).
     pub is_local_mp3: u8,
-    /// Offset 41..54: Unknown 13 bytes (offset 41 is `1` on downloaded local video `subrecord_kind == 1` and `0` on audio; offset 45 is `1` iff `subrecord_kind == 3 || date_released != 0 || unk_116_cloud_timestamp != 0 || store_track_adam_id != 0` in modern libraries; offset 46 is `1` on downloaded local HD video `subrecord_kind == 1`; offset 48 is `1` on a legacy matched MP3 with 2.2 MB trailing `APEv2` artwork after gapless duration scan — `0` on fresh offline import — and `3` on downloaded HLS Dolby Atmos `.movpkg`; offsets 49..53 encode iCloud sync/origin states).
-    pub unk_41_54: Unknown<[u8; 13]>,
+    /// Offset 41: Local video asset flag (`1` on local/downloaded video `subrecord_kind == 1` such as `.m4v` and DRM-free `.mp4`, `0` on audio and cloud `subrecord_kind == 3`).
+    pub is_local_video: u8,
+    /// Offset 42..54: Unknown 12 bytes (offset 45 = `[3]` is `1` iff `subrecord_kind == 3 || date_released != 0 || unk_116_cloud_timestamp != 0 || store_track_adam_id != 0` in modern libraries; offset 46 = `[4]` is `1` on 720p/1080p local video `subrecord_kind == 1` in modern libraries; offset 48 = `[6]` is `1` on a legacy matched MP3 with trailing `APEv2` — stayed `0` on fresh local playback/gapless/Sound Check — and `3` on downloaded HLS Dolby Atmos `.movpkg`; offsets 49..53 = `[7..12]` encode iCloud sync/origin states).
+    pub unk_42_54: Unknown<[u8; 12]>,
     /// Offset 54: Cloud/source asset container or Apple Store flavor ID (`1` = MP3/MPEG audio, `2` = `"2:256"` M4A/AAC audio, `18` = `"18:1080p"` 1080p HD video matching `boma 0x0034` `itunes_store_flavor`; `0` on undownloaded video / `.movpkg` / local `subrecord_kind == 1`).
     pub asset_container_kind: u8,
-    /// Offset 55..59: Unknown 4 bytes (offset 58 is `2` on a downloaded 1080p HD `.m4v` `subrecord_kind == 1`, matching MP4 `hdvd` = `2`, and `0` on all audio tracks and `subrecord_kind == 3`).
+    /// Offset 55..59: Unknown 4 bytes (offset 58 is `2` on a downloaded 1080p HD `.m4v` `subrecord_kind == 1` carrying MP4 `hdvd = 2`, and `0` on local 720p `.mp4` without an `hdvd` atom, all audio tracks, and `subrecord_kind == 3`).
     pub unk_55_59: Unknown<[u8; 4]>,
     /// Offset 59: Apple Music catalog time-synced lyrics availability on `subrecord_kind == 3` (`1` = catalog time-synced lyrics available, `2` = no catalog time-synced lyrics / Matched or Uploaded track, `0` = local `subrecord_kind == 1` or format `<= 22.0`).
     pub catalog_lyrics_state: u8,
     /// Offset 60..64: Sample rate in Hz (IEEE 754 f32, e.g. 44100.0).
     pub sample_rate: f32,
-    /// Offset 64..68: File type `FourCC` in little-endian (e.g. `0x4D503320` = `"MP3 "`, `0x4D344120` = `"M4A "`, `0x4D4F5650` = `"MOVP"`).
+    /// Offset 64..68: File type `FourCC` in little-endian (e.g. `0x4D503320` = `"MP3 "`, `0x4D344120` = `"M4A "`, `0x4D345620` = `"M4V "`, `0x4D503420` = `"MP4 "`, `0x4D4F5650` = `"MOVP"`, `0x57415620` = `"WAV "`, `0x41494646` = `"AIFF"`).
     pub file_type_fourcc: u32,
     /// Offset 68..72: Secondary file type / unknown.
     pub unk_68_file_type: Unknown<u32>,
@@ -356,11 +360,11 @@ pub struct TrackNumerics {
     pub library_folder_count: u16,
     /// Offset 76..78: Artwork count (matches iTunes XML `Artwork Count`).
     pub artwork_count: u16,
-    /// Offset 78..80: Container format kind (`3` / `0x0003` = MPEG-4 video M4V, `4` / `0x0004` = HLS media package `.movpkg`, `12` / `0x000C` = MP3 audio, `51` / `0x0033` = MPEG-4 audio M4A/M4P).
+    /// Offset 78..80: Container format kind (`3` / `0x0003` = MPEG-4 video M4V cloud subrecord, `4` / `0x0004` = HLS media package `.movpkg`, `12` / `0x000C` = MP3 audio, `51` / `0x0033` = MPEG-4 AAC/video M4A/M4P/M4V/MP4, `60` / `0x003C` = Apple Lossless ALAC `.m4a`, `70` / `0x0046` = uncompressed PCM WAV/AIFF).
     pub container_format_kind: u16,
-    /// Offset 80..82: Signed 16-bit artwork source/status indicator (`-1` / `0xFFFF` = embedded artwork scanned in local file, `1` = cloud/catalog artwork on `subrecord_kind == 3`, `0` = none/unscanned).
+    /// Offset 80..82: Signed 16-bit artwork source/status indicator (`-1` / `0xFFFF` = embedded artwork scanned in local file, `1` = cloud/catalog artwork on `subrecord_kind == 3`, `128` / `0x0080` = auto-extracted video poster frame on local `.mp4` without cover art, `0` = none/unscanned).
     pub has_embedded_artwork: i16,
-    /// Offset 82..84: Local file artwork state (`2` on local downloaded file subrecords, `0` on cloud/catalog subrecords).
+    /// Offset 82..84: Local file artwork state (`2` on most local downloaded file subrecords, `0` on cloud/catalog subrecords and observed `0` on local ALAC `.m4a`).
     pub local_artwork_state: u16,
     /// Offset 84..88: Total size in bytes of all attached artworks.
     pub artwork_total_size_bytes: u32,
@@ -463,7 +467,7 @@ impl VisitUnknowns for TrackNumerics {
                 (self.unk_24_27, 24),
                 (self.unk_35, 35),
                 (self.unk_37_39, 37),
-                (self.unk_41_54, 41),
+                (self.unk_42_54, 42),
                 (self.unk_55_59, 55),
                 (self.unk_68_file_type, 68),
                 (self.unk_96_100, 96),
@@ -566,27 +570,27 @@ pub struct VideoInfo {
     pub unk_8: Unknown<u32>,
     /// Offset 12..16: Video codec `FourCC` in little-endian (e.g. `0x61766331` = `"avc1"`).
     pub codec_fourcc: u32,
-    /// Offset 16..20: Unknown 4 bytes (e.g. `6060` on a 1080p `avc1` music video).
+    /// Offset 16..20: Unknown 4 bytes (observed `0` on DRM-free 720p `.mp4` and `6060` on `FairPlay` 1080p `.m4v`).
     pub unk_16: Unknown<u32>,
-    /// Offset 20..24: Video stream average bit rate in kbps (e.g. `5153` for `5,153,690` bps).
+    /// Offset 20..24: Video stream bit rate metric in kbps (e.g. `5153` matching exact average kbps on a 1080p `.m4v`; observed `975` on a 5s 1482 kbps local 720p `.mp4`, so Apple Music's calculation on short/local MP4s needs further verification).
     pub video_bit_rate_kbps: u32,
-    /// Offset 24..28: Unknown 4 bytes (matches `video_bit_rate_kbps` on observed files, e.g. `5153` or `5791`; likely target/average video bit rate).
+    /// Offset 24..28: Unknown 4 bytes (matches `video_bit_rate_kbps` on all observed files: `975`, `5153`, `5791`; likely target/average video bit rate).
     pub unk_24: Unknown<u32>,
     /// Offset 28..32: Unknown 4 bytes (observed `0`).
     pub unk_28: Unknown<u32>,
     /// Offset 32..36: H.264/AVC `profile_idc` from `avcC` (e.g. `100` = High Profile).
     pub avc_profile_idc: u32,
-    /// Offset 36..40: H.264/AVC `level_idc` from `avcC` (e.g. `40` = Level 4.0, `41` = Level 4.1).
+    /// Offset 36..40: H.264/AVC `level_idc` from `avcC` (e.g. `31` = Level 3.1, `40` = Level 4.0, `41` = Level 4.1).
     pub avc_level_idc: u32,
     /// Offset 40..44: Unknown signed int (observed `-1` / `0xFFFFFFFF`).
     pub unk_40: Unknown<i32>,
-    /// Offset 44..48: Video frame rate in millihertz (`fps * 1000`, e.g. `25000` for 25.000 fps, `30416` for 30.416 fps).
+    /// Offset 44..48: Video frame rate in millihertz (`fps * 1000`, e.g. `25000` for 25.000 fps, `29970` for 29.970 fps, `30416` for 30.416 fps).
     pub frame_rate_milli: u32,
     /// Offset 48..52: Video color bit depth from `VisualSampleEntry` (e.g. `24`).
     pub color_bit_depth: u32,
-    /// Offset 52..56: Unknown 4 bytes (observed `256` on a 25 fps music video and `30000` in AME docs; not frame rate).
+    /// Offset 52..56: Unknown 4 bytes (observed `256` on both 25 fps 1080p and 29.97 fps 720p Windows videos, and `30000` in AME docs; not frame rate).
     pub unk_52: Unknown<u32>,
-    /// Offset 56..84: Unknown 28 bytes (first `u32` observed as `17500` / `0x0000445C` on a 1080p music video, remaining 24 bytes zeros).
+    /// Offset 56..84: Unknown 28 bytes (first `u32` observed as `29970` on a 29.970 fps local 720p `.mp4` and `17500` / `0x0000445C` on a 25 fps 1080p `.m4v`, remaining 24 bytes zeros).
     pub unk_56_84: Unknown<[u8; 28]>,
 }
 

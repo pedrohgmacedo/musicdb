@@ -16,7 +16,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
     let raw_1119 = load_1119(corpus_dir)?;
     println!("=== FFPROBE / EXIFTOOL / MOVPKG DISCOVERY VERIFICATION ===");
 
-    // 8.1 TrackNumerics[45] (unk_41_54[4]) vs (sub==3 || date_released != 0 || u116 != 0)
+    // 8.1 TrackNumerics[45] (unk_42_54[3]) vs (sub==3 || date_released != 0 || u116 != 0)
     let mut b45_vs_formula: BTreeMap<(u32, u8, bool, bool), usize> = BTreeMap::new();
     let mut b45_mismatches = Vec::new();
     for t in tracks_of(&raw_1119) {
@@ -24,7 +24,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         let artist = boma_str(&t.bomas, 0x0004).unwrap_or("");
         for b in &t.bomas {
             if let BomaPayload::TrackNumerics(n) = &b.payload {
-                let b45 = n.unk_41_54.get(4).copied().unwrap_or(0);
+                let b45 = n.unk_42_54.get(3).copied().unwrap_or(0);
                 let has_rel = n.date_released.raw() != 0;
                 let has_u116 = *n.unk_116_cloud_timestamp != 0;
                 *b45_vs_formula
@@ -65,7 +65,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         for t in tracks_of(&raw_2025) {
             for b in &t.bomas {
                 if let BomaPayload::TrackNumerics(n) = &b.payload {
-                    let b45 = n.unk_41_54.get(4).copied().unwrap_or(0);
+                    let b45 = n.unk_42_54.get(3).copied().unwrap_or(0);
                     *c25.entry((
                         n.subrecord_kind,
                         b45,
@@ -88,7 +88,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         let raw_mont = load_raw(&mdb_mont)?;
         let mut cm: BTreeMap<(u8, u8, u8, i16, bool), usize> = BTreeMap::new();
         for t in tracks_of(&raw_mont) {
-            let [b53, b54] = *t.header.unk_53_55;
+            let (b53, b54) = (*t.header.unk_53, t.header.has_asset_info_plist);
             let n0 = t.bomas.iter().find_map(|b| match &b.payload {
                 BomaPayload::TrackNumerics(n) => Some(n),
                 _ => None,
@@ -129,8 +129,8 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
             );
             for b in &t.bomas {
                 if let BomaPayload::TrackNumerics(n) = &b.payload {
-                    let b45 = n.unk_41_54.get(4).copied().unwrap_or(0);
-                    let b48 = n.unk_41_54.get(7).copied().unwrap_or(0);
+                    let b45 = n.unk_42_54.get(3).copied().unwrap_or(0);
+                    let b48 = n.unk_42_54.get(6).copied().unwrap_or(0);
                     println!(
                         "    sub={} b45={b45} b48={b48} drel={} ({:?}) dmod={} dadd={} dl_traits=0x{:02X} drm=(u96=0x{:08X}, plat={}, vers=0x{:08X})",
                         n.subrecord_kind,
@@ -175,13 +175,13 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
             for b in &t.bomas {
                 if let BomaPayload::TrackNumerics(n) = &b.payload {
                     all_b45_total += 1;
-                    let b45 = n.unk_41_54.get(4).copied().unwrap_or(0);
+                    let b45 = n.unk_42_54.get(3).copied().unwrap_or(0);
                     let has_rel = n.date_released.raw() != 0;
                     if (b45 == 1) != has_rel {
                         all_b45_mismatches += 1;
                         file_mis += 1;
                     }
-                    let b48 = n.unk_41_54.get(7).copied().unwrap_or(0);
+                    let b48 = n.unk_42_54.get(6).copied().unwrap_or(0);
                     if b48 != 0 {
                         *all_b48
                             .entry((b48, format!("{artist} - {title:?}")))

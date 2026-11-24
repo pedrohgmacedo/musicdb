@@ -13,6 +13,7 @@ mod artwork_states;
 mod codecs;
 pub(crate) mod corpus_audit;
 mod experiments_2026_11_21;
+mod experiments_2026_11_23;
 mod helpers;
 mod history_shaky;
 mod local_checks_2026_11_21;
@@ -77,6 +78,12 @@ pub(crate) enum AdhocCommand {
         /// Corpus directory to inspect
         corpus_dir: PathBuf,
     },
+    /// Analyze 2026-11-23 offline-local-probes campaign (`City Life` A/B playback, `itma[54]`, local video/ALAC/WAV/AIFF)
+    #[command(name = "experiments-2026-11-23")]
+    Experiments20261123 {
+        /// Corpus directory to inspect
+        corpus_dir: PathBuf,
+    },
     /// Run 2026-11-21 local corpus checks (`itma[53]`, `TrackPlaysSkips::unk_40`, `itma[33]`, `iama[128..136]`, `plma[182..186]`, `ipfa[44..52]`, `lpma[192]`, `SmartPlaylistOptions[16]`)
     #[command(name = "local-checks-2026-11-21")]
     LocalChecks20261121 {
@@ -114,6 +121,9 @@ pub(crate) fn run(command: AdhocCommand) -> Result<()> {
         AdhocCommand::Experiments20261121 { corpus_dir } => {
             experiments_2026_11_21::run(&corpus_dir)
         }
+        AdhocCommand::Experiments20261123 { corpus_dir } => {
+            experiments_2026_11_23::run(&corpus_dir)
+        }
         AdhocCommand::LocalChecks20261121 { corpus_dir } => {
             local_checks_2026_11_21::run(&corpus_dir)
         }
@@ -134,7 +144,9 @@ pub(crate) fn run(command: AdhocCommand) -> Result<()> {
             println!();
             experiments_2026_11_21::run(&corpus_dir)?;
             println!();
-            local_checks_2026_11_21::run(&corpus_dir)
+            local_checks_2026_11_21::run(&corpus_dir)?;
+            println!();
+            experiments_2026_11_23::run(&corpus_dir)
         }
     }
 }

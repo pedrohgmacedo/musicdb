@@ -961,7 +961,7 @@ fn check_track(c: &mut SanityCollector, track: &TrackItem) {
 
 fn check_track_booleans(c: &mut SanityCollector, track: &TrackItem, ctx: &str) {
     let h = &track.header;
-    let fields: [(&str, &str, u8); 14] = [
+    let fields: [(&str, &str, u8); 15] = [
         (
             "30",
             "checkbox_skip_when_shuffling",
@@ -1002,6 +1002,7 @@ fn check_track_booleans(c: &mut SanityCollector, track: &TrackItem, ctx: &str) {
             "checkbox_use_work_and_movement",
             h.checkbox_use_work_and_movement,
         ),
+        ("54", "has_asset_info_plist", h.has_asset_info_plist),
         (
             "55",
             "has_playback_or_bounds_activity",
@@ -1116,7 +1117,7 @@ fn check_track_numerics(
     ctx: &str,
     sub: Option<String>,
 ) {
-    let bool_fields: [(&str, &str, u32); 7] = [
+    let bool_fields: [(&str, &str, u32); 8] = [
         (
             "20",
             "is_cloud_unavailable",
@@ -1140,6 +1141,7 @@ fn check_track_numerics(
             u32::from(n.is_available_in_catalog),
         ),
         ("40", "is_local_mp3", u32::from(n.is_local_mp3)),
+        ("41", "is_local_video", u32::from(n.is_local_video)),
     ];
     for (offset, field, raw) in bool_fields {
         c.check_bool("TrackNumerics", offset, field, raw, ctx, sub.clone());

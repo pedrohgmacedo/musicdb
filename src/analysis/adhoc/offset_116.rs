@@ -30,7 +30,7 @@ fn check_offset_116(raw: &RawLibraryFile) {
         for b in &t.bomas {
             if let BomaPayload::TrackNumerics(n) = &b.payload {
                 let v = *n.unk_116_cloud_timestamp;
-                let off45 = n.unk_41_54.get(4).copied().unwrap_or(0);
+                let off45 = n.unk_42_54.get(3).copied().unwrap_or(0);
                 let ts = AppleTimestamp::from(v).to_utc();
                 let cat = if v == 0 {
                     String::from("0 (zero)")

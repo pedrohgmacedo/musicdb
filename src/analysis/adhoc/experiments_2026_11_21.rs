@@ -51,11 +51,12 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
                 h.date_cloud_synced.to_utc(),
             );
             println!(
-                "    itma: u32={} is_cloud_synced={} u34_38={:02X?} u53_55={:02X?} u64={} art=(src={},state={},sz={},fmt={}) saga1=0x{:X} saga=0x{:X}",
+                "    itma: u32={} is_cloud_synced={} u34_38={:02X?} u53={} has_asset_info={} u64={} art=(src={},state={},sz={},fmt={}) saga1=0x{:X} saga=0x{:X}",
                 *h.unk_32,
                 h.is_cloud_synced,
                 *h.unk_34_38,
-                *h.unk_53_55,
+                *h.unk_53,
+                h.has_asset_info_plist,
                 *h.unk_64_store_flag,
                 h.artwork_source_kind,
                 h.artwork_cache_state,
@@ -85,11 +86,12 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
                         n.custom_lyrics_hash,
                     );
                     println!(
-                        "      u16={} u21_24={:02X?} is_mp3={} u41_54={:02X?} off54={} u55_59={:02X?} off59={} dadd={:?} dmod={:?} drel={:?} dsync={:?}",
+                        "      u16={} u21_24={:02X?} is_mp3={} is_vid={} u42_54={:02X?} off54={} u55_59={:02X?} off59={} dadd={:?} dmod={:?} drel={:?} dsync={:?}",
                         *n.unk_16,
                         *n.unk_21_24,
                         n.is_local_mp3,
-                        *n.unk_41_54,
+                        n.is_local_video,
+                        *n.unk_42_54,
                         n.asset_container_kind,
                         *n.unk_55_59,
                         n.catalog_lyrics_state,
@@ -130,12 +132,13 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
             .find(|t| t.header.track_persistent_id == 0x022A_2731_DE16_355B)
         {
             println!(
-                "  [{label}] itma: dl={} cloud={} sync_state={} media_kind=0x{:X} u53_55={:02X?} u64={} audio_traits=0x{:02X} bomas={}",
+                "  [{label}] itma: dl={} cloud={} sync_state={} media_kind=0x{:X} u53={} has_asset_info={} u64={} audio_traits=0x{:02X} bomas={}",
                 t.header.downloaded_status,
                 t.header.cloud_status,
                 t.header.cloud_sync_state,
                 t.header.media_kind,
-                *t.header.unk_53_55,
+                *t.header.unk_53,
+                t.header.has_asset_info_plist,
                 *t.header.unk_64_store_flag,
                 t.header.audio_traits,
                 t.bomas.len(),
@@ -159,11 +162,12 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
                             n.downloaded_audio_traits,
                         );
                         println!(
-                            "      u16={} u21_24={:02X?} is_mp3={} u41_54={:02X?} off54={} u55_59={:02X?} off59={} u216_248={}",
+                            "      u16={} u21_24={:02X?} is_mp3={} is_vid={} u42_54={:02X?} off54={} u55_59={:02X?} off59={} u216_248={}",
                             *n.unk_16,
                             *n.unk_21_24,
                             n.is_local_mp3,
-                            *n.unk_41_54,
+                            n.is_local_video,
+                            *n.unk_42_54,
                             n.asset_container_kind,
                             *n.unk_55_59,
                             n.catalog_lyrics_state,
@@ -281,9 +285,9 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
                         });
                     }
                     BomaPayload::TrackNumerics(n) => {
-                        let b41 = n.unk_41_54.first().copied().unwrap_or(0);
-                        let b45 = n.unk_41_54.get(4).copied().unwrap_or(0);
-                        let b46 = n.unk_41_54.get(5).copied().unwrap_or(0);
+                        let b41 = n.is_local_video;
+                        let b45 = n.unk_42_54.get(3).copied().unwrap_or(0);
+                        let b46 = n.unk_42_54.get(4).copied().unwrap_or(0);
                         let b58 = n.unk_55_59.get(3).copied().unwrap_or(0);
                         b45_4term_total += 1;
                         let expected_4term = n.subrecord_kind == 3
@@ -418,7 +422,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
             let artist = boma_str(&t.bomas, 0x0004).unwrap_or("");
             for b in &t.bomas {
                 if let BomaPayload::TrackNumerics(n) = &b.payload {
-                    let b45 = n.unk_41_54.get(4).copied().unwrap_or(0);
+                    let b45 = n.unk_42_54.get(3).copied().unwrap_or(0);
                     let expected = n.subrecord_kind == 3
                         || n.date_released.raw() != 0
                         || *n.unk_116_cloud_timestamp != 0

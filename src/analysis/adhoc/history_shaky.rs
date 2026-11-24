@@ -284,7 +284,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         let k = (
             t.header.checkbox_show_composer_in_all_views,
             t.header.checkbox_use_work_and_movement,
-            t.header.unk_53_55.first().copied().unwrap_or(0),
+            *t.header.unk_53,
             has_work,
             has_mov_name,
             has_mov_num,
@@ -687,7 +687,8 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
                         != n.header.checkbox_show_composer_in_all_views
                     || o.header.checkbox_use_work_and_movement
                         != n.header.checkbox_use_work_and_movement
-                    || o.header.unk_53_55 != n.header.unk_53_55
+                    || o.header.unk_53 != n.header.unk_53
+                    || o.header.has_asset_info_plist != n.header.has_asset_info_plist
                     || o.header.star_rating != n.header.star_rating
                     || o.header.auto_sort_flags != n.header.auto_sort_flags
                     || o.header.volume_adjustment != n.header.volume_adjustment
@@ -697,8 +698,8 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
             {
                 diff_cnt += 1;
                 if diff_cnt <= 20 {
-                    let [o53, o54] = *o.header.unk_53_55;
-                    let [n53, n54] = *n.header.unk_53_55;
+                    let (o53, o54) = (*o.header.unk_53, o.header.has_asset_info_plist);
+                    let (n53, n54) = (*n.header.unk_53, n.header.has_asset_info_plist);
                     println!(
                         "  Mutated Track [{tid:016X}] {} - {:?} (cloud={}):",
                         boma_str(&n.bomas, 0x0004).unwrap_or(""),
