@@ -1303,7 +1303,7 @@ fn check_track_sort_and_media(c: &mut SanityCollector, track: &TrackItem, ctx: &
             sub,
         );
     }
-    if matches!(MediaKind::from(h.media_kind), MediaKind::Other(_)) {
+    if matches!(MediaKind::from(h.media_kind), MediaKind::Unknown(_)) {
         c.check_enum_fallthrough(
             "itma",
             "108..112",

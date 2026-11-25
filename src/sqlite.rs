@@ -103,12 +103,13 @@ fn create_tables(conn: &Connection) -> Result<()> {
             declared_artist_count INTEGER NOT NULL,
             declared_playlist_count INTEGER NOT NULL,
             timezone_offset_seconds INTEGER NOT NULL,
-            apple_store_account_id INTEGER NOT NULL,
+            apple_store_account_id INTEGER,
             date_modified_utc TEXT,
             date_cloud_synced_utc TEXT,
             date_last_modified_utc TEXT,
             cloud_database_revision INTEGER,
             date_cloud_lease_expires_utc TEXT,
+            date_local_lease_expires_utc TEXT,
             show_song_list_checkboxes INTEGER,
             keep_media_folder_organized INTEGER,
             copy_files_to_media_folder INTEGER,
@@ -158,10 +159,9 @@ fn create_tables(conn: &Connection) -> Result<()> {
             suggestion_locally_modified INTEGER NOT NULL,
             date_suggestion_flag_modified_utc TEXT,
             date_cloud_synced_utc TEXT,
-            apple_music_store_artist_id INTEGER NOT NULL,
+            apple_music_store_artist_id INTEGER,
             artwork_uuid TEXT,
-            artwork_url TEXT,
-            artwork_url_plist TEXT
+            artwork_url TEXT
         );
 
         CREATE TABLE tracks (
@@ -185,6 +185,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             sort_artist TEXT,
             sort_album_artist TEXT,
             sort_composer TEXT,
+            sort_show TEXT,
             sort_title_mode TEXT NOT NULL,
             sort_album_mode TEXT NOT NULL,
             sort_artist_mode TEXT NOT NULL,
@@ -204,6 +205,14 @@ fn create_tables(conn: &Connection) -> Result<()> {
             sample_rate REAL,
             file_type_fourcc TEXT,
             codec_fourcc TEXT,
+            video_width INTEGER,
+            video_height INTEGER,
+            video_codec_fourcc TEXT,
+            video_bit_rate_kbps INTEGER,
+            video_avc_profile_idc INTEGER,
+            video_avc_level_idc INTEGER,
+            video_frame_rate_milli INTEGER,
+            video_color_bit_depth INTEGER,
             volume_adjustment INTEGER NOT NULL,
             normalization INTEGER,
             gapless_encoder_delay INTEGER,
@@ -285,7 +294,8 @@ fn create_tables(conn: &Connection) -> Result<()> {
             artist_persistent_id TEXT,
             artwork_uuid TEXT,
             artwork_count INTEGER,
-            has_embedded_artwork INTEGER,
+            embedded_artwork_raw INTEGER,
+            embedded_artwork TEXT,
             artwork_total_size_bytes INTEGER,
             file_folder_count INTEGER,
             library_folder_count INTEGER,
@@ -358,6 +368,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             rule_index INTEGER NOT NULL,
             depth INTEGER NOT NULL,
             conjunction TEXT NOT NULL,
+            group_negated INTEGER NOT NULL,
             field_id INTEGER NOT NULL,
             field TEXT NOT NULL,
             operator TEXT NOT NULL,
@@ -373,7 +384,8 @@ fn create_tables(conn: &Connection) -> Result<()> {
             name TEXT,
             handle TEXT,
             avatar_id TEXT,
-            avatar_url TEXT
+            avatar_url TEXT,
+            artwork_uuid TEXT
         );
 
         CREATE TABLE pending_cloud_deletions (
@@ -401,12 +413,13 @@ fn insert_library_metadata(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             declared_playlist_count, timezone_offset_seconds, apple_store_account_id,
             date_modified_utc, date_cloud_synced_utc, date_last_modified_utc,
             cloud_database_revision, date_cloud_lease_expires_utc,
-            show_song_list_checkboxes, keep_media_folder_organized,
-            copy_files_to_media_folder, media_folder_uri, media_folder_path,
-            imported_itl_path, songs_view_preferences_json
+            date_local_lease_expires_utc, show_song_list_checkboxes,
+            keep_media_folder_organized, copy_files_to_media_folder,
+            media_folder_uri, media_folder_path, imported_itl_path,
+            songs_view_preferences_json
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-            ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+            ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
         )",
         params![
             m.persistent_id.to_string(),
@@ -422,12 +435,13 @@ fn insert_library_metadata(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             m.declared_artist_count,
             m.declared_playlist_count,
             m.timezone_offset_seconds,
-            u64_to_sqlite_i64(m.apple_store_account_id),
+            m.apple_store_account_id.map(u64_to_sqlite_i64),
             m.date_modified.map(|d| d.to_string()),
             m.date_cloud_synced.map(|d| d.to_string()),
             m.date_last_modified.map(|d| d.to_string()),
             m.cloud_database_revision,
             m.date_cloud_lease_expires.map(|d| d.to_string()),
+            m.date_local_lease_expires.map(|d| d.to_string()),
             m.show_song_list_checkboxes.map(i32::from),
             m.keep_media_folder_organized.map(i32::from),
             m.copy_files_to_media_folder.map(i32::from),
@@ -496,8 +510,8 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             cloud_artist_id, playlist_only, suggestion_flag,
             suggestion_locally_modified, date_suggestion_flag_modified_utc,
             date_cloud_synced_utc, apple_music_store_artist_id, artwork_uuid,
-            artwork_url, artwork_url_plist
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            artwork_url
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
     )?;
     for a in &lib.artists {
         stmt.execute(params![
@@ -511,10 +525,9 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             i32::from(a.suggestion_locally_modified),
             a.date_suggestion_flag_modified.map(|d| d.to_string()),
             a.date_cloud_synced.map(|d| d.to_string()),
-            u64_to_sqlite_i64(a.apple_music_store_artist_id),
+            a.apple_music_store_artist_id.map(u64_to_sqlite_i64),
             a.artwork_uuid,
             a.artwork_url,
-            a.artwork_url_plist,
         ])?;
     }
     Ok(())
@@ -522,20 +535,23 @@ fn insert_artists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "full-row 127-column SQLite track binding"
+    reason = "full-row 137-column SQLite track binding"
 )]
 fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
-    let placeholders: Vec<String> = (1..=127).map(|i| format!("?{i}")).collect();
+    let placeholders: Vec<String> = (1..=137).map(|i| format!("?{i}")).collect();
     let sql = format!(
         "INSERT INTO tracks (
             persistent_id, title, album, artist, album_artist, composer, genre,
             store_genre_id, kind, comments, grouping, work_name, movement_name,
             movement_number, movement_total, sort_title, sort_album, sort_artist,
-            sort_album_artist, sort_composer, sort_title_mode, sort_album_mode,
-            sort_artist_mode, sort_album_artist_mode, sort_composer_mode,
-            sort_show_mode, track_number, track_total, disc_number, disc_total,
-            year, bpm, duration_ms, file_size, bit_rate, is_vbr, sample_rate,
-            file_type_fourcc, codec_fourcc, volume_adjustment, normalization,
+            sort_album_artist, sort_composer, sort_show, sort_title_mode,
+            sort_album_mode, sort_artist_mode, sort_album_artist_mode,
+            sort_composer_mode, sort_show_mode, track_number, track_total,
+            disc_number, disc_total, year, bpm, duration_ms, file_size, bit_rate,
+            is_vbr, sample_rate, file_type_fourcc, codec_fourcc, video_width,
+            video_height, video_codec_fourcc, video_bit_rate_kbps,
+            video_avc_profile_idc, video_avc_level_idc, video_frame_rate_milli,
+            video_color_bit_depth, volume_adjustment, normalization,
             gapless_encoder_delay, gapless_encoder_padding, gapless_total_samples,
             gapless_last_eight_frames_offset, equalizer_raw, equalizer_preset_id,
             equalizer_name, star_rating, stars, suggestion_flag,
@@ -563,8 +579,9 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             date_released_utc, date_purchased_utc, date_cloud_synced_utc,
             file_url, legacy_file_path, book_path, album_persistent_id,
             artist_persistent_id, artwork_uuid, artwork_count,
-            has_embedded_artwork, artwork_total_size_bytes, file_folder_count,
-            library_folder_count, isrc, copyright, extra_strings_json
+            embedded_artwork_raw, embedded_artwork, artwork_total_size_bytes,
+            file_folder_count, library_folder_count, isrc, copyright,
+            extra_strings_json
         ) VALUES ({})",
         placeholders.join(", ")
     );
@@ -575,6 +592,7 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
         } else {
             Some(serde_json::to_string(&t.extra_strings)?)
         };
+        let vi = t.video_info.as_ref();
         stmt.execute(params![
             t.persistent_id.to_string(),
             t.title,
@@ -596,6 +614,7 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             t.sort_artist,
             t.sort_album_artist,
             t.sort_composer,
+            t.sort_show,
             t.sort_modes.title.to_string(),
             t.sort_modes.album.to_string(),
             t.sort_modes.artist.to_string(),
@@ -615,13 +634,21 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             t.sample_rate.map(f64::from),
             t.file_type_fourcc,
             t.codec_fourcc,
+            vi.map(|v| v.width),
+            vi.map(|v| v.height),
+            vi.and_then(|v| v.codec_fourcc.as_deref()),
+            vi.map(|v| v.video_bit_rate_kbps),
+            vi.map(|v| v.avc_profile_idc),
+            vi.map(|v| v.avc_level_idc),
+            vi.map(|v| v.frame_rate_milli),
+            vi.map(|v| v.color_bit_depth),
             t.volume_adjustment,
             t.normalization,
             t.gapless_encoder_delay,
             t.gapless_encoder_padding,
             t.gapless_total_samples.map(u64_to_sqlite_i64),
             t.gapless_last_eight_frames_offset.map(u64_to_sqlite_i64),
-            t.equalizer,
+            t.equalizer_preset.as_ref().map(|e| e.raw.as_str()),
             t.equalizer_preset.as_ref().and_then(|e| e.preset_id),
             t.equalizer_preset.as_ref().map(|e| e.name.as_str()),
             t.star_rating,
@@ -696,7 +723,8 @@ fn insert_tracks(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             t.artist_persistent_id.map(|id| id.to_string()),
             t.artwork_uuid,
             t.artwork_count,
-            t.has_embedded_artwork.map(i32::from),
+            t.embedded_artwork.map(|k| i32::from(k.raw())),
+            t.embedded_artwork.map(|k| k.to_string()),
             t.artwork_total_size_bytes,
             t.file_folder_count,
             t.library_folder_count,
@@ -744,9 +772,9 @@ fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
     )?;
     let mut rule_stmt = tx.prepare(
         "INSERT INTO smart_playlist_rules (
-            playlist_persistent_id, rule_index, depth, conjunction,
+            playlist_persistent_id, rule_index, depth, conjunction, group_negated,
             field_id, field, operator, comparison_raw, description, value_json
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
 
     for p in &lib.playlists {
@@ -831,8 +859,9 @@ fn insert_playlists(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
 fn insert_social_profiles(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
     let mut stmt = tx.prepare(
         "INSERT INTO social_profiles (
-            persistent_id, profile_id, name, handle, avatar_id, avatar_url
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            persistent_id, profile_id, name, handle, avatar_id, avatar_url,
+            artwork_uuid
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
     for s in &lib.social_profiles {
         stmt.execute(params![
@@ -842,6 +871,7 @@ fn insert_social_profiles(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             s.handle,
             s.avatar_id,
             s.avatar_url,
+            s.artwork_uuid,
         ])?;
     }
     Ok(())
@@ -948,6 +978,7 @@ fn insert_smart_rules_recursive(
                     idx_i64,
                     depth_i64,
                     conj_str,
+                    i32::from(group.negated),
                     cond.field_id,
                     cond.field.to_string(),
                     cond.operator.to_string(),

@@ -1,8 +1,8 @@
 use binrw::binrw;
 
 use super::boma::BomaSection;
-use super::read_bounded_vec;
 use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
+use super::{read_bounded_vec, read_item_bomas};
 
 /// Social profiles list master header (`Lsma`, `hsma` subtype 15, typically 92 bytes).
 #[binrw]
@@ -107,7 +107,7 @@ pub struct SocialProfileItem {
     /// The `isma` social profile header.
     pub header: SocialProfileItemHeader,
     /// Metadata `boma` children attached to this social profile.
-    #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "isma.bomas"))]
+    #[br(parse_with = read_item_bomas, args(header.header_size, header.total_size, header.boma_count, "isma", "isma.bomas"))]
     pub bomas: Vec<BomaSection>,
 }
 

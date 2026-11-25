@@ -175,3 +175,160 @@ fn test_deeply_nested_slst_and_trailing_ipfa_roundtrip_without_overflow() {
         musicdb::sections::CloudDeletionItem::read_le(&mut Cursor::new(&bad_item_size)).is_err()
     );
 }
+
+fn make_boma_bytes(subtype: u32, payload: &[u8]) -> Vec<u8> {
+    let total_size = 20u32 + u32::try_from(payload.len()).unwrap();
+    let mut out = vec![0u8; 20 + payload.len()];
+    out[0..4].copy_from_slice(b"boma");
+    out[4..8].copy_from_slice(&20u32.to_le_bytes());
+    out[8..12].copy_from_slice(&total_size.to_le_bytes());
+    out[12..16].copy_from_slice(&subtype.to_le_bytes());
+    out[20..].copy_from_slice(payload);
+    out
+}
+
+#[test]
+fn test_oversized_structured_bomas_preserve_unk_tail_roundtrip() {
+    let cases: &[(u32, usize)] = &[
+        (0x0001, 364 + 12), // TrackNumerics + 12B tail
+        (0x0017, 52 + 8),   // TrackPlaysSkips + 8B tail
+        (0x0024, 84 + 16),  // VideoInfo + 16B tail
+        (0x00CA, 112 + 10), // SmartPlaylistOptions + 10B tail
+    ];
+
+    for &(subtype, payload_len) in cases {
+        let mut payload = vec![0u8; payload_len];
+        let base_len = match subtype {
+            0x0001 => 364,
+            0x0017 => 52,
+            0x0024 => 84,
+            0x00CA => 112,
+            _ => unreachable!(),
+        };
+        for (i, b) in payload[base_len..].iter_mut().enumerate() {
+            *b = u8::try_from(0xA0 + i).unwrap();
+        }
+        let boma_bytes = make_boma_bytes(subtype, &payload);
+        let parsed =
+            BomaSection::read_le(&mut Cursor::new(&boma_bytes)).expect("parse oversized boma");
+        match (subtype, &parsed.payload) {
+            (0x0001, BomaPayload::TrackNumerics(n)) => {
+                assert_eq!(n.unk_tail.as_slice(), &payload[base_len..]);
+            }
+            (0x0017, BomaPayload::TrackPlaysSkips(ps)) => {
+                assert_eq!(ps.unk_tail.as_slice(), &payload[base_len..]);
+            }
+            (0x0024, BomaPayload::VideoInfo(vi)) => {
+                assert_eq!(vi.unk_tail.as_slice(), &payload[base_len..]);
+            }
+            (0x00CA, BomaPayload::SmartPlaylistOptions(opts)) => {
+                assert_eq!(opts.unk_tail.as_slice(), &payload[base_len..]);
+            }
+            other => panic!("unexpected payload for subtype 0x{subtype:04X}: {other:?}"),
+        }
+        let mut reserialized = Vec::new();
+        parsed
+            .write_le(&mut Cursor::new(&mut reserialized))
+            .expect("write oversized boma");
+        assert_eq!(reserialized, boma_bytes);
+    }
+}
+
+#[test]
+fn test_truncated_known_hsma_child_and_malformed_slst_return_err() {
+    // 1. Truncated known hsma children return Err(TruncatedSection):
+    //    - subtype=1 TrackList ("ltma", min_len=12) with 8 bytes and with 2 bytes
+    //    - subtype=6 LibraryMaster ("plma", min_len=160) with 20 bytes
+    for (subtype, payload) in [
+        (1u32, b"ltma\x00\x00\x00\x00".as_slice()),
+        (1u32, b"lt".as_slice()),
+        (6u32, b"plma0123456789abcdef".as_slice()),
+    ] {
+        let mut trunc_hsma = vec![0u8; 160 + 56 + payload.len()];
+        trunc_hsma[0..4].copy_from_slice(b"hfma");
+        trunc_hsma[4..8].copy_from_slice(&160u32.to_le_bytes());
+        trunc_hsma[160..164].copy_from_slice(b"hsma");
+        trunc_hsma[164..168].copy_from_slice(&56u32.to_le_bytes());
+        let hsma_total = u32::try_from(56 + payload.len()).expect("fits u32");
+        trunc_hsma[168..172].copy_from_slice(&hsma_total.to_le_bytes());
+        trunc_hsma[172..176].copy_from_slice(&subtype.to_le_bytes());
+        trunc_hsma[216..216 + payload.len()].copy_from_slice(payload);
+        assert!(
+            matches!(
+                RawLibraryFile::from_raw_bytes(&trunc_hsma),
+                Err(MusicDbError::TruncatedSection { .. })
+            ),
+            "expected TruncatedSection for subtype={subtype}, len={}",
+            payload.len()
+        );
+    }
+
+    // 2. Trailer (subtype=255) and Unknown subtype (subtype=99) still parse into HsmaChild::Unknown
+    for subtype in [255u32, 99u32] {
+        let mut ok_hsma = vec![0u8; 160 + 56 + 12];
+        ok_hsma[0..4].copy_from_slice(b"hfma");
+        ok_hsma[4..8].copy_from_slice(&160u32.to_le_bytes());
+        ok_hsma[160..164].copy_from_slice(b"hsma");
+        ok_hsma[164..168].copy_from_slice(&56u32.to_le_bytes());
+        ok_hsma[168..172].copy_from_slice(&(56u32 + 12u32).to_le_bytes());
+        ok_hsma[172..176].copy_from_slice(&subtype.to_le_bytes());
+        ok_hsma[216..228].copy_from_slice(b"RUSH21121976");
+        let parsed = RawLibraryFile::from_raw_bytes(&ok_hsma).expect("parse trailer/unknown hsma");
+        assert!(matches!(
+            parsed.sections[0].child,
+            musicdb::sections::HsmaChild::Unknown { .. }
+        ));
+        assert_eq!(parsed.to_raw_bytes().unwrap(), ok_hsma);
+    }
+
+    // 3. Truncated 0x00C9 SLst payload (starts with "SLst", < 136 bytes) returns Err
+    let mut trunc_slst = vec![0u8; 40];
+    trunc_slst[0..4].copy_from_slice(b"SLst");
+    let bad_c9 = make_boma_bytes(0x00C9, &trunc_slst);
+    assert!(BomaSection::read_le(&mut Cursor::new(&bad_c9)).is_err());
+
+    // 4. Malformed nested SLst inside a SmartPlaylistRule (starts with "SLst", truncated < 136 bytes) returns Err
+    let mut outer_slst = vec![0u8; 136 + 56 + 24];
+    outer_slst[0..4].copy_from_slice(b"SLst");
+    outer_slst[8..12].copy_from_slice(&1u32.to_be_bytes());
+    outer_slst[136 + 52..136 + 56].copy_from_slice(&24u32.to_be_bytes());
+    outer_slst[136 + 56..136 + 60].copy_from_slice(b"SLst");
+    let bad_nested_c9 = make_boma_bytes(0x00C9, &outer_slst);
+    assert!(BomaSection::read_le(&mut Cursor::new(&bad_nested_c9)).is_err());
+}
+
+#[test]
+fn test_item_total_size_mismatch_and_known_binary_boma_dispatch() {
+    // 1. TrackItem (itma) whose declared total_size does not equal header_size + sum(boma.total_size)
+    let mut bad_itma = vec![0u8; 376 + 24];
+    bad_itma[0..4].copy_from_slice(b"itma");
+    bad_itma[4..8].copy_from_slice(&376u32.to_le_bytes()); // header_size
+    bad_itma[8..12].copy_from_slice(&(376u32 + 24u32 + 8u32).to_le_bytes()); // mismatched total_size
+    bad_itma[12..16].copy_from_slice(&1u32.to_le_bytes()); // boma_count = 1
+    let boma = make_boma_bytes(0x0002, &[0x21, 0x12, 0x00, 0x00]);
+    bad_itma[376..376 + 24].copy_from_slice(&boma);
+    assert!(
+        musicdb::sections::TrackItem::read_le(&mut Cursor::new(&bad_itma)).is_err(),
+        "mismatched itma total_size must return Err"
+    );
+
+    // 2. Known binary plma subtypes (0x01F6, 0x01FF) mimicking BomaStringSection header (encoding=1, len=payload-16)
+    // must still parse as BomaPayload::Unknown, not StringSection.
+    for subtype in [0x01F6u32, 0x01FFu32] {
+        let mut fake_str_payload = vec![0u8; 44];
+        fake_str_payload[0..4].copy_from_slice(&1u32.to_le_bytes()); // encoding = 1 (UTF-16LE)
+        fake_str_payload[4..8].copy_from_slice(&28u32.to_le_bytes()); // string_byte_len == 44 - 16
+        let boma_bytes = make_boma_bytes(subtype, &fake_str_payload);
+        let parsed =
+            BomaSection::read_le(&mut Cursor::new(&boma_bytes)).expect("parse known binary boma");
+        assert!(matches!(
+            parsed.payload,
+            BomaPayload::Unknown { subtype: s, .. } if s == subtype
+        ));
+        let mut out = Vec::new();
+        parsed
+            .write_le(&mut Cursor::new(&mut out))
+            .expect("write known binary boma");
+        assert_eq!(out, boma_bytes);
+    }
+}

@@ -88,7 +88,10 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         let raw_mont = load_raw(&mdb_mont)?;
         let mut cm: BTreeMap<(u8, u8, u8, i16, bool), usize> = BTreeMap::new();
         for t in tracks_of(&raw_mont) {
-            let (b53, b54) = (*t.header.unk_53, t.header.has_asset_info_plist);
+            let (b53, b54) = (
+                t.header.has_extended_text_metadata,
+                t.header.has_asset_info_plist,
+            );
             let n0 = t.bomas.iter().find_map(|b| match &b.payload {
                 BomaPayload::TrackNumerics(n) => Some(n),
                 _ => None,

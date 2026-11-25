@@ -406,10 +406,10 @@ mod tests {
         out
     }
 
-    fn make_smart_rule_be(field_id: u32, unk_8: u32, child: &[u8]) -> Vec<u8> {
+    fn make_smart_rule_be(field_id: u32, unk_44: u32, child: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; 56];
         out[0..4].copy_from_slice(&field_id.to_be_bytes());
-        out[8..12].copy_from_slice(&unk_8.to_be_bytes());
+        out[44..48].copy_from_slice(&unk_44.to_be_bytes());
         let child_size = u32::try_from(child.len()).expect("child_size");
         out[52..56].copy_from_slice(&child_size.to_be_bytes());
         out.extend_from_slice(child);
@@ -549,7 +549,7 @@ mod tests {
             ("lpma", "unk_48"),
             ("SmartPlaylistOptions", "unk_15"),
             ("SLst", "unk_4"),
-            ("SmartPlaylistRule", "unk_8"),
+            ("SmartPlaylistRule", "unk_44"),
             ("SmartPlaylistRuleArguments", "unk_64"),
         ] {
             assert!(
@@ -561,13 +561,13 @@ mod tests {
         assert_eq!(
             report
                 .unknown_boma_subtypes
-                .get("plma::0x01F6 (unknown_boma)"),
+                .get("plma::0x01F6 (unknown_hex_1f6)"),
             Some(&1)
         );
         assert_eq!(
             report
                 .unknown_boma_subtypes
-                .get("plma::0x01FF (unknown_boma)"),
+                .get("plma::0x01FF (library_persistent_id_ref)"),
             Some(&1)
         );
 
@@ -578,11 +578,11 @@ mod tests {
             .expect("SLst.unk_4 summary");
         assert_eq!(slst_unk4.nonzero_instances, 2);
 
-        let rule_unk8 = report
+        let rule_unk44 = report
             .nonzero_unknown_fields
             .iter()
-            .find(|f| f.section == "SmartPlaylistRule" && f.field_name == "unk_8")
-            .expect("SmartPlaylistRule.unk_8 summary");
-        assert_eq!(rule_unk8.nonzero_instances, 2);
+            .find(|f| f.section == "SmartPlaylistRule" && f.field_name == "unk_44")
+            .expect("SmartPlaylistRule.unk_44 summary");
+        assert_eq!(rule_unk44.nonzero_instances, 2);
     }
 }

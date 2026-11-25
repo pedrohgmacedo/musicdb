@@ -4,7 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
-use musicdb::{DistinguishedPlaylistKind, Library, SmartLimitUnit, SmartSelectionMethod};
+use musicdb::{
+    DistinguishedPlaylistKind, EmbeddedArtworkKind, Library, SmartLimitUnit, SmartSelectionMethod,
+};
 
 /// Resolves a path inside the local test corpus directory (`MUSICDB_CORPUS_DIR` if set,
 /// otherwise the parent workspace directory of `CARGO_MANIFEST_DIR`).
@@ -171,6 +173,13 @@ fn test_2026_11_23_offline_local_probes() {
     assert_eq!(vi.color_bit_depth, 24);
 
     // 3. ALAC (fmt=60), WAV (fmt=70), AIFF (fmt=70) format codes
+    assert_local_lossless_format_codes(tracks);
+
+    // 4. High-level domain model exposes Track::video_info and EmbeddedArtworkKind::VideoPosterFrame
+    assert_domain_local_video_fields(&raw);
+}
+
+fn assert_local_lossless_format_codes(tracks: &[musicdb::sections::TrackItem]) {
     for (pid, expected_fcc, expected_fmt) in [
         (0xD98A_C926_FB1A_C81B, "M4A ", 60u16),
         (0x8B60_5B7E_8111_8CE6, "WAV ", 70u16),
@@ -191,5 +200,68 @@ fn test_2026_11_23_offline_local_probes() {
         assert_eq!(num.is_local_video, 0);
         assert_eq!(num.file_type_fourcc_str().as_deref(), Some(expected_fcc));
         assert_eq!(num.container_format_kind, expected_fmt);
+    }
+}
+
+fn assert_domain_local_video_fields(raw: &musicdb::RawLibraryFile) {
+    let lib = Library::from(raw);
+    let dom_vid = lib
+        .track_by_id(0xAC4A_A560_6D9B_880Cu64)
+        .expect("domain local 720p video track");
+    assert_eq!(
+        dom_vid.embedded_artwork,
+        Some(EmbeddedArtworkKind::VideoPosterFrame)
+    );
+    assert!(!dom_vid.has_embedded_artwork());
+    let dom_vi = dom_vid.video_info.as_ref().expect("domain video_info");
+    assert_eq!((dom_vi.width, dom_vi.height), (1280, 720));
+    assert_eq!(dom_vi.codec_fourcc.as_deref(), Some("avc1"));
+    assert_eq!(dom_vi.avc_profile_idc, 100);
+    assert_eq!(dom_vi.avc_level_idc, 31);
+    assert_eq!(dom_vi.frame_rate_milli, 29_970);
+    assert_eq!(dom_vi.color_bit_depth, 24);
+}
+
+fn collect_verified_musicdb_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            collect_verified_musicdb_files(&p, out);
+        } else if p.extension().and_then(|e| e.to_str()) == Some("musicdb") {
+            out.push(p);
+        }
+    }
+}
+
+#[test]
+fn test_all_verified_corpus_musicdb_files_parse_and_roundtrip_losslessly() {
+    let mut files = Vec::new();
+    for subdir in ["library-data", "snapshots"] {
+        let dir = corpus_path(subdir);
+        if dir.is_dir() {
+            collect_verified_musicdb_files(&dir, &mut files);
+        }
+    }
+    if files.is_empty() {
+        return;
+    }
+    files.sort();
+    for path in &files {
+        let raw_bytes = musicdb::load_raw_musicdb(path)
+            .unwrap_or_else(|e| panic!("decrypt {}: {e}", path.display()));
+        let parsed = musicdb::RawLibraryFile::from_raw_bytes(&raw_bytes)
+            .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        let reserialized = parsed
+            .to_raw_bytes()
+            .unwrap_or_else(|e| panic!("serialize {}: {e}", path.display()));
+        assert_eq!(
+            reserialized,
+            raw_bytes,
+            "round-trip mismatch on {}",
+            path.display()
+        );
     }
 }

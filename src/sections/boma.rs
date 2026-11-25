@@ -221,6 +221,7 @@ pub fn boma_subtype_name(subtype: u32) -> &'static str {
         0x0040 => "movement_name",
         0x0042 => "book_path",
         0x0043 => "legacy_file_path",
+        0x0053 => "sort_show",
         0x00C8 => "playlist_name",
         0x00C9 => "smart_playlist_rules",
         0x00CA => "smart_playlist_options",
@@ -240,10 +241,12 @@ pub fn boma_subtype_name(subtype: u32) -> &'static str {
         0x0192 => "plist_artist_artwork_url",
         0x0193 => "cloud_artist_id",
         0x01F4 => "unknown_hex_1f4",
+        0x01F6 => "unknown_hex_1f6",
         0x01F8 => "media_folder_uri",
         0x01FC => "imported_itl_path",
         0x01FD => "media_folder_path_1fd",
         0x01FE => "unknown_hex_1fe",
+        0x01FF => "library_persistent_id_ref",
         0x0200 => "media_folder_path_200",
         0x0201 => "library_view_version_vector",
         0x02BC => "xml_block_2bc",
@@ -525,30 +528,58 @@ fn read_boma_payload<R: Read + Seek>(
 ) -> BinResult<BomaPayload> {
     const STACK_IPFA_CAP: usize = 128;
 
-    // Fast path 1: fixed-size structured subtypes read directly from `reader` (zero Vec allocation).
-    match (subtype, payload_len) {
-        (0x0001, 364) => {
-            return Ok(BomaPayload::TrackNumerics(Box::new(
-                TrackNumerics::read_le(reader)?,
-            )));
+    let payload_pos = reader.stream_position()?;
+
+    // Fast path 1: fixed-header structured subtypes read directly from `reader` (zero Vec allocation
+    // for standard sizes; forward-compatible trailing bytes preserved in `unk_tail`).
+    match subtype {
+        0x0001 if payload_len >= 364 => {
+            let mut val = TrackNumerics::read_le(reader)?;
+            if let Some(tail_len) = payload_len.checked_sub(364)
+                && tail_len > 0
+            {
+                val.unk_tail = Unknown::new(TailBytes::read_exact_len(reader, tail_len)?);
+            }
+            return Ok(BomaPayload::TrackNumerics(Box::new(val)));
         }
-        (0x0017, 52) => {
-            return Ok(BomaPayload::TrackPlaysSkips(TrackPlaysSkips::read_le(
-                reader,
-            )?));
+        0x0017 if payload_len >= 52 => {
+            let mut val = TrackPlaysSkips::read_le(reader)?;
+            if let Some(tail_len) = payload_len.checked_sub(52)
+                && tail_len > 0
+            {
+                val.unk_tail = Unknown::new(TailBytes::read_exact_len(reader, tail_len)?);
+            }
+            return Ok(BomaPayload::TrackPlaysSkips(val));
         }
-        (0x0024, 84) => {
-            return Ok(BomaPayload::VideoInfo(Box::new(VideoInfo::read_le(
-                reader,
-            )?)));
+        0x0024 if payload_len >= 84 => {
+            let mut val = VideoInfo::read_le(reader)?;
+            if let Some(tail_len) = payload_len.checked_sub(84)
+                && tail_len > 0
+            {
+                val.unk_tail = Unknown::new(TailBytes::read_exact_len(reader, tail_len)?);
+            }
+            return Ok(BomaPayload::VideoInfo(Box::new(val)));
         }
-        (0x00CA, 112) => {
-            return Ok(BomaPayload::SmartPlaylistOptions(Box::new(
-                SmartPlaylistOptions::read_le(reader)?,
-            )));
+        0x00CA if payload_len >= 112 => {
+            let mut val = SmartPlaylistOptions::read_le(reader)?;
+            if let Some(tail_len) = payload_len.checked_sub(112)
+                && tail_len > 0
+            {
+                val.unk_tail = Unknown::new(TailBytes::read_exact_len(reader, tail_len)?);
+            }
+            return Ok(BomaPayload::SmartPlaylistOptions(Box::new(val)));
         }
-        // `plma` subtypes `0x01F6` (20 B) and `0x01FF` (44 B) have unverified semantics and
-        // intentionally fall through to `BomaPayload::Unknown` for lossless preservation.
+        // Known raw binary `plma` subtypes: bypass `BomaStringSection` heuristic detection so
+        // binary headers whose leading words happen to match `(1|2, payload_len - 16)` are never
+        // misclassified as structured strings.
+        // - `0x01F4` / `0x01F6` (20 B) / `0x01FE`: raw binary `plma` blobs.
+        // - `0x01FF` (44 B): library persistent ID reference (`0..4 = 1u32`, `4..8 = 0u32`,
+        //   `8..16 = library_persistent_id`, `16..24 = library_persistent_id`, `24..44 = [0; 20]`).
+        0x01F4 | 0x01F6 | 0x01FE | 0x01FF => {
+            let mut raw_bytes = vec![0u8; payload_len];
+            reader.read_exact(&mut raw_bytes)?;
+            return Ok(BomaPayload::Unknown { subtype, raw_bytes });
+        }
         _ => {}
     }
 
@@ -559,7 +590,7 @@ fn read_boma_payload<R: Read + Seek>(
         let mut stack_buf = [0u8; STACK_IPFA_CAP];
         if let Some(slice) = stack_buf.get_mut(..payload_len) {
             reader.read_exact(slice)?;
-            if let Some(structured) = parse_structured_boma_payload(subtype, slice)? {
+            if let Some(structured) = parse_structured_boma_payload(subtype, slice, payload_pos)? {
                 return Ok(structured);
             }
             return Ok(parse_unstructured_boma_payload(subtype, slice.to_vec()));
@@ -570,7 +601,9 @@ fn read_boma_payload<R: Read + Seek>(
     if matches!(subtype, 0x00C9 | 0x00CE | 0x00DA) {
         let mut payload_bytes = vec![0u8; payload_len];
         reader.read_exact(&mut payload_bytes)?;
-        if let Some(structured) = parse_structured_boma_payload(subtype, &payload_bytes)? {
+        if let Some(structured) =
+            parse_structured_boma_payload(subtype, &payload_bytes, payload_pos)?
+        {
             return Ok(structured);
         }
         return Ok(parse_unstructured_boma_payload(subtype, payload_bytes));
@@ -653,6 +686,7 @@ fn read_boma_string_or_unstructured<R: Read>(
 fn parse_structured_boma_payload(
     subtype: u32,
     payload_bytes: &[u8],
+    payload_offset: u64,
 ) -> BinResult<Option<BomaPayload>> {
     let first_four = payload_bytes.get(0..4);
     let parsed = match subtype {
@@ -668,11 +702,34 @@ fn parse_structured_boma_payload(
             (usize::try_from(cur.position()).ok() == Some(payload_bytes.len()))
                 .then_some(BomaPayload::PlaylistItemCompact(item))
         }
-        0x00C9 if payload_bytes.len() >= 136 && first_four == Some(b"SLst") => {
-            let mut cur = Cursor::new(payload_bytes);
-            if let Ok(slst) = SlstSection::read_be(&mut cur)
-                && usize::try_from(cur.position()).ok() == Some(payload_bytes.len())
+        0x00C9 => {
+            if payload_bytes.len() < 136 && (payload_bytes.len() < 4 || first_four == Some(b"SLst"))
             {
+                return Err(binrw::Error::Custom {
+                    pos: payload_offset,
+                    err: Box::new(MusicDbError::TruncatedSection {
+                        section: "SLst".to_string(),
+                        offset: payload_offset,
+                        needed: 136,
+                        available: u64::try_from(payload_bytes.len()).unwrap_or(u64::MAX),
+                    }),
+                });
+            }
+            if first_four == Some(b"SLst") {
+                let mut cur = Cursor::new(payload_bytes);
+                let slst = SlstSection::read_be(&mut cur)?;
+                let consumed = cur.position();
+                let expected_len = u64::try_from(payload_bytes.len()).unwrap_or(u64::MAX);
+                if consumed != expected_len {
+                    return Err(binrw::Error::Custom {
+                        pos: payload_offset.saturating_add(consumed),
+                        err: Box::new(MusicDbError::SectionBoundaryMismatch {
+                            section: "boma(0x00c9:SLst)".to_string(),
+                            expected: payload_offset.saturating_add(expected_len),
+                            actual: payload_offset.saturating_add(consumed),
+                        }),
+                    });
+                }
                 Some(BomaPayload::SmartPlaylistRules(Box::new(slst)))
             } else {
                 None

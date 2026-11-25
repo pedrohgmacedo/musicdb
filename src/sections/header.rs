@@ -46,7 +46,7 @@ pub struct HfmaHeader {
     pub apple_store_account_id: u64,
     /// Offset 100..104: Library modification date (seconds since 1904-01-01 00:00:00 UTC).
     pub date_modified: AppleTimestamp,
-    /// Offset 104..108: Unknown (typically 1 in outer, 0 in inner).
+    /// Offset 104..108: Unknown (`1` in `Library.musicdb` outer `hfma`, `0` in `Library Preferences.musicdb` outer `hfma` and inner `hfma`).
     pub unk_104: Unknown<u32>,
     /// Offset 108..116: Original iTunes Library Persistent ID (if imported from iTunes).
     pub itunes_library_persistent_id: u64,

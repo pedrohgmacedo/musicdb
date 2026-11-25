@@ -942,6 +942,14 @@ fn run_query_playlist(input: &Path, query: Option<&str>, json: bool) -> Result<(
     let pl = lib
         .playlist_by_id(query)
         .or_else(|| lib.playlist_by_name(query))
+        .or_else(|| {
+            let q = query.to_lowercase();
+            lib.playlists.iter().find(|p| {
+                p.name
+                    .as_deref()
+                    .is_some_and(|n| n.to_lowercase().contains(&q))
+            })
+        })
         .ok_or_else(|| anyhow::anyhow!("No playlist matching {query:?} found"))?;
     if json {
         println!("{}", serde_json::to_string_pretty(pl)?);
@@ -994,7 +1002,8 @@ fn print_playlist_details(lib: &Library, pl: &Playlist) {
             );
         }
         if let Some(group) = &sp.rule_group {
-            println!("Rule Tree (Match {:?}):", group.conjunction);
+            let neg = if group.negated { "NOT " } else { "" };
+            println!("Rule Tree ({neg}Match {:?}):", group.conjunction);
             print_smart_rule_group(group, 1);
         }
     }
@@ -1208,7 +1217,8 @@ fn print_smart_rule_group(group: &musicdb::SmartRuleGroup, indent: usize) {
     for node in &group.rules {
         match node {
             musicdb::SmartRuleNode::Group(sub) => {
-                println!("{pad}[Nested Group: Match {:?}]", sub.conjunction);
+                let neg = if sub.negated { "NOT " } else { "" };
+                println!("{pad}[Nested Group: {neg}Match {:?}]", sub.conjunction);
                 print_smart_rule_group(sub, indent + 1);
             }
             musicdb::SmartRuleNode::Condition(cond) => {

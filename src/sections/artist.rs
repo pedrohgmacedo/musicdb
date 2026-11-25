@@ -1,12 +1,12 @@
 use binrw::binrw;
 
 use super::boma::BomaSection;
-use super::read_bounded_vec;
 use super::timestamp::AppleTimestamp;
 use super::unknown::{
     TailBytes, Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, read_unknown_tail_bytes,
     visit_unknowns,
 };
+use super::{read_bounded_vec, read_item_bomas};
 
 /// Artist list master header (`lAma`, typically 100 bytes).
 #[binrw]
@@ -148,7 +148,7 @@ pub struct ArtistItem {
     /// The `iAma` artist header.
     pub header: ArtistItemHeader,
     /// Metadata `boma` children attached to this artist.
-    #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "iAma.bomas"))]
+    #[br(parse_with = read_item_bomas, args(header.header_size, header.total_size, header.boma_count, "iAma", "iAma.bomas"))]
     pub bomas: Vec<BomaSection>,
 }
 

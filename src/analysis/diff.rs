@@ -425,14 +425,14 @@ fn append_added_boma_info(out: &mut String, boma: &BomaSection) {
             for (ri, rule) in rules.rules.iter().enumerate() {
                 let _ = write!(
                     out,
-                    "\n        Rule #{:02}: field=0x{:02X} ({}: {}) cmp=0x{:08X} ({}) unk_8=0x{:08X} unk_44=0x{:X} unk_48=0x{:X} child={:?}",
+                    "\n        Rule #{:02}: field=0x{:02X} ({}: {}) cmp=0x{:08X} ({}) nested=0x{:08X} unk_44=0x{:X} unk_48=0x{:X} child={:?}",
                     ri + 1,
                     rule.field_id,
                     rule.field_id,
                     rule.field_name(),
                     rule.comparison_method,
                     rule.comparison_description(),
-                    rule.unk_8,
+                    rule.is_nested_rule_group,
                     rule.unk_44,
                     rule.unk_48,
                     rule.child
@@ -682,7 +682,12 @@ fn collect_track_text_changes(ta: &Track, tb: &Track, changes: &mut Vec<String>)
         &ta.sort_composer,
         &tb.sort_composer,
     );
-    cmp_hl_field(changes, "equalizer", &ta.equalizer, &tb.equalizer);
+    cmp_hl_field(
+        changes,
+        "equalizer_preset",
+        &ta.equalizer_preset,
+        &tb.equalizer_preset,
+    );
     cmp_hl_field(changes, "file_url", &ta.file_url, &tb.file_url);
     cmp_hl_field(
         changes,

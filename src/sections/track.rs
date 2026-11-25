@@ -1,9 +1,11 @@
 use binrw::binrw;
 
 use super::boma::BomaSection;
-use super::read_bounded_vec;
 use super::timestamp::AppleTimestamp;
-use super::unknown::{Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns};
+use super::unknown::{
+    TailBytes, Unknown, UnknownVisitor, VisitUnknowns, read_unknown_tail, visit_unknowns,
+};
+use super::{read_bounded_vec, read_item_bomas};
 
 /// Track list master header (`ltma`, typically 92 bytes).
 #[binrw]
@@ -105,8 +107,8 @@ pub struct TrackItemHeader {
     pub checkbox_show_composer_in_all_views: u8,
     /// Offset 52: Checkbox "Use work and movement" (0 or 1).
     pub checkbox_use_work_and_movement: u8,
-    /// Offset 53: Unknown byte (`1` on 100% of tracks carrying extended text metadata `boma`s `0x0012`/`0x002E`/`0x003F`/`0x0040` in modern Windows iCloud libraries — 33,969/33,969 exact match).
-    pub unk_53: Unknown<u8>,
+    /// Offset 53: Extended text metadata presence flag (`1` iff extended text metadata `boma`s `0x0010`/`0x0012`/`0x0013`/`0x0016`/`0x002E`/`0x003F`/`0x0040` are present; 33,969/33,969 bijection).
+    pub has_extended_text_metadata: u8,
     /// Offset 54: Asset info plist presence flag (`1` iff `boma 0x001D` `plist_asset_info` / MP4 `iTunMOVI` atom is present, `0` otherwise; verified by controlled M4A `pgap` / `iTunMOVI` / MP3 artwork A/B tests and 33,980/33,980 bijection).
     pub has_asset_info_plist: u8,
     /// Offset 55: Playback or custom start/stop bounds activity flag (changes 0 -> 1 on first play or when playback start/stop bounds are set).
@@ -123,8 +125,8 @@ pub struct TrackItemHeader {
     pub unk_60_62: Unknown<[u8; 2]>,
     /// Offset 62..64: Suggestion/like flag (0 = none, 1 = removed, 2 = favorite/loved, 3 = suggest less/disliked).
     pub suggestion_flag: u16,
-    /// Offset 64: Store/catalog ID presence flag (0 = uploaded local track with no catalog ID, 1 = matched/catalog audio track, 5/6 = music video).
-    pub unk_64_store_flag: Unknown<u8>,
+    /// Offset 64: Store/catalog media kind flag (`0` = uploaded/local track with no store/matched ID, `1` = Store/Catalog audio track, `5` = legacy music video, `6` = Store/Catalog music video; 33,980/33,980 bijection).
+    pub store_media_kind: u8,
     /// Offset 65: Star rating (0..=100 in steps of 20).
     pub star_rating: u8,
     /// Offset 66..72: Sort string bitflags for `[Title, Album, Artist, Album Artist, Composer, Show]` (bit 0 `0x01` = sort `boma` present, bit 1 `0x02` = user/tag custom sort override, bit 7 `0x80` = local auto-sort rule; e.g. `0x80` = auto absent, `0x81` = auto article-stripped, `0x01` = catalog sort string, `0x03` = custom override).
@@ -143,8 +145,8 @@ pub struct TrackItemHeader {
     pub disc_total: u16,
     /// Offset 92..96: Volume adjustment (-255..=255 corresponding to -100%..=100%).
     pub volume_adjustment: i32,
-    /// Offset 96..100: Unknown (non-zero for purchased tracks, shared within same album).
-    pub unk_96_purchased_album_group: Unknown<u32>,
+    /// Offset 96..100: Purchased album group ID (non-zero for purchased tracks, shared within the same purchased album).
+    pub purchased_album_group: u32,
     /// Offset 100..108: Unknown 8 bytes.
     pub unk_100_108: Unknown<[u8; 8]>,
     /// Offset 108..112: Media kind bitflags (1 = music, 0x10 = PDF/booklet, 0x20 = music video, 0x100000 = voice memo).
@@ -251,12 +253,9 @@ impl VisitUnknowns for TrackItemHeader {
                 (self.unk_43, 43),
                 (self.unk_45, 45),
                 (self.unk_47_49, 47),
-                (self.unk_53, 53),
                 (self.unk_56, 56),
                 (self.unk_60_62, 60),
-                (self.unk_64_store_flag, 64),
                 (self.unk_72_82, 72),
-                (self.unk_96_purchased_album_group, 96),
                 (self.unk_100_108, 100),
                 (self.unk_112, 112),
                 (self.unk_118_148, 118),
@@ -285,7 +284,7 @@ pub struct TrackItem {
     /// The `itma` track header.
     pub header: TrackItemHeader,
     /// Metadata `boma` children attached to this track.
-    #[br(parse_with = read_bounded_vec, args(header.boma_count, 16, "itma.bomas"))]
+    #[br(parse_with = read_item_bomas, args(header.header_size, header.total_size, header.boma_count, "itma", "itma.bomas"))]
     pub bomas: Vec<BomaSection>,
 }
 
@@ -312,7 +311,7 @@ pub struct TrackNumerics {
     pub subrecord_kind: u32,
     /// Offset 8..16: Unique 64-bit Track Data ID (`tdID`) for this asset subrecord.
     pub track_data_id: u64,
-    /// Offset 16..20: Unknown (typically 1).
+    /// Offset 16..20: Deprecated pre-`1.7.0.156` (pre-format-23.1) constant `1`; `0` on newly created records starting in format `23.1` (`2026-11-07`).
     pub unk_16: Unknown<u32>,
     /// Offset 20: Cloud catalog unavailability flag (`1` = track no longer available in Apple Music catalog, `0` = available/local).
     pub is_cloud_unavailable: u8,
@@ -340,11 +339,11 @@ pub struct TrackNumerics {
     pub is_local_mp3: u8,
     /// Offset 41: Local video asset flag (`1` on local/downloaded video `subrecord_kind == 1` such as `.m4v` and DRM-free `.mp4`, `0` on audio and cloud `subrecord_kind == 3`).
     pub is_local_video: u8,
-    /// Offset 42..54: Unknown 12 bytes (offset 45 = `[3]` is `1` iff `subrecord_kind == 3 || date_released != 0 || unk_116_cloud_timestamp != 0 || store_track_adam_id != 0` in modern libraries; offset 46 = `[4]` is `1` on 720p/1080p local video `subrecord_kind == 1` in modern libraries; offset 48 = `[6]` is `1` on a legacy matched MP3 with trailing `APEv2` — stayed `0` on fresh local playback/gapless/Sound Check — and `3` on downloaded HLS Dolby Atmos `.movpkg`; offsets 49..53 = `[7..12]` encode iCloud sync/origin states).
+    /// Offset 42..54: Unknown 12 bytes (bytes `42, 43, 44, 52, 53` are always zero; offset 45 = `[3]` is `1` iff `subrecord_kind == 3 || date_released != 0 || unk_116_cloud_timestamp != 0 || store_track_adam_id != 0` in modern libraries; offset 46 = `[4]` is `1` on 720p/1080p local video `subrecord_kind == 1` in modern libraries; offset 47 = `[5]` is `0` on `LocalOnly` `cloud_status == 0` and `1` on cloud-evaluated `cloud_status != 0` — pending transition test; offset 48 = `[6]` is `1` on a legacy matched MP3 with trailing `APEv2` and `3` on downloaded HLS Dolby Atmos `.movpkg`; offsets 49..52 = `[7..10]` encode iCloud sync/origin states).
     pub unk_42_54: Unknown<[u8; 12]>,
     /// Offset 54: Cloud/source asset container or Apple Store flavor ID (`1` = MP3/MPEG audio, `2` = `"2:256"` M4A/AAC audio, `18` = `"18:1080p"` 1080p HD video matching `boma 0x0034` `itunes_store_flavor`; `0` on undownloaded video / `.movpkg` / local `subrecord_kind == 1`).
     pub asset_container_kind: u8,
-    /// Offset 55..59: Unknown 4 bytes (offset 58 is `2` on a downloaded 1080p HD `.m4v` `subrecord_kind == 1` carrying MP4 `hdvd = 2`, and `0` on local 720p `.mp4` without an `hdvd` atom, all audio tracks, and `subrecord_kind == 3`).
+    /// Offset 55..59: Unknown 4 bytes (byte `57` is always zero; offset 58 is `2` on a downloaded 1080p HD `.m4v` `subrecord_kind == 1` carrying MP4 `hdvd = 2`, and `0` on local 720p `.mp4` without an `hdvd` atom, all audio tracks, and `subrecord_kind == 3`).
     pub unk_55_59: Unknown<[u8; 4]>,
     /// Offset 59: Apple Music catalog time-synced lyrics availability on `subrecord_kind == 3` (`1` = catalog time-synced lyrics available, `2` = no catalog time-synced lyrics / Matched or Uploaded track, `0` = local `subrecord_kind == 1` or format `<= 22.0`).
     pub catalog_lyrics_state: u8,
@@ -454,6 +453,10 @@ pub struct TrackNumerics {
     pub date_cloud_synced: AppleTimestamp,
     /// Offset 360..364: Unknown 4 bytes.
     pub unk_360: Unknown<u32>,
+    /// Offset 364..end: Forward-compatible trailing bytes when a `0x0001` payload exceeds 364 bytes.
+    #[br(default)]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub unk_tail: Unknown<TailBytes>,
 }
 
 impl VisitUnknowns for TrackNumerics {
@@ -479,8 +482,21 @@ impl VisitUnknowns for TrackNumerics {
                 (self.unk_300, 300),
                 (self.unk_316_320, 316),
                 (self.unk_360, 360),
+                (tail: self.unk_tail, 364),
             ]
         );
+    }
+}
+
+fn fourcc_to_string(fourcc: u32) -> Option<String> {
+    if fourcc == 0 {
+        return None;
+    }
+    let bytes = fourcc.to_be_bytes();
+    if bytes.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    } else {
+        None
     }
 }
 
@@ -488,33 +504,17 @@ impl TrackNumerics {
     /// Converts `file_type_fourcc` (e.g. `0x4D503320`) into its 4-character ASCII representation (e.g. `"MP3 "`).
     #[must_use]
     pub fn file_type_fourcc_str(&self) -> Option<String> {
-        if self.file_type_fourcc == 0 {
-            return None;
-        }
-        let bytes = self.file_type_fourcc.to_be_bytes();
-        if bytes.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
-            Some(String::from_utf8_lossy(&bytes).into_owned())
-        } else {
-            None
-        }
+        fourcc_to_string(self.file_type_fourcc)
     }
 
     /// Converts `codec_fourcc` (e.g. `0x6D703461`) into its 4-character ASCII representation (e.g. `"mp4a"`).
     #[must_use]
     pub fn codec_fourcc_str(&self) -> Option<String> {
-        if self.codec_fourcc == 0 {
-            return None;
-        }
-        let bytes = self.codec_fourcc.to_be_bytes();
-        if bytes.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
-            Some(String::from_utf8_lossy(&bytes).into_owned())
-        } else {
-            None
-        }
+        fourcc_to_string(self.codec_fourcc)
     }
 }
 
-/// Payload of `boma` subtype `0x0017` (Track Play & Skip Statistics, 52 bytes).
+/// Payload of `boma` subtype `0x0017` (Track Play & Skip Statistics, minimum 52 bytes).
 #[binrw]
 #[brw(little)]
 #[non_exhaustive]
@@ -543,6 +543,10 @@ pub struct TrackPlaysSkips {
     pub unk_40: Unknown<u32>,
     /// Offset 44..52: Unknown 8 bytes.
     pub unk_44_52: Unknown<[u8; 8]>,
+    /// Offset 52..end: Forward-compatible trailing bytes when a `0x0017` payload exceeds 52 bytes.
+    #[br(default)]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub unk_tail: Unknown<TailBytes>,
 }
 
 impl VisitUnknowns for TrackPlaysSkips {
@@ -550,12 +554,17 @@ impl VisitUnknowns for TrackPlaysSkips {
         visit_unknowns!(
             visitor,
             "TrackPlaysSkips",
-            [(self.unk_24, 24), (self.unk_40, 40), (self.unk_44_52, 44)]
+            [
+                (self.unk_24, 24),
+                (self.unk_40, 40),
+                (self.unk_44_52, 44),
+                (tail: self.unk_tail, 52),
+            ]
         );
     }
 }
 
-/// Payload of `boma` subtype `0x0024` (Video Track Metadata, 84 bytes).
+/// Payload of `boma` subtype `0x0024` (Video Track Metadata, minimum 84 bytes).
 #[binrw]
 #[brw(little)]
 #[non_exhaustive]
@@ -592,6 +601,18 @@ pub struct VideoInfo {
     pub unk_52: Unknown<u32>,
     /// Offset 56..84: Unknown 28 bytes (first `u32` observed as `29970` on a 29.970 fps local 720p `.mp4` and `17500` / `0x0000445C` on a 25 fps 1080p `.m4v`, remaining 24 bytes zeros).
     pub unk_56_84: Unknown<[u8; 28]>,
+    /// Offset 84..end: Forward-compatible trailing bytes when a `0x0024` payload exceeds 84 bytes.
+    #[br(default)]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub unk_tail: Unknown<TailBytes>,
+}
+
+impl VideoInfo {
+    /// Converts `codec_fourcc` (e.g. `0x61766331`) into its 4-character ASCII representation (e.g. `"avc1"`).
+    #[must_use]
+    pub fn codec_fourcc_str(&self) -> Option<String> {
+        fourcc_to_string(self.codec_fourcc)
+    }
 }
 
 impl VisitUnknowns for VideoInfo {
@@ -607,6 +628,7 @@ impl VisitUnknowns for VideoInfo {
                 (self.unk_40, 40),
                 (self.unk_52, 52),
                 (self.unk_56_84, 56),
+                (tail: self.unk_tail, 84),
             ]
         );
     }

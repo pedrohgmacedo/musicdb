@@ -57,12 +57,18 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         let title = boma_str(&t.bomas, 0x0002).unwrap_or("");
         let artist = boma_str(&t.bomas, 0x0004).unwrap_or("");
         if let Some(old) = map00.get(&pid)
-            && (old.header.unk_53 != t.header.unk_53
+            && (old.header.has_extended_text_metadata != t.header.has_extended_text_metadata
                 || old.header.has_asset_info_plist != t.header.has_asset_info_plist
                 || album == "Working Man")
         {
-            let (o53, o54) = (*old.header.unk_53, old.header.has_asset_info_plist);
-            let (n53, n54) = (*t.header.unk_53, t.header.has_asset_info_plist);
+            let (o53, o54) = (
+                old.header.has_extended_text_metadata,
+                old.header.has_asset_info_plist,
+            );
+            let (n53, n54) = (
+                t.header.has_extended_text_metadata,
+                t.header.has_asset_info_plist,
+            );
             println!(
                 "    [{pid:016X}] {artist} - {title:?} (alb={album:?}) | off51..55: [{},{},{o53},{o54}] -> [{},{},{n53},{n54}] | cloud={} play_only={} wm={}/{}",
                 old.header.checkbox_show_composer_in_all_views,
@@ -85,7 +91,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         let title = boma_str(&t.bomas, 0x0002).unwrap_or("");
         let artist = boma_str(&t.bomas, 0x0004).unwrap_or("");
         if let Some(old) = map01.get(&pid)
-            && (old.header.unk_53 != t.header.unk_53
+            && (old.header.has_extended_text_metadata != t.header.has_extended_text_metadata
                 || old.header.has_asset_info_plist != t.header.has_asset_info_plist
                 || old.header.checkbox_album_is_compilation
                     != t.header.checkbox_album_is_compilation
@@ -93,8 +99,14 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
                     != t.header.checkbox_use_work_and_movement
                 || old.header.suggestion_flag != t.header.suggestion_flag)
         {
-            let (o53, o54) = (*old.header.unk_53, old.header.has_asset_info_plist);
-            let (n53, n54) = (*t.header.unk_53, t.header.has_asset_info_plist);
+            let (o53, o54) = (
+                old.header.has_extended_text_metadata,
+                old.header.has_asset_info_plist,
+            );
+            let (n53, n54) = (
+                t.header.has_extended_text_metadata,
+                t.header.has_asset_info_plist,
+            );
             println!(
                 "    [{pid:016X}] {artist} - {title:?} | off51..55: [{},{},{o53},{o54}] -> [{},{},{n53},{n54}] | comp:{}->{} sugg:{}->{}",
                 old.header.checkbox_show_composer_in_all_views,
@@ -113,7 +125,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
     let mut b53_examples_local: Vec<String> = Vec::new();
     let mut b53_examples_cat0: Vec<String> = Vec::new();
     for t in tracks_of(&raw_vid) {
-        let b53 = *t.header.unk_53;
+        let b53 = t.header.has_extended_text_metadata;
         let has_copyright = boma_str(&t.bomas, 0x002E).is_some();
         let has_work = boma_str(&t.bomas, 0x003F).is_some();
         let has_sort_title = boma_str(&t.bomas, 0x001E).is_some();
@@ -473,7 +485,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
                 o.limit_count,
                 o.checkbox_match_only_checked_items,
                 o.negate_limit_selection_method,
-                *o.unk_14_genius_flag,
+                o.is_genius,
                 *o.unk_15,
                 *o.unk_16,
                 *o.unk_16,
@@ -502,7 +514,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         let mut total = 0usize;
         for t in tracks_of(&raw) {
             total += 1;
-            let b53 = *t.header.unk_53;
+            let b53 = t.header.has_extended_text_metadata;
             let has_ext = t.bomas.iter().any(|b| {
                 matches!(
                     b.subtype,

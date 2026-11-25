@@ -196,7 +196,7 @@ fn probe_itma_unk_64(raw: &RawLibraryFile) {
     let mut mismatch_samples: Vec<String> = Vec::new();
 
     for t in tracks_of(raw) {
-        let u64_flag = *t.header.unk_64_store_flag;
+        let u64_flag = t.header.store_media_kind;
         let adam_id = t
             .bomas
             .iter()
@@ -274,9 +274,15 @@ fn walk_slst_unk_8(
             _ => "Other",
         };
         *dist
-            .entry((*r.unk_8, r.field_id, r.comparison_method, child_kind, depth))
+            .entry((
+                r.is_nested_rule_group,
+                r.field_id,
+                r.comparison_method,
+                child_kind,
+                depth,
+            ))
             .or_default() += 1;
-        if *r.unk_8 != 0 && nz_samples.len() < 20 {
+        if r.is_nested_rule_group != 0 && nz_samples.len() < 20 {
             let extra = match &r.child {
                 SmartRuleChild::Nested(sub) => {
                     format!(
@@ -297,7 +303,7 @@ fn walk_slst_unk_8(
                 r.field_id,
                 r.field_name(),
                 r.comparison_method,
-                *r.unk_8,
+                r.is_nested_rule_group,
             ));
         }
         if let SmartRuleChild::Nested(sub) = &r.child {
@@ -318,13 +324,13 @@ fn probe_smart_rule_unk_8(label: &str, raw: &RawLibraryFile) {
                 BomaPayload::SmartPlaylistRules(slst) => {
                     walk_slst_unk_8(idx, 0, slst, &mut dist, &mut nz_samples);
                 }
-                BomaPayload::SmartPlaylistOptions(o) if *o.unk_14_genius_flag != 0 => {
+                BomaPayload::SmartPlaylistOptions(o) if o.is_genius != 0 => {
                     u14_nz.push(format!(
                         "pl#{idx} dist={} own={:?} tracks={} u14={} u16=0x{:02X} live={} lim={}",
                         pl.header.distinguished_kind,
                         pl.header.ownership_flags,
                         pl.header.track_count,
-                        *o.unk_14_genius_flag,
+                        o.is_genius,
                         *o.unk_16,
                         o.checkbox_live_updating,
                         o.checkbox_enable_limit,

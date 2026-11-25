@@ -15,7 +15,7 @@ use crate::sections::{
     BomaSection, CloudDeletionItem, HfmaHeader, HsmaChild, LibraryMasterHeader,
     LibraryMasterSection, PlaylistItem, PlaylistItemHeader, RawLibraryFile, SlstSection,
     SmartPlaylistOptions, SmartPlaylistRule, SmartRuleChild, SocialProfileItem, TrackItem,
-    TrackItemHeader, TrackNumerics, TrackPlaysSkips,
+    TrackItemHeader, TrackNumerics, TrackPlaysSkips, VideoInfo,
 };
 
 /// Seconds between 1904-01-01 00:00:00 UTC (Apple/Mac HFS+ epoch) and 1970-01-01 00:00:00 UTC (Unix epoch).
@@ -774,8 +774,10 @@ pub enum MediaKind {
     Music,
     /// Feature film / movie (`0x02`).
     Movie,
-    /// Podcast episode (`0x04` or `0x05`).
+    /// Podcast episode (`0x04`).
     Podcast,
+    /// Music or Podcast composite (`0x05`).
+    MusicOrPodcast,
     /// Audiobook (`0x08`).
     Audiobook,
     /// Digital booklet PDF (`0x10`).
@@ -800,8 +802,8 @@ pub enum MediaKind {
     PodcastOrVoiceMemo,
     /// Smart playlist mask matching podcasts, iTunes U, and voice memos (`0x0021_8004`).
     PodcastItunesUOrVoiceMemo,
-    /// Any other raw bitmask value.
-    Other(u32),
+    /// Unrecognized raw bitmask value.
+    Unknown(u32),
 }
 
 impl MediaKind {
@@ -812,6 +814,7 @@ impl MediaKind {
             Self::Music => MediaKindFlags::MUSIC.bits(),
             Self::Movie => MediaKindFlags::MOVIE.bits(),
             Self::Podcast => MediaKindFlags::PODCAST.bits(),
+            Self::MusicOrPodcast => MediaKindFlags::MUSIC_OR_PODCAST.bits(),
             Self::Audiobook => MediaKindFlags::AUDIOBOOK.bits(),
             Self::BookletPdf => MediaKindFlags::BOOKLET_PDF.bits(),
             Self::MusicVideo => MediaKindFlags::MUSIC_VIDEO.bits(),
@@ -826,7 +829,7 @@ impl MediaKind {
             Self::PodcastItunesUOrVoiceMemo => {
                 MediaKindFlags::PODCAST_ITUNES_U_OR_VOICE_MEMO.bits()
             }
-            Self::Other(v) => v,
+            Self::Unknown(v) => v,
         }
     }
 
@@ -842,7 +845,8 @@ impl From<u32> for MediaKind {
         match MediaKindFlags::from_bits_retain(v) {
             MediaKindFlags::MUSIC => Self::Music,
             MediaKindFlags::MOVIE => Self::Movie,
-            MediaKindFlags::PODCAST | MediaKindFlags::MUSIC_OR_PODCAST => Self::Podcast,
+            MediaKindFlags::PODCAST => Self::Podcast,
+            MediaKindFlags::MUSIC_OR_PODCAST => Self::MusicOrPodcast,
             MediaKindFlags::AUDIOBOOK => Self::Audiobook,
             MediaKindFlags::BOOKLET_PDF => Self::BookletPdf,
             MediaKindFlags::MUSIC_VIDEO => Self::MusicVideo,
@@ -855,7 +859,7 @@ impl From<u32> for MediaKind {
             MediaKindFlags::ALL_MUSIC_AND_AUDIO => Self::AllMusicAndAudio,
             MediaKindFlags::PODCAST_OR_VOICE_MEMO => Self::PodcastOrVoiceMemo,
             MediaKindFlags::PODCAST_ITUNES_U_OR_VOICE_MEMO => Self::PodcastItunesUOrVoiceMemo,
-            _ => Self::Other(v),
+            _ => Self::Unknown(v),
         }
     }
 }
@@ -866,6 +870,7 @@ impl fmt::Display for MediaKind {
             Self::Music => f.write_str("Music"),
             Self::Movie => f.write_str("Movie"),
             Self::Podcast => f.write_str("Podcast"),
+            Self::MusicOrPodcast => f.write_str("MusicOrPodcast"),
             Self::Audiobook => f.write_str("Audiobook"),
             Self::BookletPdf => f.write_str("BookletPdf"),
             Self::MusicVideo => f.write_str("MusicVideo"),
@@ -878,7 +883,115 @@ impl fmt::Display for MediaKind {
             Self::AllMusicAndAudio => f.write_str("AllMusicAndAudio"),
             Self::PodcastOrVoiceMemo => f.write_str("PodcastOrVoiceMemo"),
             Self::PodcastItunesUOrVoiceMemo => f.write_str("PodcastItunesUOrVoiceMemo"),
-            Self::Other(v) => write!(f, "Other({v})"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
+/// Embedded / scanned artwork classification on a track (`TrackNumerics` offset 80..82).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum EmbeddedArtworkKind {
+    /// `0`: No embedded artwork detected.
+    #[default]
+    None,
+    /// `-1` (`0xFFFF`): Embedded artwork present in the local audio file container.
+    Embedded,
+    /// `1`: Cloud-sourced artwork reference.
+    Cloud,
+    /// `128` (`0x0080`): Auto-extracted poster frame from a local video file.
+    VideoPosterFrame,
+    /// Unrecognized raw `i16` value.
+    Unknown(i16),
+}
+
+impl EmbeddedArtworkKind {
+    /// Returns the raw `i16` value stored at `TrackNumerics` offset 80..82.
+    #[must_use]
+    pub const fn raw(self) -> i16 {
+        match self {
+            Self::None => 0,
+            Self::Embedded => -1,
+            Self::Cloud => 1,
+            Self::VideoPosterFrame => 128,
+            Self::Unknown(v) => v,
+        }
+    }
+
+    /// Returns `true` if this value represents local artwork (`Embedded` or `VideoPosterFrame`).
+    #[must_use]
+    pub const fn has_local_artwork(self) -> bool {
+        matches!(self, Self::Embedded | Self::VideoPosterFrame)
+    }
+}
+
+impl From<i16> for EmbeddedArtworkKind {
+    fn from(v: i16) -> Self {
+        match v {
+            0 => Self::None,
+            -1 => Self::Embedded,
+            1 => Self::Cloud,
+            128 => Self::VideoPosterFrame,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for EmbeddedArtworkKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("None"),
+            Self::Embedded => f.write_str("Embedded"),
+            Self::Cloud => f.write_str("Cloud"),
+            Self::VideoPosterFrame => f.write_str("VideoPosterFrame"),
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
+/// Decoded video stream metadata for a video track (`boma 0x0024` [`VideoInfo`]).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TrackVideoInfo {
+    /// Frame width in pixels (`VideoInfo` offset 0..4).
+    pub width: u32,
+    /// Frame height in pixels (`VideoInfo` offset 4..8).
+    pub height: u32,
+    /// 4-character video codec code (e.g. `"avc1"`, `VideoInfo` offset 12..16).
+    pub codec_fourcc: Option<String>,
+    /// Video stream bit rate in kbps (`VideoInfo` offset 20..24).
+    pub video_bit_rate_kbps: u32,
+    /// H.264/AVC `profile_idc` (e.g. `100` = High Profile, `VideoInfo` offset 32..36).
+    pub avc_profile_idc: u32,
+    /// H.264/AVC `level_idc` (e.g. `31` = Level 3.1, `40` = Level 4.0, `VideoInfo` offset 36..40).
+    pub avc_level_idc: u32,
+    /// Frame rate in milli-frames per second (e.g. `25_000` = 25 fps, `29_970` = 29.97 fps, `VideoInfo` offset 44..48).
+    pub frame_rate_milli: u32,
+    /// Color bit depth (e.g. `24` for 8-bit RGB/YUV, `VideoInfo` offset 48..52).
+    pub color_bit_depth: u32,
+}
+
+impl TrackVideoInfo {
+    /// Returns the frame rate in frames per second (`frame_rate_milli / 1000.0`).
+    #[must_use]
+    pub fn frame_rate_fps(&self) -> f64 {
+        f64::from(self.frame_rate_milli) / 1000.0
+    }
+}
+
+impl From<&VideoInfo> for TrackVideoInfo {
+    fn from(v: &VideoInfo) -> Self {
+        Self {
+            width: v.width,
+            height: v.height,
+            codec_fourcc: v.codec_fourcc_str(),
+            video_bit_rate_kbps: v.video_bit_rate_kbps,
+            avc_profile_idc: v.avc_profile_idc,
+            avc_level_idc: v.avc_level_idc,
+            frame_rate_milli: v.frame_rate_milli,
+            color_bit_depth: v.color_bit_depth,
         }
     }
 }
@@ -1481,6 +1594,9 @@ impl fmt::Display for SmartConjunction {
 pub struct SmartRuleGroup {
     /// Logical conjunction (`All` or `Any`) combining `rules`.
     pub conjunction: SmartConjunction,
+    /// Whether this nested rule group is logically negated (`NOT`, bit `0x0200_0000` on the enclosing `SLst` rule's `comparison_method`).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub negated: bool,
     /// Ordered child rules or nested rule groups.
     pub rules: Vec<SmartRuleNode>,
 }
@@ -2113,6 +2229,8 @@ pub struct SocialProfile {
     pub avatar_id: Option<String>,
     /// Avatar image URL (`boma 0x0324`).
     pub avatar_url: Option<String>,
+    /// Artwork UUID in `artwork.sqlite` (`isma` offset 24..40).
+    pub artwork_uuid: Option<String>,
 }
 
 /// Library-level metadata combined from `hfma`, `plma`, `Preferences.plist`, and `preferences/Songs.plist`.
@@ -2146,8 +2264,8 @@ pub struct LibraryMetadata {
     pub declared_playlist_count: u32,
     /// Local timezone offset from UTC in seconds (e.g. `-10800` for UTC-3).
     pub timezone_offset_seconds: i32,
-    /// Signed-in Apple Store account `dsid` (`0` if signed out).
-    pub apple_store_account_id: u64,
+    /// Signed-in Apple Store account `dsid` (`None` if signed out).
+    pub apple_store_account_id: Option<u64>,
     /// Library modification timestamp from `hfma`.
     pub date_modified: Option<Timestamp>,
     /// Last iCloud Music Library sync timestamp from `plma` (`plma` offset 16..20).
@@ -2158,6 +2276,8 @@ pub struct LibraryMetadata {
     pub cloud_database_revision: Option<u16>,
     /// Future iCloud refresh / lease expiration timestamp from `plma` (`plma` offset 120..124).
     pub date_cloud_lease_expires: Option<Timestamp>,
+    /// Future local iCloud authorization / lease expiration timestamp from `plma` (`plma` offset 182..186, when `header_size >= 186`).
+    pub date_local_lease_expires: Option<Timestamp>,
     /// "Settings -> General -> Show -> Songs list checkboxes" setting from `plma`.
     pub show_song_list_checkboxes: Option<bool>,
     /// "Settings -> Files -> Keep Music Media folder organized" setting from `plma`.
@@ -2267,13 +2387,11 @@ pub struct Artist {
     /// iCloud sync timestamp (`iAma` offset 120..124).
     pub date_cloud_synced: Option<Timestamp>,
     /// 64-bit Apple Music Store Artist ID (`atID`, `iAma` offset 52..60).
-    pub apple_music_store_artist_id: u64,
+    pub apple_music_store_artist_id: Option<u64>,
     /// Artwork UUID in `artwork.sqlite` (`iAma` offset 64..80).
     pub artwork_uuid: Option<String>,
     /// Decoded artist artwork URL from `boma 0x0192` XML or binary plist (`artwork-url` key).
     pub artwork_url: Option<String>,
-    /// Raw XML plist containing artist artwork URLs (`boma 0x0192`; `None` when stored as binary `bplist00`).
-    pub artwork_url_plist: Option<String>,
 }
 
 /// Decoded Track record (`itma` + `boma` children).
@@ -2325,6 +2443,8 @@ pub struct Track {
     pub sort_album_artist: Option<String>,
     /// Sort composer (`boma 0x0022`).
     pub sort_composer: Option<String>,
+    /// Sort show name (`boma 0x0053`).
+    pub sort_show: Option<String>,
     /// Sort string generation modes (`itma` offset 66..72).
     pub sort_modes: TrackSortModes,
     /// Track number on disc (`itma` offset 160..162).
@@ -2353,6 +2473,8 @@ pub struct Track {
     pub file_type_fourcc: Option<String>,
     /// 4-character audio codec code (e.g. `"mp4a"`, `"mpeg"`).
     pub codec_fourcc: Option<String>,
+    /// Decoded video stream metadata (`boma 0x0024`).
+    pub video_info: Option<TrackVideoInfo>,
     /// Volume adjustment in `-255..=255` (`itma` offset 92..96).
     pub volume_adjustment: i32,
     /// Sound Check volume normalization (`iTunNORM`, `TrackNumerics` offset 132..136).
@@ -2365,8 +2487,6 @@ pub struct Track {
     pub gapless_total_samples: Option<u64>,
     /// Gapless playback byte offset to the 8th-from-last MPEG frame (`TrackNumerics` offset 272..280).
     pub gapless_last_eight_frames_offset: Option<u64>,
-    /// Raw equalizer string (`boma 0x0007`).
-    pub equalizer: Option<String>,
     /// Decoded equalizer preset (`boma 0x0007`).
     pub equalizer_preset: Option<EqualizerPreset>,
     /// Raw star rating (`0..=100` in steps of 20, `itma` offset 65).
@@ -2499,8 +2619,8 @@ pub struct Track {
     pub artwork_uuid: Option<String>,
     /// Number of attached artworks (`TrackNumerics` offset 76..78).
     pub artwork_count: Option<u16>,
-    /// Whether embedded artwork was scanned in the local audio file (`TrackNumerics` offset 80..82 == `-1`).
-    pub has_embedded_artwork: Option<bool>,
+    /// Embedded / scanned artwork state (`TrackNumerics` offset 80..82).
+    pub embedded_artwork: Option<EmbeddedArtworkKind>,
     /// Total byte size of attached artworks (`TrackNumerics` offset 84..88).
     pub artwork_total_size_bytes: Option<u32>,
     /// File folder count (`TrackNumerics` offset 72..74).
@@ -2520,6 +2640,12 @@ impl Track {
     #[must_use]
     pub const fn stars(&self) -> u8 {
         self.star_rating / 20
+    }
+
+    /// Returns `true` if the local audio file has embedded artwork (`embedded_artwork == Some(EmbeddedArtworkKind::Embedded)`).
+    #[must_use]
+    pub const fn has_embedded_artwork(&self) -> bool {
+        matches!(self.embedded_artwork, Some(EmbeddedArtworkKind::Embedded))
     }
 }
 
@@ -2871,25 +2997,18 @@ impl Library {
         }
     }
 
-    /// Looks up a playlist by exact name (with case-insensitive exact and substring fallback).
+    /// Looks up a playlist by exact name (with case-insensitive exact fallback).
     #[must_use]
     pub fn playlist_by_name(&self, name: &str) -> Option<&Playlist> {
-        let q = name.to_lowercase();
         self.playlists
             .iter()
             .find(|p| p.name.as_deref() == Some(name))
             .or_else(|| {
+                let q = name.to_lowercase();
                 self.playlists.iter().find(|p| {
                     p.name
                         .as_deref()
-                        .is_some_and(|n| n.eq_ignore_ascii_case(name))
-                })
-            })
-            .or_else(|| {
-                self.playlists.iter().find(|p| {
-                    p.name
-                        .as_deref()
-                        .is_some_and(|n| n.to_lowercase().contains(&q))
+                        .is_some_and(|n| n.eq_ignore_ascii_case(name) || n.to_lowercase() == q)
                 })
             })
     }
@@ -2967,7 +3086,7 @@ fn library_metadata_from_header(h: &HfmaHeader) -> LibraryMetadata {
         declared_artist_count: h.artist_count,
         declared_playlist_count: h.playlist_count,
         timezone_offset_seconds: h.timezone_offset_seconds,
-        apple_store_account_id: h.apple_store_account_id,
+        apple_store_account_id: (h.apple_store_account_id != 0).then_some(h.apple_store_account_id),
         date_modified: h.date_modified.to_utc(),
         ..LibraryMetadata::default()
     }
@@ -3123,6 +3242,9 @@ fn apply_plma_header(header: &LibraryMasterHeader, meta: &mut LibraryMetadata) {
     meta.cloud_database_revision =
         (header.cloud_database_revision != 0).then_some(header.cloud_database_revision);
     meta.date_cloud_lease_expires = header.date_cloud_lease_expires.to_utc();
+    meta.date_local_lease_expires = header
+        .date_local_lease_expires
+        .and_then(AppleTimestamp::to_utc);
     meta.show_song_list_checkboxes = Some(header.checkbox_show_song_list_checkboxes != 0);
     meta.keep_media_folder_organized = Some(header.checkbox_keep_media_folder_organized != 0);
 }
@@ -3196,6 +3318,7 @@ impl SocialProfile {
     fn from_owned(isma: SocialProfileItem) -> Self {
         let mut profile = Self {
             persistent_id: PersistentId::new(isma.header.profile_persistent_id),
+            artwork_uuid: format_artwork_uuid(&isma.header.artwork_uuid),
             ..Self::default()
         };
         for boma in isma.bomas {
@@ -3212,6 +3335,7 @@ impl From<&SocialProfileItem> for SocialProfile {
     fn from(isma: &SocialProfileItem) -> Self {
         let mut profile = Self {
             persistent_id: PersistentId::new(isma.header.profile_persistent_id),
+            artwork_uuid: format_artwork_uuid(&isma.header.artwork_uuid),
             ..Self::default()
         };
         for boma in &isma.bomas {
@@ -3504,12 +3628,7 @@ fn apply_artist_string(artist: &mut Artist, subtype: u32, raw_bytes: Option<&[u8
     match subtype {
         0x0190 | 0x0004 => artist.name = Some(val),
         0x0191 => artist.sort_name = Some(val),
-        0x0192 => {
-            if let Some(bytes) = raw_bytes {
-                apply_artist_artwork_plist(artist, bytes);
-            }
-            artist.artwork_url_plist = Some(val);
-        }
+        0x0192 => apply_artist_artwork_plist(artist, raw_bytes.unwrap_or(val.as_bytes())),
         0x0193 => artist.cloud_artist_id = Some(val),
         _ => {}
     }
@@ -3517,6 +3636,11 @@ fn apply_artist_string(artist: &mut Artist, subtype: u32, raw_bytes: Option<&[u8
 
 impl Artist {
     fn from_header(h: &ArtistItemHeader) -> Self {
+        let raw_store_artist_id = if h.apple_music_store_artist_id != 0 {
+            h.apple_music_store_artist_id
+        } else {
+            h.apple_music_store_artist_id_2
+        };
         Self {
             persistent_id: PersistentId::new(h.artist_persistent_id),
             itunes_persistent_id: (h.artist_persistent_id_2 != 0)
@@ -3526,11 +3650,7 @@ impl Artist {
             suggestion_locally_modified: SuggestionFlag::is_locally_modified(h.suggestion_flag),
             date_suggestion_flag_modified: h.date_suggestion_flag_modified.to_utc(),
             date_cloud_synced: h.date_cloud_synced.and_then(AppleTimestamp::to_utc),
-            apple_music_store_artist_id: if h.apple_music_store_artist_id != 0 {
-                h.apple_music_store_artist_id
-            } else {
-                h.apple_music_store_artist_id_2
-            },
+            apple_music_store_artist_id: (raw_store_artist_id != 0).then_some(raw_store_artist_id),
             artwork_uuid: format_artwork_uuid(&h.artwork_uuid),
             ..Self::default()
         }
@@ -3620,7 +3740,7 @@ impl Track {
             album_is_compilation: h.checkbox_album_is_compilation != 0,
             part_of_gapless_album: h.checkbox_part_of_gapless_album != 0,
             playlist_only: h.playlist_only != 0,
-            purchased: h.cloud_sync_state == 3 || *h.unk_96_purchased_album_group != 0,
+            purchased: h.cloud_sync_state == 3 || h.purchased_album_group != 0,
             has_custom_lyrics: h.has_custom_lyrics != 0 || h.has_local_custom_lyrics != 0,
             has_local_custom_lyrics: h.has_local_custom_lyrics != 0,
             has_unsynced_local_changes: h.has_unsynced_local_changes != 0,
@@ -3646,18 +3766,83 @@ impl Track {
 
     pub(crate) fn from_raw_with_tz(itma: &TrackItem, tz_offset_seconds: i32) -> Self {
         let mut track = Self::from_header(&itma.header);
+        let mut local_num: Option<&TrackNumerics> = None;
+        let mut cloud_num: Option<&TrackNumerics> = None;
+        let mut other_nums: Vec<&TrackNumerics> = Vec::new();
         for boma in &itma.bomas {
-            apply_track_boma(&mut track, boma, tz_offset_seconds);
+            if let BomaPayload::TrackNumerics(num) = &boma.payload {
+                collect_track_numerics(num, &mut local_num, &mut cloud_num, &mut other_nums);
+            } else {
+                apply_track_boma(&mut track, boma, tz_offset_seconds);
+            }
         }
+        apply_collected_track_numerics(
+            &mut track,
+            local_num,
+            cloud_num,
+            &other_nums,
+            tz_offset_seconds,
+        );
         track
     }
 
     fn from_owned_with_tz(itma: TrackItem, tz_offset_seconds: i32) -> Self {
         let mut track = Self::from_header(&itma.header);
+        let mut local_num: Option<Box<TrackNumerics>> = None;
+        let mut cloud_num: Option<Box<TrackNumerics>> = None;
+        let mut other_nums: Vec<Box<TrackNumerics>> = Vec::new();
         for boma in itma.bomas {
-            apply_track_boma_owned(&mut track, boma, tz_offset_seconds);
+            if let BomaPayload::TrackNumerics(num) = boma.payload {
+                match num.subrecord_kind {
+                    1 if local_num.is_none() => local_num = Some(num),
+                    3 if cloud_num.is_none() => cloud_num = Some(num),
+                    _ => other_nums.push(num),
+                }
+            } else {
+                apply_track_boma_owned(&mut track, boma, tz_offset_seconds);
+            }
         }
+        let other_refs: Vec<&TrackNumerics> = other_nums.iter().map(Box::as_ref).collect();
+        apply_collected_track_numerics(
+            &mut track,
+            local_num.as_deref(),
+            cloud_num.as_deref(),
+            &other_refs,
+            tz_offset_seconds,
+        );
         track
+    }
+}
+
+fn collect_track_numerics<'a>(
+    num: &'a TrackNumerics,
+    local_num: &mut Option<&'a TrackNumerics>,
+    cloud_num: &mut Option<&'a TrackNumerics>,
+    other_nums: &mut Vec<&'a TrackNumerics>,
+) {
+    match num.subrecord_kind {
+        1 if local_num.is_none() => *local_num = Some(num),
+        3 if cloud_num.is_none() => *cloud_num = Some(num),
+        _ => other_nums.push(num),
+    }
+}
+
+fn apply_collected_track_numerics(
+    track: &mut Track,
+    local_num: Option<&TrackNumerics>,
+    cloud_num: Option<&TrackNumerics>,
+    other_nums: &[&TrackNumerics],
+    tz_offset_seconds: i32,
+) {
+    let mut ordered = local_num
+        .into_iter()
+        .chain(cloud_num)
+        .chain(other_nums.iter().copied());
+    if let Some(primary) = ordered.next() {
+        apply_primary_track_numerics(track, primary, tz_offset_seconds);
+        for secondary in ordered {
+            apply_secondary_track_numerics(track, secondary);
+        }
     }
 }
 
@@ -3675,21 +3860,19 @@ fn apply_track_plays_skips(track: &mut Track, ps: &TrackPlaysSkips, tz_offset_se
 
 fn apply_track_boma(track: &mut Track, boma: &BomaSection, tz_offset_seconds: i32) {
     match &boma.payload {
-        BomaPayload::TrackNumerics(num) => {
-            if track.duration_ms.is_none() {
-                apply_primary_track_numerics(track, num, tz_offset_seconds);
-            } else {
-                apply_secondary_track_numerics(track, num);
+        BomaPayload::TrackPlaysSkips(ps) => apply_track_plays_skips(track, ps, tz_offset_seconds),
+        BomaPayload::VideoInfo(vi) => {
+            if track.video_info.is_none() {
+                track.video_info = Some(TrackVideoInfo::from(vi.as_ref()));
             }
         }
-        BomaPayload::TrackPlaysSkips(ps) => apply_track_plays_skips(track, ps, tz_offset_seconds),
         BomaPayload::Book { extracted_path, .. } => {
             if track.book_path.is_none() {
                 track.book_path.clone_from(extracted_path);
             }
         }
         BomaPayload::BinaryPlist { raw_bytes, .. } if boma.subtype == 0x0036 => {
-            apply_track_cloud_plist(track, Some(raw_bytes), None);
+            apply_track_cloud_plist(track, raw_bytes);
         }
         BomaPayload::RawStringUtf8 { text, raw_bytes } => {
             apply_track_string_boma(track, boma.subtype, Some(raw_bytes), text.clone());
@@ -3707,21 +3890,19 @@ fn apply_track_boma(track: &mut Track, boma: &BomaSection, tz_offset_seconds: i3
 fn apply_track_boma_owned(track: &mut Track, boma: BomaSection, tz_offset_seconds: i32) {
     let subtype = boma.subtype;
     match boma.payload {
-        BomaPayload::TrackNumerics(num) => {
-            if track.duration_ms.is_none() {
-                apply_primary_track_numerics(track, &num, tz_offset_seconds);
-            } else {
-                apply_secondary_track_numerics(track, &num);
+        BomaPayload::TrackPlaysSkips(ps) => apply_track_plays_skips(track, &ps, tz_offset_seconds),
+        BomaPayload::VideoInfo(vi) => {
+            if track.video_info.is_none() {
+                track.video_info = Some(TrackVideoInfo::from(vi.as_ref()));
             }
         }
-        BomaPayload::TrackPlaysSkips(ps) => apply_track_plays_skips(track, &ps, tz_offset_seconds),
         BomaPayload::Book { extracted_path, .. } => {
             if track.book_path.is_none() {
                 track.book_path = extracted_path;
             }
         }
         BomaPayload::BinaryPlist { raw_bytes, .. } if subtype == 0x0036 => {
-            apply_track_cloud_plist(track, Some(&raw_bytes), None);
+            apply_track_cloud_plist(track, &raw_bytes);
         }
         BomaPayload::RawStringUtf8 { text, raw_bytes } => {
             apply_track_string_boma(track, subtype, Some(&raw_bytes), text);
@@ -3782,7 +3963,8 @@ fn apply_primary_track_numerics(track: &mut Track, num: &TrackNumerics, tz_offse
     if num.drm_account_id != 0 {
         track.drm_account_id = Some(num.drm_account_id);
     }
-    if let Ok(bits) = u8::try_from(num.downloaded_audio_traits)
+    if num.subrecord_kind == 1
+        && let Ok(bits) = u8::try_from(num.downloaded_audio_traits)
         && bits != 0
     {
         track.downloaded_audio_traits = AudioTraits::from_bits_retain(bits);
@@ -3803,7 +3985,7 @@ fn apply_primary_track_numerics(track: &mut Track, num: &TrackNumerics, tz_offse
         track.storefront_id = Some(num.storefront_id);
     }
     track.artwork_count = Some(num.artwork_count);
-    track.has_embedded_artwork = Some(num.has_embedded_artwork == -1);
+    track.embedded_artwork = Some(EmbeddedArtworkKind::from(num.has_embedded_artwork));
     track.artwork_total_size_bytes = Some(num.artwork_total_size_bytes);
     track.file_folder_count = Some(num.file_folder_count);
     track.library_folder_count = Some(num.library_folder_count);
@@ -3816,6 +3998,21 @@ fn apply_catalog_lyrics_state(track: &mut Track, state: u8) {
             track.has_catalog_synced_lyrics = Some(false);
         }
         _ => {}
+    }
+}
+
+fn merge_secondary_embedded_artwork(track: &mut Track, raw: i16) {
+    let secondary_art = EmbeddedArtworkKind::from(raw);
+    let current_is_local = track
+        .embedded_artwork
+        .is_some_and(EmbeddedArtworkKind::has_local_artwork);
+    if (!current_is_local && secondary_art.has_local_artwork())
+        || (matches!(
+            track.embedded_artwork,
+            None | Some(EmbeddedArtworkKind::None)
+        ) && secondary_art != EmbeddedArtworkKind::None)
+    {
+        track.embedded_artwork = Some(secondary_art);
     }
 }
 
@@ -3834,9 +4031,7 @@ fn apply_secondary_track_numerics(track: &mut Track, num: &TrackNumerics) {
     if track.artwork_count.unwrap_or(0) == 0 && num.artwork_count != 0 {
         track.artwork_count = Some(num.artwork_count);
     }
-    if track.has_embedded_artwork != Some(true) && num.has_embedded_artwork == -1 {
-        track.has_embedded_artwork = Some(true);
-    }
+    merge_secondary_embedded_artwork(track, num.has_embedded_artwork);
     if track.artwork_total_size_bytes.unwrap_or(0) == 0 && num.artwork_total_size_bytes != 0 {
         track.artwork_total_size_bytes = Some(num.artwork_total_size_bytes);
     }
@@ -3885,6 +4080,7 @@ fn apply_secondary_track_numerics(track: &mut Track, num: &TrackNumerics) {
         track.drm_account_id = Some(num.drm_account_id);
     }
     if track.downloaded_audio_traits.is_empty()
+        && num.subrecord_kind == 1
         && let Ok(bits) = u8::try_from(num.downloaded_audio_traits)
         && bits != 0
     {
@@ -3911,9 +4107,8 @@ fn apply_track_string_boma(track: &mut Track, subtype: u32, raw_bytes: Option<&[
         0x0005 => &mut track.genre,
         0x0006 => &mut track.kind,
         0x0007 => {
-            if track.equalizer.is_none() {
+            if track.equalizer_preset.is_none() {
                 track.equalizer_preset = Some(EqualizerPreset::from(val.as_str()));
-                track.equalizer = Some(val);
             }
             return;
         }
@@ -3934,8 +4129,9 @@ fn apply_track_string_boma(track: &mut Track, subtype: u32, raw_bytes: Option<&[
         0x003F => &mut track.work_name,
         0x0040 => &mut track.movement_name,
         0x0043 => &mut track.legacy_file_path,
+        0x0053 => &mut track.sort_show,
         0x0036 => {
-            apply_track_cloud_plist(track, raw_bytes, Some(val));
+            apply_track_cloud_plist(track, raw_bytes.unwrap_or(val.as_bytes()));
             return;
         }
         other => {
@@ -3965,59 +4161,51 @@ struct TrackCloudPlist {
     lyrics_token: LossyPlistString,
 }
 
-fn apply_track_cloud_plist(track: &mut Track, raw_bytes: Option<&[u8]>, val: Option<String>) {
-    if let Some(raw_bytes) = raw_bytes {
-        #[cfg(feature = "serde")]
-        if let Ok(parsed) = plist::from_bytes::<TrackCloudPlist>(raw_bytes) {
-            if let Some(v) = parsed.album_id.0 {
-                track.cloud_album_id.get_or_insert(v);
-            }
-            if let Some(v) = parsed.artist_id.0 {
-                track.cloud_artist_id.get_or_insert(v);
-            }
-            if let Some(v) = parsed.artwork_token.0 {
-                track.cloud_artwork_token.get_or_insert(v);
-            }
-            if let Some(v) = parsed.lyrics.0.or(parsed.lyrics_token.0) {
-                track.cloud_lyrics_token.get_or_insert(v);
-            }
+fn apply_track_cloud_plist(track: &mut Track, raw_bytes: &[u8]) {
+    #[cfg(feature = "serde")]
+    if let Ok(parsed) = plist::from_bytes::<TrackCloudPlist>(raw_bytes) {
+        if let Some(v) = parsed.album_id.0 {
+            track.cloud_album_id.get_or_insert(v);
         }
-
-        #[cfg(not(feature = "serde"))]
-        if let Ok(plist::Value::Dictionary(dict)) =
-            plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
-        {
-            if let Some(v) = dict.get("cloud-album-id").and_then(plist::Value::as_string) {
-                track.cloud_album_id.get_or_insert_with(|| v.to_owned());
-            }
-            if let Some(v) = dict
-                .get("cloud-artist-id")
-                .and_then(plist::Value::as_string)
-            {
-                track.cloud_artist_id.get_or_insert_with(|| v.to_owned());
-            }
-            if let Some(v) = dict
-                .get("cloud-artwork-token")
-                .and_then(plist::Value::as_string)
-            {
-                track
-                    .cloud_artwork_token
-                    .get_or_insert_with(|| v.to_owned());
-            }
-            if let Some(v) = dict
-                .get("cloud-lyrics")
-                .or_else(|| dict.get("cloud-lyrics-token"))
-                .and_then(plist::Value::as_string)
-            {
-                track.cloud_lyrics_token.get_or_insert_with(|| v.to_owned());
-            }
+        if let Some(v) = parsed.artist_id.0 {
+            track.cloud_artist_id.get_or_insert(v);
+        }
+        if let Some(v) = parsed.artwork_token.0 {
+            track.cloud_artwork_token.get_or_insert(v);
+        }
+        if let Some(v) = parsed.lyrics.0.or(parsed.lyrics_token.0) {
+            track.cloud_lyrics_token.get_or_insert(v);
         }
     }
-    if let Some(val) = val {
-        track
-            .extra_strings
-            .entry(extra_string_key(0x0036))
-            .or_insert(val);
+
+    #[cfg(not(feature = "serde"))]
+    if let Ok(plist::Value::Dictionary(dict)) =
+        plist::Value::from_reader(std::io::Cursor::new(raw_bytes))
+    {
+        if let Some(v) = dict.get("cloud-album-id").and_then(plist::Value::as_string) {
+            track.cloud_album_id.get_or_insert_with(|| v.to_owned());
+        }
+        if let Some(v) = dict
+            .get("cloud-artist-id")
+            .and_then(plist::Value::as_string)
+        {
+            track.cloud_artist_id.get_or_insert_with(|| v.to_owned());
+        }
+        if let Some(v) = dict
+            .get("cloud-artwork-token")
+            .and_then(plist::Value::as_string)
+        {
+            track
+                .cloud_artwork_token
+                .get_or_insert_with(|| v.to_owned());
+        }
+        if let Some(v) = dict
+            .get("cloud-lyrics")
+            .or_else(|| dict.get("cloud-lyrics-token"))
+            .and_then(plist::Value::as_string)
+        {
+            track.cloud_lyrics_token.get_or_insert_with(|| v.to_owned());
+        }
     }
 }
 
@@ -4320,7 +4508,7 @@ fn decode_smart_playlist(
         (true, true, false, None)
     };
 
-    let rule_group = slst.map(decode_slst_group);
+    let rule_group = slst.map(|s| decode_slst_group(s, false));
 
     SmartPlaylistConfig {
         live_updating,
@@ -4331,19 +4519,25 @@ fn decode_smart_playlist(
     }
 }
 
-fn decode_slst_group(slst: &SlstSection) -> SmartRuleGroup {
+fn decode_slst_group(slst: &SlstSection, negated: bool) -> SmartRuleGroup {
     let conjunction = if slst.conjunction == 0 {
         SmartConjunction::All
     } else {
         SmartConjunction::Any
     };
     let rules = slst.rules.iter().map(decode_smart_rule).collect();
-    SmartRuleGroup { conjunction, rules }
+    SmartRuleGroup {
+        conjunction,
+        negated,
+        rules,
+    }
 }
 
 fn decode_smart_rule(rule: &SmartPlaylistRule) -> SmartRuleNode {
     if let SmartRuleChild::Nested(nested) = &rule.child {
-        return SmartRuleNode::Group(decode_slst_group(nested));
+        let negated = SmartOperatorFlags::from_bits_retain(rule.comparison_method)
+            .contains(SmartOperatorFlags::NEGATE);
+        return SmartRuleNode::Group(decode_slst_group(nested, negated));
     }
 
     let field = SmartField::from(rule.field_id);
@@ -4743,11 +4937,7 @@ mod tests {
 </plist>"#;
 
         let mut track = Track::default();
-        apply_track_cloud_plist(
-            &mut track,
-            Some(xml),
-            Some(String::from_utf8_lossy(xml).into_owned()),
-        );
+        apply_track_cloud_plist(&mut track, xml);
         assert_eq!(
             track.cloud_album_id.as_deref(),
             Some("l.rush-moving-pictures")
@@ -4758,17 +4948,13 @@ mod tests {
             track.cloud_lyrics_token.as_deref(),
             Some("preferred-lyrics")
         );
-        assert!(track.extra_strings.contains_key("0x0036_plist_artwork"));
+        assert!(!track.extra_strings.contains_key("0x0036_plist_artwork"));
 
         // Truncated plist must not commit partially-parsed fields.
         let truncated =
             b"<plist version=\"1.0\"><dict><key>cloud-album-id</key><string>l.partial</string>";
         let mut partial_track = Track::default();
-        apply_track_cloud_plist(
-            &mut partial_track,
-            Some(truncated),
-            Some("partial".to_owned()),
-        );
+        apply_track_cloud_plist(&mut partial_track, truncated);
         assert_eq!(partial_track.cloud_album_id, None);
     }
 
@@ -4940,7 +5126,6 @@ mod tests {
                 artist.artwork_url.as_deref(),
                 Some("https://example.invalid/rush/artist.jpg")
             );
-            assert_eq!(artist.artwork_url_plist, None);
         }
 
         let mut xml_bytes = Vec::new();
@@ -4958,7 +5143,7 @@ mod tests {
                     [0u8; 4],
                 )),
                 payload: BomaPayload::RawStringUtf8 {
-                    text: xml_text.clone(),
+                    text: xml_text,
                     raw_bytes: xml_bytes,
                 },
             }],
@@ -4971,7 +5156,6 @@ mod tests {
                 artist.artwork_url.as_deref(),
                 Some("https://example.invalid/rush/artist.jpg")
             );
-            assert_eq!(artist.artwork_url_plist.as_deref(), Some(xml_text.as_str()));
         }
     }
 
@@ -5019,7 +5203,7 @@ mod tests {
         SmartPlaylistRule {
             field_id,
             comparison_method,
-            unk_8: crate::sections::Unknown::new(0),
+            is_nested_rule_group: 0,
             unk_12_44: crate::sections::Unknown::new([0; 32]),
             unk_44: crate::sections::Unknown::new(0),
             unk_48: crate::sections::Unknown::new(0),
@@ -5127,6 +5311,219 @@ mod tests {
         assert_eq!(
             pl2.date_cloud_synced.map(|t| t.to_string()),
             Some("2024-01-02T00:00:00Z".to_owned())
+        );
+    }
+
+    #[test]
+    fn smart_rule_group_negation_is_preserved() {
+        let nested_leaf = make_arg_rule(
+            0x19,        // Rating
+            0x0000_0010, // GreaterThan
+            crate::sections::SmartPlaylistRuleArguments {
+                arg_0: 60,
+                ..Default::default()
+            },
+        );
+        let nested_slst = SlstSection {
+            rule_count: 1,
+            conjunction: 1, // Any
+            rules: vec![nested_leaf],
+            ..Default::default()
+        };
+        let outer = SlstSection {
+            rule_count: 1,
+            conjunction: 0, // All
+            rules: vec![SmartPlaylistRule {
+                field_id: 0,
+                comparison_method: SmartOperatorFlags::NEGATE.bits(),
+                is_nested_rule_group: 1,
+                unk_12_44: crate::sections::Unknown::new([0; 32]),
+                unk_44: crate::sections::Unknown::new(0),
+                unk_48: crate::sections::Unknown::new(0),
+                child_size: 0,
+                child: SmartRuleChild::Nested(Box::new(nested_slst)),
+            }],
+            ..Default::default()
+        };
+
+        let root = decode_slst_group(&outer, false);
+        assert!(!root.negated);
+        assert_eq!(root.conjunction, SmartConjunction::All);
+        assert_eq!(root.rules.len(), 1);
+        let SmartRuleNode::Group(sub) = &root.rules[0] else {
+            panic!("expected nested SmartRuleNode::Group");
+        };
+        assert!(sub.negated);
+        assert_eq!(sub.conjunction, SmartConjunction::Any);
+    }
+
+    #[test]
+    fn dual_track_numerics_merge_is_order_independent_and_gates_downloaded_traits() {
+        let local_num = TrackNumerics {
+            subrecord_kind: 1,
+            duration_ms: 273_000,
+            file_size: 9_500_000,
+            bit_rate: 256,
+            has_embedded_artwork: -1,
+            downloaded_audio_traits: u32::from(AudioTraits::LOSSLESS.bits()),
+            ..Default::default()
+        };
+        let cloud_num = TrackNumerics {
+            subrecord_kind: 3,
+            duration_ms: 273_000,
+            file_size: 0,
+            bit_rate: 0,
+            has_embedded_artwork: 1,
+            is_apple_music_catalog: 1,
+            catalog_lyrics_state: 1,
+            codec_fourcc: 0x6D70_3461, // "mp4a"
+            store_track_adam_id: 1_440_821_120,
+            // Non-zero value on sub3 must NOT leak into downloaded_audio_traits
+            downloaded_audio_traits: u32::from(AudioTraits::DOLBY_ATMOS.bits()),
+            ..Default::default()
+        };
+        let make_boma = |n: TrackNumerics| BomaSection {
+            header_size: 20,
+            total_size: 20 + 364,
+            subtype: 0x0001,
+            unk_16_end: crate::sections::Unknown::new(crate::sections::TailBytes::from([0u8; 4])),
+            payload: BomaPayload::TrackNumerics(Box::new(n)),
+        };
+
+        let item_1_3 = TrackItem {
+            header: TrackItemHeader::default(),
+            bomas: vec![make_boma(local_num.clone()), make_boma(cloud_num.clone())],
+        };
+        let item_3_1 = TrackItem {
+            header: TrackItemHeader::default(),
+            bomas: vec![make_boma(cloud_num.clone()), make_boma(local_num)],
+        };
+
+        let t_1_3 = Track::from_raw_with_tz(&item_1_3, 0);
+        let t_3_1 = Track::from_raw_with_tz(&item_3_1, 0);
+        let t_owned_3_1 = Track::from_owned_with_tz(item_3_1, 0);
+        assert_eq!(t_1_3, t_3_1);
+        assert_eq!(t_1_3, t_owned_3_1);
+        assert_eq!(t_1_3.file_size, Some(9_500_000));
+        assert_eq!(t_1_3.bit_rate, Some(256));
+        assert_eq!(t_1_3.store_track_adam_id, Some(1_440_821_120));
+        assert_eq!(t_1_3.codec_fourcc.as_deref(), Some("mp4a"));
+        assert_eq!(t_1_3.embedded_artwork, Some(EmbeddedArtworkKind::Embedded));
+        assert!(t_1_3.has_embedded_artwork());
+        assert_eq!(t_1_3.downloaded_audio_traits, AudioTraits::LOSSLESS);
+
+        // Cloud-only track (sub3 only) must NOT populate downloaded_audio_traits
+        let item_cloud_only = TrackItem {
+            header: TrackItemHeader::default(),
+            bomas: vec![make_boma(cloud_num)],
+        };
+        let t_cloud = Track::from_raw_with_tz(&item_cloud_only, 0);
+        assert_eq!(t_cloud.downloaded_audio_traits, AudioTraits::empty());
+        assert_eq!(t_cloud.embedded_artwork, Some(EmbeddedArtworkKind::Cloud));
+        assert!(!t_cloud.has_embedded_artwork());
+    }
+
+    #[test]
+    fn embedded_artwork_and_media_kind_conversions() {
+        assert_eq!(EmbeddedArtworkKind::from(0), EmbeddedArtworkKind::None);
+        assert_eq!(EmbeddedArtworkKind::from(-1), EmbeddedArtworkKind::Embedded);
+        assert_eq!(EmbeddedArtworkKind::from(1), EmbeddedArtworkKind::Cloud);
+        assert_eq!(
+            EmbeddedArtworkKind::from(128),
+            EmbeddedArtworkKind::VideoPosterFrame
+        );
+        assert_eq!(
+            EmbeddedArtworkKind::from(42),
+            EmbeddedArtworkKind::Unknown(42)
+        );
+        assert_eq!(EmbeddedArtworkKind::VideoPosterFrame.raw(), 128);
+        assert!(EmbeddedArtworkKind::VideoPosterFrame.has_local_artwork());
+        assert!(EmbeddedArtworkKind::Embedded.has_local_artwork());
+        assert!(!EmbeddedArtworkKind::Cloud.has_local_artwork());
+        assert_eq!(
+            EmbeddedArtworkKind::VideoPosterFrame.to_string(),
+            "VideoPosterFrame"
+        );
+
+        assert_eq!(MediaKind::from(0x05), MediaKind::MusicOrPodcast);
+        assert_eq!(MediaKind::from(0x05).raw(), 0x05);
+        assert_eq!(MediaKind::MusicOrPodcast.to_string(), "MusicOrPodcast");
+        assert_eq!(MediaKind::from(0x9999), MediaKind::Unknown(0x9999));
+        assert_eq!(MediaKind::Unknown(0x9999).to_string(), "Unknown(39321)");
+    }
+
+    #[test]
+    fn video_sort_show_social_artwork_and_playlist_lookup() {
+        let vi = VideoInfo {
+            width: 1280,
+            height: 720,
+            codec_fourcc: 0x6176_6331, // "avc1"
+            video_bit_rate_kbps: 2_400,
+            avc_profile_idc: 100,
+            avc_level_idc: 31,
+            frame_rate_milli: 29_970,
+            color_bit_depth: 24,
+            ..Default::default()
+        };
+        let track_item = TrackItem {
+            header: TrackItemHeader::default(),
+            bomas: vec![
+                BomaSection {
+                    header_size: 20,
+                    total_size: 20 + 84,
+                    subtype: 0x0024,
+                    unk_16_end: crate::sections::Unknown::new(crate::sections::TailBytes::from(
+                        [0u8; 4],
+                    )),
+                    payload: BomaPayload::VideoInfo(Box::new(vi)),
+                },
+                BomaSection {
+                    header_size: 20,
+                    total_size: 20,
+                    subtype: 0x0053,
+                    unk_16_end: crate::sections::Unknown::new(crate::sections::TailBytes::from(
+                        [0u8; 4],
+                    )),
+                    payload: BomaPayload::RawStringUtf8 {
+                        text: "Rush In Rio".to_owned(),
+                        raw_bytes: b"Rush In Rio".to_vec(),
+                    },
+                },
+            ],
+        };
+        let track = Track::from_raw_with_tz(&track_item, 0);
+        assert_eq!(track.sort_show.as_deref(), Some("Rush In Rio"));
+        let decoded_vi = track.video_info.as_ref().expect("video_info");
+        assert_eq!((decoded_vi.width, decoded_vi.height), (1280, 720));
+        assert_eq!(decoded_vi.codec_fourcc.as_deref(), Some("avc1"));
+        assert!((decoded_vi.frame_rate_fps() - 29.97).abs() < 1e-6);
+
+        // Exact + case-insensitive exact only (no substring match)
+        let mut lib = Library::default();
+        lib.playlists.push(Playlist {
+            persistent_id: PersistentId::new(1),
+            name: Some("Rush: Studio".to_owned()),
+            ..Playlist::default()
+        });
+        assert!(lib.playlist_by_name("Rush: Studio").is_some());
+        assert!(lib.playlist_by_name("rush: studio").is_some());
+        assert!(lib.playlist_by_name("Studio").is_none());
+
+        // SocialProfile::artwork_uuid
+        let sp_item = SocialProfileItem {
+            header: crate::sections::SocialProfileItemHeader {
+                profile_persistent_id: 0xCAFE_BABE,
+                artwork_uuid: [0xAB; 16],
+                ..Default::default()
+            },
+            bomas: Vec::new(),
+        };
+        let sp_ref = SocialProfile::from(&sp_item);
+        let sp_own = SocialProfile::from_owned(sp_item);
+        assert_eq!(sp_ref, sp_own);
+        assert_eq!(
+            sp_ref.artwork_uuid.as_deref(),
+            Some("ABABABAB-ABAB-ABAB-ABAB-ABABABABABAB")
         );
     }
 }

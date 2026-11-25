@@ -162,7 +162,7 @@ fn dump_track_full(label: &str, t: &TrackItem) {
         h.checkbox_part_of_gapless_album,
         h.checkbox_remember_playback_position,
         h.media_kind,
-        *h.unk_64_store_flag,
+        h.store_media_kind,
         h.audio_traits,
     );
     println!(
@@ -175,7 +175,7 @@ fn dump_track_full(label: &str, t: &TrackItem) {
         *h.unk_43,
         *h.unk_45,
         *h.unk_47_49,
-        *h.unk_53,
+        h.has_extended_text_metadata,
         h.has_asset_info_plist,
         *h.unk_56,
         *h.unk_60_62,

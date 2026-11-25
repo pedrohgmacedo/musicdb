@@ -174,6 +174,46 @@ where
     Ok(items)
 }
 
+/// Reads `boma_count` child [`BomaSection`] items for an item record (`itma`, `iama`, `iAma`,
+/// `lpma`, or `isma`) and validates that `header_size + sum(boma.total_size) == total_size`.
+pub(crate) fn read_item_bomas<R: Read + Seek>(
+    reader: &mut R,
+    endian: Endian,
+    (header_size, total_size, boma_count, item_section, boma_section): (
+        u32,
+        u32,
+        u32,
+        &'static str,
+        &'static str,
+    ),
+) -> BinResult<Vec<BomaSection>> {
+    let bomas_start = reader.stream_position()?;
+    let Some(expected_bomas_bytes) = total_size.checked_sub(header_size) else {
+        return Err(binrw::Error::Custom {
+            pos: bomas_start,
+            err: Box::new(MusicDbError::SectionBoundaryMismatch {
+                section: item_section.to_string(),
+                expected: u64::from(total_size),
+                actual: u64::from(header_size),
+            }),
+        });
+    };
+    let bomas = read_bounded_vec::<BomaSection, _>(reader, endian, (boma_count, 16, boma_section))?;
+    let actual_end = reader.stream_position()?;
+    let expected_end = bomas_start.saturating_add(u64::from(expected_bomas_bytes));
+    if actual_end != expected_end {
+        return Err(binrw::Error::Custom {
+            pos: actual_end,
+            err: Box::new(MusicDbError::SectionBoundaryMismatch {
+                section: item_section.to_string(),
+                expected: expected_end,
+                actual: actual_end,
+            }),
+        });
+    }
+    Ok(bomas)
+}
+
 /// Padding / footer section (`LPma`, subtype 17 of `hsma`).
 #[binrw]
 #[brw(little, magic = b"LPma")]
@@ -370,8 +410,9 @@ impl HsmaSection {
         let child_len_u64 = u64::try_from(child_slice.len()).unwrap_or(u64::MAX);
         let expected_end = start_pos.saturating_add(total_size);
 
+        let child_pos = start_pos.saturating_add(header_size_u64);
         let mut cur = Cursor::new(child_slice);
-        let Some(child) = Self::parse_known_child(kind, child_slice, &mut cur)? else {
+        let Some(child) = Self::parse_known_child(kind, child_slice, child_pos, &mut cur)? else {
             let mut sig = [0u8; 4];
             if let Some(prefix) = child_slice.get(0..4) {
                 sig.copy_from_slice(prefix);
@@ -389,9 +430,7 @@ impl HsmaSection {
         // Ensure the parsed child consumed every single byte of `child_slice`!
         let consumed = cur.position();
         if consumed != child_len_u64 {
-            let actual = start_pos
-                .saturating_add(header_size_u64)
-                .saturating_add(consumed);
+            let actual = child_pos.saturating_add(consumed);
             return Err(binrw::Error::Custom {
                 pos: actual,
                 err: Box::new(MusicDbError::SectionBoundaryMismatch {
@@ -405,43 +444,67 @@ impl HsmaSection {
         Ok(Self { header, child })
     }
 
+    const fn expected_child_magic_and_min_len(
+        kind: SectionKind,
+    ) -> Option<(&'static [u8; 4], usize)> {
+        match kind {
+            SectionKind::InnerHfma => Some((b"hfma", 160)),
+            SectionKind::LibraryMaster => Some((b"plma", 160)),
+            SectionKind::AlbumList => Some((b"lama", 12)),
+            SectionKind::ArtistList => Some((b"lAma", 12)),
+            SectionKind::TrackList => Some((b"ltma", 12)),
+            SectionKind::PlaylistList => Some((b"lPma", 12)),
+            SectionKind::PendingCloudDeletions => Some((b"DCma", 12)),
+            SectionKind::SocialProfileList => Some((b"Lsma", 12)),
+            SectionKind::Padding => Some((b"LPma", 8)),
+            SectionKind::Trailer | SectionKind::Unknown(_) => None,
+        }
+    }
+
     fn parse_known_child(
         kind: SectionKind,
         child_bytes: &[u8],
+        child_pos: u64,
         cur: &mut Cursor<&[u8]>,
     ) -> BinResult<Option<HsmaChild>> {
-        let first_four = child_bytes.get(0..4);
-        let parsed = match (kind, first_four) {
-            (SectionKind::InnerHfma, Some(b"hfma")) if child_bytes.len() >= 160 => {
-                Some(HsmaChild::InnerHfma(HfmaHeader::read_le(cur)?))
-            }
-            (SectionKind::LibraryMaster, Some(b"plma")) if child_bytes.len() >= 160 => Some(
-                HsmaChild::LibraryMaster(LibraryMasterSection::read_le(cur)?),
-            ),
-            (SectionKind::AlbumList, Some(b"lama")) if child_bytes.len() >= 12 => {
-                Some(HsmaChild::AlbumList(AlbumListSection::read_le(cur)?))
-            }
-            (SectionKind::ArtistList, Some(b"lAma")) if child_bytes.len() >= 12 => {
-                Some(HsmaChild::ArtistList(ArtistListSection::read_le(cur)?))
-            }
-            (SectionKind::TrackList, Some(b"ltma")) if child_bytes.len() >= 12 => {
-                Some(HsmaChild::TrackList(TrackListSection::read_le(cur)?))
-            }
-            (SectionKind::PlaylistList, Some(b"lPma")) if child_bytes.len() >= 12 => {
-                Some(HsmaChild::PlaylistList(PlaylistListSection::read_le(cur)?))
-            }
-            (SectionKind::PendingCloudDeletions, Some(b"DCma")) if child_bytes.len() >= 12 => Some(
-                HsmaChild::PendingCloudDeletions(CloudDeletionListSection::read_le(cur)?),
-            ),
-            (SectionKind::SocialProfileList, Some(b"Lsma")) if child_bytes.len() >= 12 => Some(
-                HsmaChild::SocialProfileList(SocialProfileListSection::read_le(cur)?),
-            ),
-            (SectionKind::Padding, Some(b"LPma")) if child_bytes.len() >= 8 => {
-                Some(HsmaChild::Padding(PaddingSection::read_le(cur)?))
-            }
-            _ => None,
+        let Some((expected_magic, min_len)) = Self::expected_child_magic_and_min_len(kind) else {
+            return Ok(None);
         };
-        Ok(parsed)
+        let first_four = child_bytes.get(0..4);
+        if child_bytes.len() < min_len
+            && (child_bytes.len() < 4 || first_four == Some(expected_magic.as_slice()))
+        {
+            return Err(Self::truncated_err(
+                u32::from(kind),
+                child_pos,
+                u64::try_from(min_len).unwrap_or(u64::MAX),
+                u64::try_from(child_bytes.len()).unwrap_or(u64::MAX),
+            ));
+        }
+        if first_four != Some(expected_magic.as_slice()) {
+            return Ok(None);
+        }
+        let parsed = match kind {
+            SectionKind::InnerHfma => HsmaChild::InnerHfma(HfmaHeader::read_le(cur)?),
+            SectionKind::LibraryMaster => {
+                HsmaChild::LibraryMaster(LibraryMasterSection::read_le(cur)?)
+            }
+            SectionKind::AlbumList => HsmaChild::AlbumList(AlbumListSection::read_le(cur)?),
+            SectionKind::ArtistList => HsmaChild::ArtistList(ArtistListSection::read_le(cur)?),
+            SectionKind::TrackList => HsmaChild::TrackList(TrackListSection::read_le(cur)?),
+            SectionKind::PlaylistList => {
+                HsmaChild::PlaylistList(PlaylistListSection::read_le(cur)?)
+            }
+            SectionKind::PendingCloudDeletions => {
+                HsmaChild::PendingCloudDeletions(CloudDeletionListSection::read_le(cur)?)
+            }
+            SectionKind::SocialProfileList => {
+                HsmaChild::SocialProfileList(SocialProfileListSection::read_le(cur)?)
+            }
+            SectionKind::Padding => HsmaChild::Padding(PaddingSection::read_le(cur)?),
+            SectionKind::Trailer | SectionKind::Unknown(_) => return Ok(None),
+        };
+        Ok(Some(parsed))
     }
 }
 

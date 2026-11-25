@@ -14,13 +14,14 @@ pub use crypto::{
 pub use error::{MusicDbError, Result};
 pub use model::{
     Album, Artist, AudioTraits, CatalogAlbumType, CloudDeletionKind, CloudStatus, ContentRating,
-    DistinguishedPlaylistKind, DownloadedStatus, EqualizerPreset, IntoPersistentId, Library,
-    LibraryMetadata, MediaKind, MediaKindFlags, ParsePersistentIdError, PendingCloudDeletion,
-    PersistentId, Playlist, PlaylistKind, PlaylistShareMode, PlaylistViewPreferences,
-    RelativeTimeUnit, SmartCondition, SmartConjunction, SmartField, SmartLimitUnit, SmartOperator,
-    SmartOperatorFlags, SmartPlaylistConfig, SmartPlaylistLimit, SmartRuleGroup, SmartRuleNode,
-    SmartRuleValue, SmartSelectionMethod, SocialProfile, SortMode, SortModeFlags, SuggestionFlag,
-    SuggestionFlags, Track, TrackSortModes, discover_default_library_path,
+    DistinguishedPlaylistKind, DownloadedStatus, EmbeddedArtworkKind, EqualizerPreset,
+    IntoPersistentId, Library, LibraryMetadata, MediaKind, MediaKindFlags, ParsePersistentIdError,
+    PendingCloudDeletion, PersistentId, Playlist, PlaylistKind, PlaylistShareMode,
+    PlaylistViewPreferences, RelativeTimeUnit, SmartCondition, SmartConjunction, SmartField,
+    SmartLimitUnit, SmartOperator, SmartOperatorFlags, SmartPlaylistConfig, SmartPlaylistLimit,
+    SmartRuleGroup, SmartRuleNode, SmartRuleValue, SmartSelectionMethod, SocialProfile, SortMode,
+    SortModeFlags, SuggestionFlag, SuggestionFlags, Track, TrackSortModes, TrackVideoInfo,
+    discover_default_library_path,
 };
 pub use sections::{AppleTimestamp, RawLibraryFile, SectionKind};
 
@@ -429,6 +430,7 @@ mod tests {
             store_track_adam_id_4: 0,
             date_cloud_synced: AppleTimestamp::new(2),
             unk_360: Unknown::new(0),
+            unk_tail: Unknown::new(TailBytes::new()),
         };
         let mut num_cloud = num_local.clone();
         num_cloud.global_counter = 11;
@@ -475,6 +477,7 @@ mod tests {
                     true_skip_count: 1,
                     unk_40: Unknown::new(0),
                     unk_44_52: Unknown::new([0; 8]),
+                    unk_tail: Unknown::new(TailBytes::new()),
                 }),
             },
             make_utf16le_boma(0x0002, "Tom Sawyer"),
@@ -510,7 +513,7 @@ mod tests {
                 checkbox_remember_playback_position: 0,
                 checkbox_show_composer_in_all_views: 0,
                 checkbox_use_work_and_movement: 0,
-                unk_53: Unknown::new(0),
+                has_extended_text_metadata: 0,
                 has_asset_info_plist: 1,
                 has_playback_or_bounds_activity: 1,
                 unk_56: Unknown::new(0),
@@ -519,7 +522,7 @@ mod tests {
                 content_rating: 0,
                 unk_60_62: Unknown::new([0; 2]),
                 suggestion_flag: 0x0102,
-                unk_64_store_flag: Unknown::new(1),
+                store_media_kind: 1,
                 star_rating: 100,
                 auto_sort_flags: [0x81, 0x80, 0x03, 0, 0, 0x80],
                 unk_72_82: Unknown::new([0; 10]),
@@ -529,7 +532,7 @@ mod tests {
                 movement_number: 0,
                 disc_total: 1,
                 volume_adjustment: 0,
-                unk_96_purchased_album_group: Unknown::new(0),
+                purchased_album_group: 0,
                 unk_100_108: Unknown::new([0; 8]),
                 media_kind: 1,
                 unk_112: Unknown::new(1),
@@ -769,7 +772,13 @@ mod tests {
             AppleTimestamp::new(3_800_000_000).to_utc()
         );
 
+        assert_eq!(lib.metadata.apple_store_account_id, None);
+        assert_eq!(
+            lib.metadata.date_local_lease_expires,
+            AppleTimestamp::new(3_877_000_000).to_utc()
+        );
         assert!(!lib.artists[0].playlist_only);
+        assert_eq!(lib.artists[0].apple_music_store_artist_id, Some(900_001));
         assert_eq!(lib.pending_cloud_deletions.len(), 2);
         assert_eq!(lib.pending_cloud_deletions[0].cloud_saga_id, 198_102_112);
         assert_eq!(
@@ -809,7 +818,8 @@ mod tests {
             t.date_first_played_utc,
             AppleTimestamp::new(3_790_000_000).to_utc()
         );
-        assert_eq!(t.has_embedded_artwork, Some(true));
+        assert_eq!(t.embedded_artwork, Some(EmbeddedArtworkKind::Embedded));
+        assert!(t.has_embedded_artwork());
         assert!(t.purchased);
         assert_eq!(
             t.equalizer_preset.as_ref().map(|e| e.name.as_str()),
@@ -1078,7 +1088,7 @@ mod tests {
             rules: vec![SmartPlaylistRule {
                 field_id: 0,
                 comparison_method: 0,
-                unk_8: Unknown::new(1),
+                is_nested_rule_group: 1,
                 unk_12_44: Unknown::new([0; 32]),
                 unk_44: Unknown::new(0),
                 unk_48: Unknown::new(0),
@@ -1088,7 +1098,7 @@ mod tests {
                     rules: vec![SmartPlaylistRule {
                         field_id: 2,
                         comparison_method: 1,
-                        unk_8: Unknown::new(0),
+                        is_nested_rule_group: 0,
                         unk_12_44: Unknown::new([0; 32]),
                         unk_44: Unknown::new(0),
                         unk_48: Unknown::new(0),
@@ -1187,7 +1197,7 @@ mod tests {
             &SmartPlaylistRule {
                 field_id: 2,
                 comparison_method: 1,
-                unk_8: Unknown::new(0),
+                is_nested_rule_group: 0,
                 unk_12_44: Unknown::new([0; 32]),
                 unk_44: Unknown::new(0),
                 unk_48: Unknown::new(0),
@@ -1296,7 +1306,7 @@ mod tests {
         let rule = SmartPlaylistRule {
             field_id: 2,
             comparison_method: 1,
-            unk_8: Unknown::new(0x1122_3344),
+            is_nested_rule_group: 0,
             unk_12_44: Unknown::new([0x55; 32]),
             unk_44: Unknown::new(0x6677_8899),
             unk_48: Unknown::new(0xAABB_CCDD),
@@ -1329,6 +1339,6 @@ mod tests {
         assert_eq!(parsed, slst);
         let mut visitor = CountVisitor(0);
         parsed.visit_unknowns("slst", &mut visitor);
-        assert_eq!(visitor.0, 9);
+        assert_eq!(visitor.0, 8);
     }
 }

@@ -200,7 +200,7 @@ pub(crate) enum EntityContext {
         persistent_id: String,
         name: Option<String>,
         sort_name: Option<String>,
-        apple_music_store_artist_id: u64,
+        apple_music_store_artist_id: Option<u64>,
         album_count: usize,
         track_count: usize,
         sample_tracks: Vec<TrackRefSummary>,
@@ -1160,7 +1160,7 @@ impl<'a> LibraryContextBuilder<'a> {
             persistent_id: id.to_string(),
             name: artist.and_then(|a| a.name.clone()),
             sort_name: artist.and_then(|a| a.sort_name.clone()),
-            apple_music_store_artist_id: artist.map_or(0, |a| a.apple_music_store_artist_id),
+            apple_music_store_artist_id: artist.and_then(|a| a.apple_music_store_artist_id),
             album_count: self.artist_album_counts.get(&id).copied().unwrap_or(0),
             track_count: tracks.len(),
             sample_tracks,
@@ -2336,8 +2336,8 @@ impl EntityContext {
             (n, Some(s)) if n != Some(s) && !s.is_empty() => format!(" [sort: {s:?}]"),
             _ => String::new(),
         };
-        let store_note = if *apple_music_store_artist_id > 0 {
-            format!(", store_id={apple_music_store_artist_id}")
+        let store_note = if let Some(id) = apple_music_store_artist_id {
+            format!(", store_id={id}")
         } else {
             String::new()
         };
