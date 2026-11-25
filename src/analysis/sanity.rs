@@ -9,6 +9,7 @@ use std::fmt;
 use std::io::Cursor;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use clap::ValueEnum;
 use jiff::Timestamp;
 use serde::Serialize;
 
@@ -33,13 +34,19 @@ const TEN_YEARS_SECS: i64 = 10 * 365 * 86_400;
 const DEFAULT_MAX_EXAMPLES: usize = 5;
 
 /// Broad category for a sanity-check finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SanityCategory {
+    #[value(name = "enum", alias = "enum_fallthrough")]
     EnumFallthrough,
+    #[value(name = "bitflag")]
     Bitflag,
+    #[value(name = "timestamp")]
     Timestamp,
+    #[value(name = "string", alias = "string_data")]
     StringData,
+    #[value(name = "bounds")]
+    Bounds,
 }
 
 impl fmt::Display for SanityCategory {
@@ -49,6 +56,7 @@ impl fmt::Display for SanityCategory {
             Self::Bitflag => f.write_str("bitflag"),
             Self::Timestamp => f.write_str("timestamp"),
             Self::StringData => f.write_str("string_data"),
+            Self::Bounds => f.write_str("bounds"),
         }
     }
 }
@@ -76,6 +84,7 @@ pub(crate) struct SanityCheckOptions {
     pub(crate) include_info: bool,
     pub(crate) reference_now: Timestamp,
     pub(crate) max_examples: usize,
+    pub(crate) categories: Vec<SanityCategory>,
 }
 
 impl Default for SanityCheckOptions {
@@ -84,6 +93,7 @@ impl Default for SanityCheckOptions {
             include_info: false,
             reference_now: current_utc_timestamp(),
             max_examples: DEFAULT_MAX_EXAMPLES,
+            categories: Vec::new(),
         }
     }
 }
@@ -256,6 +266,7 @@ struct Finding<'a> {
 struct SanityCollector {
     include_info: bool,
     max_examples: usize,
+    categories: Vec<SanityCategory>,
     now_secs: i64,
     tz_offset_secs: i32,
     total_warnings: usize,
@@ -268,6 +279,7 @@ impl SanityCollector {
         Self {
             include_info: opts.include_info,
             max_examples: opts.max_examples,
+            categories: opts.categories.clone(),
             now_secs: opts.reference_now.as_second(),
             tz_offset_secs,
             total_warnings: 0,
@@ -277,6 +289,9 @@ impl SanityCollector {
     }
 
     fn record(&mut self, finding: Finding<'_>) {
+        if !self.categories.is_empty() && !self.categories.contains(&finding.category) {
+            return;
+        }
         match finding.severity {
             SanitySeverity::Warning => self.total_warnings += 1,
             SanitySeverity::Info => {
@@ -603,6 +618,73 @@ impl SanityCollector {
         }
     }
 
+    fn check_star_rating(&mut self, section: &str, offset: &str, raw: u8, ctx: &str) {
+        if raw > 100 || !raw.is_multiple_of(20) {
+            self.record(Finding {
+                category: SanityCategory::Bounds,
+                severity: SanitySeverity::Warning,
+                rule_id: "bounds.star_rating",
+                section,
+                offset,
+                field: "star_rating",
+                message: "star_rating must be <= 100 and a multiple of 20",
+                value: raw.to_string(),
+                item_context: ctx,
+                subcontext: None,
+            });
+        }
+    }
+
+    fn check_count_vs_true(
+        &mut self,
+        section: &str,
+        offset: &str,
+        field: &str,
+        count: u32,
+        true_count: u32,
+        ctx: &str,
+    ) {
+        if count > true_count {
+            self.record(Finding {
+                category: SanityCategory::Bounds,
+                severity: SanitySeverity::Info,
+                rule_id: "bounds.count_exceeds_true",
+                section,
+                offset,
+                field,
+                message: "displayed count exceeds local/true count (common in iCloud multi-device libraries)",
+                value: format!("{count} > {true_count}"),
+                item_context: ctx,
+                subcontext: None,
+            });
+        }
+    }
+
+    fn check_section_count(
+        &mut self,
+        section: &str,
+        offset: &str,
+        field: &str,
+        declared: u32,
+        actual: usize,
+        ctx: &str,
+    ) {
+        if usize::try_from(declared).ok() != Some(actual) {
+            self.record(Finding {
+                category: SanityCategory::Bounds,
+                severity: SanitySeverity::Warning,
+                rule_id: "bounds.section_count_mismatch",
+                section,
+                offset,
+                field,
+                message: "header count does not match parsed child count",
+                value: format!("header={declared}, actual={actual}"),
+                item_context: ctx,
+                subcontext: None,
+            });
+        }
+    }
+
     fn finish(self, opts: &SanityCheckOptions, hfma: &HfmaHeader) -> SanityReport {
         let findings = self
             .groups
@@ -645,10 +727,11 @@ impl SanityCollector {
     }
 }
 
-/// Runs Tier 1 sanity checks directly on a parsed [`RawLibraryFile`].
+/// Runs Tier 1 and Tier 2 sanity checks directly on a parsed [`RawLibraryFile`].
 pub(crate) fn analyze_sanity(raw: &RawLibraryFile, opts: &SanityCheckOptions) -> SanityReport {
     let mut c = SanityCollector::new(opts, raw.outer_header.timezone_offset_seconds);
     check_hfma(&mut c, "hfma", &raw.outer_header);
+    check_hfma_section_counts(&mut c, raw);
 
     for (idx, sec) in raw.sections.iter().enumerate() {
         let hsma_ctx = format!("hsma[{idx}]");
@@ -715,6 +798,74 @@ pub(crate) fn analyze_sanity(raw: &RawLibraryFile, opts: &SanityCheckOptions) ->
     }
 
     c.finish(opts, &raw.outer_header)
+}
+
+fn check_hfma_section_counts(c: &mut SanityCollector, raw: &RawLibraryFile) {
+    let h = &raw.outer_header;
+    let ctx = format!("hfma[{}]", PersistentId(h.library_persistent_id));
+    c.check_section_count(
+        "hfma",
+        "56..60",
+        "hsma_count",
+        h.hsma_count,
+        raw.sections.len(),
+        &ctx,
+    );
+
+    let mut list_tracks = 0usize;
+    let mut list_albums = 0usize;
+    let mut list_artists = 0usize;
+    let mut list_playlists = 0usize;
+    for sec in &raw.sections {
+        match &sec.child {
+            HsmaChild::TrackList(l) => {
+                list_tracks += usize::try_from(l.header.track_count).unwrap_or(l.tracks.len());
+            }
+            HsmaChild::AlbumList(l) => {
+                list_albums += usize::try_from(l.header.album_count).unwrap_or(l.albums.len());
+            }
+            HsmaChild::ArtistList(l) => {
+                list_artists += usize::try_from(l.header.artist_count).unwrap_or(l.artists.len());
+            }
+            HsmaChild::PlaylistList(l) => {
+                list_playlists +=
+                    usize::try_from(l.header.playlist_count).unwrap_or(l.playlists.len());
+            }
+            _ => {}
+        }
+    }
+    c.check_section_count(
+        "hfma",
+        "68..72",
+        "track_count",
+        h.track_count,
+        list_tracks,
+        &ctx,
+    );
+    c.check_section_count(
+        "hfma",
+        "76..80",
+        "album_count",
+        h.album_count,
+        list_albums,
+        &ctx,
+    );
+    c.check_section_count(
+        "hfma",
+        "80..84",
+        "artist_count",
+        h.artist_count,
+        list_artists,
+        &ctx,
+    );
+    c.check_section_count(
+        "hfma",
+        "72..76",
+        "playlist_count",
+        h.playlist_count,
+        list_playlists,
+        &ctx,
+    );
 }
 
 fn check_hfma(c: &mut SanityCollector, section: &str, h: &HfmaHeader) {
@@ -832,6 +983,7 @@ fn check_album(c: &mut SanityCollector, album: &AlbumItem) {
         &ctx,
         None,
     );
+    c.check_star_rating("iama", "40", h.star_rating, &ctx);
     check_suggestion_flag(c, "iama", "42..44", h.suggestion_flag, &ctx);
     if let Some(raw) = h.catalog_album_type
         && matches!(CatalogAlbumType::from(raw), CatalogAlbumType::Unknown(_))
@@ -938,6 +1090,7 @@ fn check_track(c: &mut SanityCollector, track: &TrackItem) {
     );
     check_track_booleans(c, track, &ctx);
     check_track_enums_and_flags(c, track, &ctx);
+    check_track_bounds(c, track, &ctx);
     c.check_timestamp(
         "itma",
         "336..340",
@@ -957,6 +1110,75 @@ fn check_track(c: &mut SanityCollector, track: &TrackItem) {
         None,
     );
     check_bomas(c, "itma", &track.bomas, &ctx);
+}
+
+fn check_track_bounds(c: &mut SanityCollector, track: &TrackItem, ctx: &str) {
+    let h = &track.header;
+    c.check_star_rating("itma", "65", h.star_rating, ctx);
+    if !(-255..=255).contains(&h.volume_adjustment) {
+        c.record(Finding {
+            category: SanityCategory::Bounds,
+            severity: SanitySeverity::Warning,
+            rule_id: "bounds.volume_adjustment",
+            section: "itma",
+            offset: "92..96",
+            field: "volume_adjustment",
+            message: "volume_adjustment is outside valid -255..=255 range",
+            value: h.volume_adjustment.to_string(),
+            item_context: ctx,
+            subcontext: None,
+        });
+    }
+    let pairs: [(&str, &str, u16, u16); 3] = [
+        (
+            "160..162,116..118",
+            "track_number/track_total",
+            h.track_number,
+            h.track_total,
+        ),
+        (
+            "84..86,90..92",
+            "disc_number/disc_total",
+            h.disc_number,
+            h.disc_total,
+        ),
+        (
+            "88..90,86..88",
+            "movement_number/movement_total",
+            h.movement_number,
+            h.movement_total,
+        ),
+    ];
+    for (offset, field, num, total) in pairs {
+        if total > 0 && num > total {
+            c.record(Finding {
+                category: SanityCategory::Bounds,
+                severity: SanitySeverity::Warning,
+                rule_id: "bounds.number_exceeds_total",
+                section: "itma",
+                offset,
+                field,
+                message: "index exceeds declared total",
+                value: format!("{num}/{total}"),
+                item_context: ctx,
+                subcontext: None,
+            });
+        }
+    }
+    if h.playback_stop_ms > 0 && h.playback_start_ms > h.playback_stop_ms {
+        c.record(Finding {
+            category: SanityCategory::Bounds,
+            severity: SanitySeverity::Warning,
+            rule_id: "bounds.playback_range",
+            section: "itma",
+            offset: "148..156",
+            field: "playback_start_ms/playback_stop_ms",
+            message: "playback_start_ms exceeds non-zero playback_stop_ms",
+            value: format!("{} > {}", h.playback_start_ms, h.playback_stop_ms),
+            item_context: ctx,
+            subcontext: None,
+        });
+    }
 }
 
 fn check_track_booleans(c: &mut SanityCollector, track: &TrackItem, ctx: &str) {
@@ -1185,7 +1407,32 @@ fn check_track_numerics(
         ctx,
         sub.clone(),
     );
+    check_track_numerics_sample_rate(c, n.sample_rate, ctx, sub.clone());
     check_track_numerics_timestamps(c, n, ctx, sub);
+}
+
+fn check_track_numerics_sample_rate(
+    c: &mut SanityCollector,
+    sample_rate: f32,
+    ctx: &str,
+    sub: Option<String>,
+) {
+    if !sample_rate.is_finite()
+        || (sample_rate != 0.0 && !(1_000.0..=768_000.0).contains(&sample_rate))
+    {
+        c.record(Finding {
+            category: SanityCategory::Bounds,
+            severity: SanitySeverity::Warning,
+            rule_id: "bounds.sample_rate",
+            section: "TrackNumerics",
+            offset: "60..64",
+            field: "sample_rate",
+            message: "non-zero sample_rate is non-finite or outside 1_000..=768_000 Hz",
+            value: format!("{sample_rate}"),
+            item_context: ctx,
+            subcontext: sub,
+        });
+    }
 }
 
 fn check_track_numerics_timestamps(
@@ -1242,6 +1489,22 @@ fn check_track_numerics_timestamps(
 }
 
 fn check_track_plays_skips(c: &mut SanityCollector, p: &TrackPlaysSkips, ctx: &str) {
+    c.check_count_vs_true(
+        "TrackPlaysSkips",
+        "12..20",
+        "play_count/true_play_count",
+        p.play_count,
+        p.true_play_count,
+        ctx,
+    );
+    c.check_count_vs_true(
+        "TrackPlaysSkips",
+        "32..40",
+        "skip_count/true_skip_count",
+        p.skip_count,
+        p.true_skip_count,
+        ctx,
+    );
     c.check_timestamp(
         "TrackPlaysSkips",
         "8..12",
@@ -1327,6 +1590,32 @@ fn check_playlist_header_fields(c: &mut SanityCollector, playlist: &PlaylistItem
         );
     }
     check_suggestion_flag(c, "lpma", "223..225", h.suggestion_flag, ctx);
+    let item_count = playlist
+        .bomas
+        .iter()
+        .filter(|b| {
+            matches!(
+                b.payload,
+                BomaPayload::PlaylistItem(_) | BomaPayload::PlaylistItemCompact(_)
+            )
+        })
+        .count();
+    c.check_section_count(
+        "lpma",
+        "16..20",
+        "track_count",
+        h.track_count,
+        item_count,
+        ctx,
+    );
+    c.check_count_vs_true(
+        "lpma",
+        "174..182",
+        "play_count/true_play_count",
+        h.play_count,
+        h.true_play_count,
+        ctx,
+    );
     if matches!(
         PlaylistShareMode::from(h.cloud_share_mode),
         PlaylistShareMode::Unknown(_)
@@ -1632,9 +1921,35 @@ fn check_bomas(c: &mut SanityCollector, parent: &str, bomas: &[BomaSection], ctx
             BomaPayload::BinaryPlist { subtype, raw_bytes } => {
                 check_binary_plist(c, parent, *subtype, raw_bytes, ctx);
             }
+            BomaPayload::Book {
+                extracted_path,
+                components,
+                raw_bytes,
+            } => {
+                if extracted_path.as_deref().is_none_or(str::is_empty) || components.is_empty() {
+                    let section = format!("{parent}::boma({:#06x})", boma.subtype);
+                    let field = musicdb::sections::boma::boma_subtype_name(boma.subtype);
+                    c.record(Finding {
+                        category: SanityCategory::StringData,
+                        severity: SanitySeverity::Warning,
+                        rule_id: "string.empty_book_path",
+                        section: &section,
+                        offset: "payload",
+                        field,
+                        message: "macOS book bookmark payload yielded no extracted path or components",
+                        value: format!(
+                            "len={}, path={:?}, components={}",
+                            raw_bytes.len(),
+                            extracted_path,
+                            components.len()
+                        ),
+                        item_context: ctx,
+                        subcontext: None,
+                    });
+                }
+            }
             BomaPayload::PlaylistItem(_)
             | BomaPayload::PlaylistItemCompact(_)
-            | BomaPayload::Book { .. }
             | BomaPayload::Unknown { .. }
             | _ => {}
         }
@@ -1744,6 +2059,22 @@ fn check_boma_string_chars(
             subcontext: None,
         });
     }
+    let total_chars = text.chars().count();
+    let weird_chars = text.chars().filter(|&ch| is_weird_char(ch)).count();
+    if total_chars >= 4 && weird_chars.saturating_mul(5) > total_chars {
+        c.record(Finding {
+            category: SanityCategory::StringData,
+            severity: SanitySeverity::Warning,
+            rule_id: "string.weird_character_density",
+            section,
+            offset: "payload",
+            field,
+            message: "decoded string has >20% PUA, non-character, or replacement code points",
+            value: format!("{weird_chars}/{total_chars} {}", preview()),
+            item_context: ctx,
+            subcontext: None,
+        });
+    }
     if subtype == 0x0007 {
         let eq = EqualizerPreset::from(text);
         if let Some(id) = eq.preset_id
@@ -1811,6 +2142,16 @@ fn is_disallowed_control_char(ch: char) -> bool {
         || (0x80..=0x9F).contains(&code)
 }
 
+fn is_weird_char(ch: char) -> bool {
+    let code = u32::from(ch);
+    ch == '\u{FFFD}'
+        || (0xE000..=0xF8FF).contains(&code)
+        || (0xF_0000..=0xF_FFFD).contains(&code)
+        || (0x10_0000..=0x10_FFFD).contains(&code)
+        || (0xFDD0..=0xFDEF).contains(&code)
+        || (code & 0xFFFE) == 0xFFFE
+}
+
 fn find_boma_str(bomas: &[BomaSection], subtype: u32) -> Option<&str> {
     if matches!(subtype, 0x003B | 0x003C) {
         return None;
@@ -1864,6 +2205,7 @@ mod tests {
             // 2026-11-22T00:00:00Z
             reference_now: Timestamp::from_second(1_795_305_600).unwrap(),
             max_examples: 5,
+            categories: Vec::new(),
         }
     }
 
@@ -2075,5 +2417,81 @@ mod tests {
         assert!(rendered.contains("bitflag.unknown_bits"));
         assert!(rendered.contains("bool.non_binary"));
         assert!(serde_json::to_string(&mutated).is_ok());
+    }
+
+    #[test]
+    fn tier2_bounds_counts_strings_and_category_filtering() {
+        let mut raw = build_minimal_rush_raw();
+        raw.outer_header.hsma_count = 9;
+        raw.outer_header.track_count = 3;
+
+        let HsmaChild::TrackList(list) = &mut raw.sections[0].child else {
+            panic!("expected TrackList");
+        };
+        let track = &mut list.tracks[0];
+        track.header.star_rating = 55;
+        track.header.volume_adjustment = 300;
+        track.header.track_number = 8;
+        track.header.track_total = 7;
+        track.header.disc_number = 2;
+        track.header.disc_total = 1;
+        track.header.movement_number = 3;
+        track.header.movement_total = 2;
+        track.header.playback_start_ms = 50_000;
+        track.header.playback_stop_ms = 10_000;
+
+        let opts = fixed_opts(false);
+        let full = analyze_sanity(&raw, &opts);
+        let rules: Vec<&str> = full.findings.iter().map(|g| g.rule_id).collect();
+        assert!(rules.contains(&"bounds.section_count_mismatch"));
+        assert!(rules.contains(&"bounds.star_rating"));
+        assert!(rules.contains(&"bounds.volume_adjustment"));
+        assert!(rules.contains(&"bounds.number_exceeds_total"));
+        assert!(rules.contains(&"bounds.playback_range"));
+
+        // Category filter restricts findings cleanly.
+        let mut only_strings = fixed_opts(false);
+        only_strings.categories = vec![SanityCategory::StringData];
+        let filtered = analyze_sanity(&raw, &only_strings);
+        assert_eq!(filtered.total_warnings, 0);
+        assert!(filtered.findings.is_empty());
+
+        // TrackNumerics sample_rate, TrackPlaysSkips counts, weird chars, and empty Book payload.
+        let sub_opts = fixed_opts(true);
+        let mut c = SanityCollector::new(&sub_opts, 0);
+        let mut num = TrackNumerics::default();
+        num.sample_rate = 999_999.0;
+        check_track_numerics(&mut c, &num, "itma[2112]", None);
+        let mut ps = TrackPlaysSkips::default();
+        ps.play_count = 5;
+        ps.true_play_count = 2;
+        ps.skip_count = 4;
+        ps.true_skip_count = 1;
+        check_track_plays_skips(&mut c, &ps, "itma[2112]");
+        check_boma_string(
+            &mut c,
+            "itma",
+            0x0002,
+            "\u{E000}\u{E001}Rush",
+            b"Rush",
+            false,
+            "itma[2112]",
+        );
+        let mut raw_book_boma = vec![0u8; 28];
+        raw_book_boma[0..4].copy_from_slice(b"boma");
+        raw_book_boma[4..8].copy_from_slice(&20u32.to_le_bytes());
+        raw_book_boma[8..12].copy_from_slice(&28u32.to_le_bytes());
+        raw_book_boma[12..16].copy_from_slice(&0x0042u32.to_le_bytes());
+        raw_book_boma[20..24].copy_from_slice(b"book");
+        let empty_book: BomaSection =
+            binrw::BinRead::read_le(&mut Cursor::new(&raw_book_boma)).unwrap();
+        check_bomas(&mut c, "itma", &[empty_book], "itma[2112]");
+
+        let sub_report = c.finish(&sub_opts, &HfmaHeader::default());
+        let sub_rules: Vec<&str> = sub_report.findings.iter().map(|g| g.rule_id).collect();
+        assert!(sub_rules.contains(&"bounds.sample_rate"));
+        assert!(sub_rules.contains(&"bounds.count_exceeds_true"));
+        assert!(sub_rules.contains(&"string.weird_character_density"));
+        assert!(sub_rules.contains(&"string.empty_book_path"));
     }
 }

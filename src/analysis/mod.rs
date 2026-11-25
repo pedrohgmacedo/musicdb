@@ -15,7 +15,7 @@ pub(crate) mod adhoc;
 
 pub(crate) use diff::{LibraryDiffReport, diff_libraries};
 pub(crate) use query_unknowns::{QueryUnknownsOptions, query_unknowns};
-pub(crate) use sanity::{SanityCheckOptions, analyze_sanity};
+pub(crate) use sanity::{SanityCategory, SanityCheckOptions, analyze_sanity};
 pub(crate) use unknowns::{UnknownsReport, analyze_unknowns};
 pub(crate) use xml_check::{XmlComparisonReport, compare_with_itunes_xml};
 

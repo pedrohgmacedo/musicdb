@@ -12,7 +12,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 
 use crate::analysis::{
-    LibraryDiffReport, QueryUnknownsOptions, SanityCheckOptions, UnknownsReport,
+    LibraryDiffReport, QueryUnknownsOptions, SanityCategory, SanityCheckOptions, UnknownsReport,
     XmlComparisonReport, analyze_sanity, analyze_unknowns, compare_with_itunes_xml, diff_libraries,
     query_unknowns,
 };
@@ -78,13 +78,25 @@ enum Commands {
         json: bool,
     },
 
-    /// Audit raw section fields for enum fallthroughs, unknown bitflags, invalid timestamps, and corrupt payloads
+    /// Audit raw section fields for enum fallthroughs, unknown bitflags, invalid timestamps, numeric bounds, and corrupt payloads
     SanityCheck {
         /// Path to Library.musicdb or .musiclibrary directory (defaults to user Music library if omitted)
         path: Option<PathBuf>,
         /// Include informational observations (e.g. expected future lease/release dates, known sentinel 2)
         #[arg(long)]
         include_info: bool,
+        /// Restrict findings to one or more categories (repeatable: timestamp, enum, bitflag, string, bounds)
+        #[arg(short, long, value_enum)]
+        category: Vec<SanityCategory>,
+        /// Override current UTC timestamp for future-date checks (RFC 3339, e.g. `2026-11-25T00:00:00Z`)
+        #[arg(long)]
+        now: Option<String>,
+        /// Maximum examples per distinct value bucket (default: 5)
+        #[arg(long, conflicts_with = "all")]
+        examples: Option<usize>,
+        /// Show all matching examples per value bucket (no truncation)
+        #[arg(long, conflicts_with = "examples")]
+        all: bool,
         /// Emit structured JSON report
         #[arg(long)]
         json: bool,
@@ -268,8 +280,12 @@ fn dispatch_command(command: Commands) -> Result<()> {
         Commands::SanityCheck {
             path,
             include_info,
+            category,
+            now,
+            examples,
+            all,
             json,
-        } => run_sanity_check(path, include_info, json),
+        } => run_sanity_check(path, include_info, category, now, examples, all, json),
         Commands::QueryUnknowns {
             path,
             field,
@@ -528,13 +544,32 @@ fn run_unknowns(path: Option<PathBuf>, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_sanity_check(path: Option<PathBuf>, include_info: bool, json: bool) -> Result<()> {
-    let path = resolve_path(path)?;
-    let raw = RawLibraryFile::open(&path)?;
-    let opts = SanityCheckOptions {
+fn run_sanity_check(
+    path: Option<PathBuf>,
+    include_info: bool,
+    categories: Vec<SanityCategory>,
+    now: Option<String>,
+    examples: Option<usize>,
+    all: bool,
+    json: bool,
+) -> Result<()> {
+    let mut opts = SanityCheckOptions {
         include_info,
+        categories,
         ..SanityCheckOptions::default()
     };
+    if let Some(now_str) = now {
+        opts.reference_now = now_str.parse::<jiff::Timestamp>().map_err(|err| {
+            anyhow::anyhow!("invalid --now RFC 3339 timestamp {now_str:?}: {err}")
+        })?;
+    }
+    if all {
+        opts.max_examples = usize::MAX;
+    } else if let Some(limit) = examples {
+        opts.max_examples = limit;
+    }
+    let path = resolve_path(path)?;
+    let raw = RawLibraryFile::open(&path)?;
     let report = analyze_sanity(&raw, &opts);
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
