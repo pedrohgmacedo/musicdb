@@ -21,6 +21,7 @@ mod lyrics;
 mod media_probes;
 mod offset_116;
 mod plma_raw;
+mod static_corr_2026_11_25;
 
 #[derive(Subcommand)]
 pub(crate) enum AdhocCommand {
@@ -90,6 +91,12 @@ pub(crate) enum AdhocCommand {
         /// Corpus directory to inspect
         corpus_dir: PathBuf,
     },
+    /// Run 2026-11-25 static/historical correlation pass on verified captures
+    #[command(name = "static-corr-2026-11-25")]
+    StaticCorr20261125 {
+        /// Corpus directory to inspect
+        corpus_dir: PathBuf,
+    },
     /// Run every historical corpus probe sequentially
     AllProbes {
         /// Corpus directory to inspect
@@ -127,6 +134,7 @@ pub(crate) fn run(command: AdhocCommand) -> Result<()> {
         AdhocCommand::LocalChecks20261121 { corpus_dir } => {
             local_checks_2026_11_21::run(&corpus_dir)
         }
+        AdhocCommand::StaticCorr20261125 { corpus_dir } => static_corr_2026_11_25::run(&corpus_dir),
         AdhocCommand::AllProbes { corpus_dir } => {
             lyrics::run(&corpus_dir)?;
             println!();
