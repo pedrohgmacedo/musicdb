@@ -130,7 +130,7 @@ Much of the existing code predates these rules.
 ## Versioning and commits
 - The crate is **0.x**. Under Cargo's semver rules, a breaking change bumps `0.MINOR` and a compatible change bumps `0.x.PATCH`.
 - **Don't change `version` in `Cargo.toml` unless asked.** Mention breaking changes explicitly in your summary.
-- Commit messages follow **Conventional Commits**: `feat: …`, `fix: …`, `perf: …`, `refactor: …`, `docs: …`, `test: …`, `chore: …`, and `feat!:` / `fix!:` / `perf!:` (or a `BREAKING CHANGE:` footer) for breaking changes. The subject line is imperative and under ~72 characters. Don't write messages like `doc` or `update`.
+- Commit messages follow **Conventional Commits**: `feat: …`, `fix: …`, `perf: …`, `refactor: …`, `docs: …`, `test: …`, `chore: …`. Breaking changes **must** include `!` in the subject line (e.g. `feat!:`, `fix!:`, `perf!:`, `refactor!:`). The subject line is imperative and under ~72 characters. Don't write messages like `doc` or `update`.
 
 ## Tooling configuration: `clippy.toml` and `deny.toml`
 
