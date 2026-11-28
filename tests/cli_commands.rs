@@ -450,3 +450,13 @@ fn cli_diff_and_unknowns_end_to_end() {
     assert_eq!(unk_json["global_counter_analysis"]["album_count"], 1);
     assert_eq!(unk_json["global_counter_analysis"]["artist_count"], 1);
 }
+
+#[test]
+fn cli_version_matches_cargo_pkg_version() {
+    let out = run_musicdb(&["--version"]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        stdout.trim(),
+        format!("musicdb {}", env!("CARGO_PKG_VERSION"))
+    );
+}

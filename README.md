@@ -12,6 +12,14 @@ Apple doesn't document the `.musicdb` format, and modern Apple Music no longer k
 
 ## Installation
 
+### Prebuilt binaries
+
+Download the latest prebuilt archive for macOS, Windows, or Linux from [GitHub Releases](https://github.com/pedrohgmacedo/musicdb/releases/latest), extract `musicdb` (or `musicdb.exe`), and run it from your terminal.
+
+> **macOS / Windows note:** Release binaries are currently unsigned. On macOS, if Gatekeeper blocks the binary on first run, clear the quarantine flag with `xattr -d com.apple.quarantine ./musicdb` (or allow it in *System Settings → Privacy & Security*). On Windows, click *More info → Run anyway* if SmartScreen prompts.
+
+### From source (Cargo)
+
 To install the `musicdb` command-line tool:
 
 ```sh

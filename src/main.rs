@@ -54,6 +54,7 @@ macro_rules! println {
 #[derive(Parser)]
 #[command(
     name = "musicdb",
+    version,
     about = "Apple Music .musicdb parser, inspector, and format analysis toolkit"
 )]
 struct Cli {

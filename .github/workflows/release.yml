@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - "Cargo.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_RELEASE_LTO: thin
+  CARGO_PROFILE_RELEASE_STRIP: symbols
+
+jobs:
+  check:
+    name: Check Release
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      release_sha: ${{ steps.check.outputs.release_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_BEFORE: ${{ github.event.before }}
+        run: python3 .github/scripts/check_release.py
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            bin: musicdb
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            bin: musicdb
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            bin: musicdb.exe
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            bin: musicdb
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            bin: musicdb
+            musl: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-26.04-arm
+            bin: musicdb
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-26.04-arm
+            bin: musicdb
+            musl: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.release_sha }}
+      - name: Install musl-tools
+        if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Build release binary
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bin-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.bin }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish GitHub Release
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: bin-*
+      - name: Package archives and create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/package_release.py --tag "${{ needs.check.outputs.tag }}" --target-sha "${{ needs.check.outputs.release_sha }}" --artifacts-dir artifacts --out-dir dist --publish
