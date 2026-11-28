@@ -107,7 +107,7 @@ Much of the existing code predates these rules.
   - Wrap undecoded binary fields in `Unknown<T>` (never bare `u8`/`u32`/`[u8; N]`/`Vec<u8>`) and register every one in that struct's `VisitUnknowns` impl via `visit_unknowns!`. Use `Unknown<TailBytes>` for hot per-item variable-length header tails and `Unknown<Vec<u8>>` for rare once-per-section tails. Split partially-decoded byte arrays cleanly into known fields plus `Unknown<T>` rather than leaving known flags inside `Unknown<[u8; N]>`. Never dereference `Unknown<T>` fields (`*h.unk_*`) in `model.rs` or `sqlite.rs` — promote the field out of `Unknown<T>` first once its semantics are verified.
   - Use `AppleTimestamp` for 32-bit Apple epoch timestamp fields in `src/sections/`, and use `SectionKind` for `hsma` section filtering and dispatch. Never chain `Option<AppleTimestamp>` fields with `.or()` before converting via `.and_then(AppleTimestamp::to_utc)`, since `Some(AppleTimestamp(0))` is `Some` and silently shadows the fallback.
   - `VisitUnknowns` / `UnknownVisitor` format introspection belongs in `src/sections/`, while `analysis` reports stay CLI-only.
-- **Be careful with what you make `pub`.** Helpers, serde `with` modules and research utilities are `pub(crate)`. Everything `pub` falls under semver.
+- **Keep the `pub` surface clean, not frozen.** Keep helpers, serde `with` modules and research utilities `pub(crate)` for API hygiene — not out of fear of `0.x` breaks.
 - **Don't put dependency types in public domain signatures** (e.g. `plist::Value`) without asking. In `MusicDbError`, existing `#[from]`/`#[source]` wrappers for `binrw::Error`, `plist::Error` and `#[cfg(feature = "sqlite")] rusqlite::Error` are acceptable while on `0.x`; ask before exposing any new dependency error type publicly.
 - **Use newtypes for identifiers:** persistent IDs are a `PersistentId(u64)` with `Display`/`FromStr` as 16-digit uppercase hex, not a `String` and a `u64` side by side.
 - **Name types after what they mean.** Put the 4-character file magic in the doc comment (`/// Album record (`iama`).`). **Never** add type names that differ from another type only by letter case. They collide on case-insensitive file systems (macOS/Windows), and rustdoc output breaks.
@@ -166,8 +166,8 @@ Much of the existing code predates these rules.
 - Anything that exports or packages library data must say so clearly to the user before writing files.
 
 ## Versioning and commits
-- The crate is **0.x**. Under Cargo's semver rules, a breaking change bumps `0.MINOR` and a compatible change bumps `0.x.PATCH`.
-- **Don't change `version` in `Cargo.toml` unless asked.** Mention breaking changes explicitly in your summary.
+- The crate is **0.x** on purpose: `0.x` minor releases are expected to break things, while `0.a.x` patch releases stay semver-safe. **Don't contort code or duplicate logic to avoid a `0.x` break** — focus effort on **why** a change makes the API better.
+- **Whether and when to cut a `0.x` vs `0.a.x` release is strictly the user's call** (assume the user knows this; only hand-hold if evidence contradicts it). **Don't change `version` in `Cargo.toml` unless asked.** Explain breaking changes and *why* they are worth breaking in your summary.
 - Commit messages follow **Conventional Commits**: `feat: …`, `fix: …`, `perf: …`, `refactor: …`, `docs: …`, `test: …`, `chore: …`. Breaking changes **must** include `!` in the subject line (e.g. `feat!:`, `fix!:`, `perf!:`, `refactor!:`). The subject line is imperative and under ~72 characters. Don't write messages like `doc` or `update`.
 
 ## Tooling configuration: `clippy.toml` and `deny.toml`
