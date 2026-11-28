@@ -179,7 +179,7 @@ pub struct TrackItemHeader {
     pub unk_192_220: Unknown<[u8; 28]>,
     /// Offset 220..228: iCloud Music Library `sagaId` (or `0xFFFFFFFFFFFFFFFD` = -3 for Apple Music subscription tracks).
     pub cloud_saga_id_1: u64,
-    /// Offset 228..236: 64-bit iTunes Store / Match ID (or `0x7FFFFFFF_FFFFFFEF` sentinel on some matched tracks).
+    /// Offset 228..236: 64-bit iTunes Store / Match ID (or `0x7FFFFFFF_FFFFFFEF` sentinel on some matched tracks; partially overlaps `Tag Matched Track Identifier` in Apple Music data exports, but often differs or is populated when `Tag Matched` is empty).
     pub itunes_store_matched_id: u64,
     /// Offset 236..244: Primary iCloud Music Library `sagaId` (matches `sagaId=` in `boma 0x0038` redownload-params).
     pub cloud_saga_id: u64,
@@ -339,11 +339,11 @@ pub struct TrackNumerics {
     pub is_local_mp3: u8,
     /// Offset 41: Local video asset flag (`1` on local/downloaded video `subrecord_kind == 1` such as `.m4v` and DRM-free `.mp4`, `0` on audio and cloud `subrecord_kind == 3`).
     pub is_local_video: u8,
-    /// Offset 42..54: Unknown 12 bytes (bytes `42, 43, 44, 52, 53` are always zero; offset 45 = `[3]` is `1` iff `subrecord_kind == 3 || date_released != 0 || unk_116_cloud_timestamp != 0 || store_track_adam_id != 0` in modern libraries; offset 46 = `[4]` is `1` on 720p/1080p local video `subrecord_kind == 1` in modern libraries; offset 47 = `[5]` is `0` on `LocalOnly` `cloud_status == 0` and `1` on cloud-evaluated `cloud_status != 0` — pending transition test; offset 48 = `[6]` is `1` on a legacy matched MP3 with trailing `APEv2` and `3` on downloaded HLS Dolby Atmos `.movpkg`; offsets 49..52 = `[7..10]` encode iCloud sync/origin states).
+    /// Offset 42..54: Unknown 12 bytes (bytes `42, 43, 44, 52, 53` are always zero; offset 45 = `[3]` is `1` iff `subrecord_kind == 3 || date_released != 0 || unk_116_cloud_timestamp != 0 || store_track_adam_id != 0` in modern libraries; offset 46 = `[4]` is `1` on 720p/1080p local video `subrecord_kind == 1` in modern libraries; offset 47 = `[5]` is `0` on `LocalOnly` `cloud_status == 0` and `1` on cloud-evaluated `cloud_status != 0` — pending transition test; offset 48 = `[6]` is `1` on a legacy matched MP3 with trailing `APEv2` and `3` on downloaded HLS Dolby Atmos `.movpkg`; offset 49 = `[7]` is `2` iff iCloud-synced and `0` on `LocalOnly`/`Error`; offset 50 = `[8]` is `2` on local-origin tracks vs `3` on catalog tracks except 3 NLA `0`; offset 51 = `[9]` equals `TrackNumerics[56]` (`unk_55_59[1]`) across 100% of verified records and encodes 5-tier cloud provenance: `0` = `LocalOnly`, `2` = `Uploaded`, `3` = `Matched`/`Error`, `4` = `AppleMusic`/`NLA` in library or user playlist, `5` = `AppleMusic`/`NLA` subscribed catalog playlist-only).
     pub unk_42_54: Unknown<[u8; 12]>,
     /// Offset 54: Cloud/source asset container or Apple Store flavor ID (`1` = MP3/MPEG audio, `2` = `"2:256"` M4A/AAC audio, `18` = `"18:1080p"` 1080p HD video matching `boma 0x0034` `itunes_store_flavor`; `0` on undownloaded video / `.movpkg` / local `subrecord_kind == 1`).
     pub asset_container_kind: u8,
-    /// Offset 55..59: Unknown 4 bytes (byte `57` is always zero; offset 58 is `2` on a downloaded 1080p HD `.m4v` `subrecord_kind == 1` carrying MP4 `hdvd = 2`, and `0` on local 720p `.mp4` without an `hdvd` atom, all audio tracks, and `subrecord_kind == 3`).
+    /// Offset 55..59: Unknown 4 bytes (offset 55 = `[0]` is `2` iff `subrecord_kind == 3` and `0` iff `subrecord_kind == 1` across 100% of verified records; offset 56 = `[1]` mirrors `TrackNumerics[51]` (`unk_42_54[9]`) with 0 exceptions; byte `57` = `[2]` is always zero; offset 58 = `[3]` is `2` on a downloaded 1080p HD `.m4v` `subrecord_kind == 1` carrying MP4 `hdvd = 2`, and `0` on local 720p `.mp4` without an `hdvd` atom, all audio tracks, and `subrecord_kind == 3`).
     pub unk_55_59: Unknown<[u8; 4]>,
     /// Offset 59: Apple Music catalog time-synced lyrics availability on `subrecord_kind == 3` (`1` = catalog time-synced lyrics available, `2` = no catalog time-synced lyrics / Matched or Uploaded track, `0` = local `subrecord_kind == 1` or format `<= 22.0`).
     pub catalog_lyrics_state: u8,
@@ -381,7 +381,7 @@ pub struct TrackNumerics {
     pub gapless_encoder_delay: u32,
     /// Offset 112..116: Gapless playback encoder padding in samples (word 2 of `iTunSMPB`).
     pub gapless_encoder_padding: u32,
-    /// Offset 116..120: Unknown server-supplied `AppleTimestamp` populated on Matched and playlist-only catalog subrecords in Apple Music 1.6.4+ (0 in older versions and on Uploaded tracks).
+    /// Offset 116..120: Unknown server-supplied `AppleTimestamp` populated on Matched tracks and `v1.6.4+`-added/refreshed `playlist_only == 1` catalog subrecords (0 in `<= v1.5.4` and on Uploaded tracks). Falsified as a user-library date (0 matches to Date Added / iCloud Added / Last Modified in Apple data exports); 100% unique per `store_track_adam_id` (`7,789/7,789`) spanning `2015-03-12..2026-11-20` with Friday midnight local-TZ (`02:00Z`/`03:00Z`) release dates, strongly indicating an Apple Music catalog/store asset ingestion or availability timestamp.
     pub unk_116_cloud_timestamp: Unknown<u32>,
     /// Offset 120..124: Gapless playback flags (`1` or `0x02000003` when `iTunSMPB` is present).
     pub gapless_playback_flags: u32,
@@ -393,7 +393,7 @@ pub struct TrackNumerics {
     pub normalization: u32,
     /// Offset 136..140: Purchase Date (Apple timestamp).
     pub date_purchased: AppleTimestamp,
-    /// Offset 140..144: Release Date (Apple UTC timestamp).
+    /// Offset 140..144: Release Date (Apple UTC timestamp; pre-1904 dates such as `year = 1900` underflow modulo `2^32` into `2036-...T18:28:16Z`).
     pub date_released: AppleTimestamp,
     /// Offset 144..148: Cloud/ingested source audio codec kind on `subrecord_kind == 3` (`2` = `"mp4a"` AAC/M4A, `3` = `"mpeg"` MP3, reflecting the originally ingested/matched source format on Matched/Uploaded tracks and `"mp4a"` on catalog tracks; `0` on local `subrecord_kind == 1` and video).
     pub cloud_codec_kind: u32,

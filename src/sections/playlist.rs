@@ -120,13 +120,13 @@ pub struct PlaylistItemHeader {
     pub unk_186_flags: Unknown<[u8; 4]>,
     /// Offset 190..192: Ownership / origin flags (`[1, 1]` = user-created playlist/folder, `[0, 0]` = subscribed external playlist, `[0, 1]` = system smart playlist, `[1, 0]` = Favourite Songs).
     pub ownership_flags: [u8; 2],
-    /// Offset 192..196: Unknown u32 (`46` on `"Downloaded"` and `"Loved"`, `6` on `"Music"`, `0` on other playlists; likely a view or sort column identifier).
+    /// Offset 192..196: Unknown u32 (`46` on `"Downloaded"` and `"Loved"`, `6` on `"Music"`, `0` on other playlists; all 3 non-zero playlists are sorted by Artist/Album Artist, while sidecar `Playlist_*.plist` only carries `LibraryPage_ViewAs = 11`).
     pub unk_192: Unknown<u32>,
     /// Offset 196..204: iCloud Music Library Playlist `sagaId` repeated.
     pub cloud_playlist_saga_id_2: u64,
     /// Offset 204..212: Signed-in Apple Store account ID (`dsid`, matches `hfma.apple_store_account_id`; 0 on system playlists or signed-out libraries).
     pub apple_store_account_id: u64,
-    /// Offset 212..214: Unknown 2 bytes (`[0x00, 0x01]` on non-master/non-system playlists).
+    /// Offset 212..214: Unknown 2 bytes (verified 100% bijection across `2024`–`2026` libraries including offline creations: byte `212` is always `0` and byte `213` is `1` iff `is_cloud_synced == 1`, `0` otherwise).
     pub unk_212_214: Unknown<[u8; 2]>,
     /// Offset 214..218: Cloud playlist sync flag (`1` when synced to iCloud Music Library, `0` otherwise).
     pub is_cloud_synced: u32,

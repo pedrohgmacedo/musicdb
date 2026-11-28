@@ -87,7 +87,7 @@ pub struct AlbumItemHeader {
     pub unk_44_64: Unknown<[u8; 20]>,
     /// Offset 64..72: Secondary Album Persistent ID (often matches `album_persistent_id` if imported from iTunes, or 0).
     pub album_persistent_id_2: u64,
-    /// Offset 72..96: Unknown 24 bytes (byte `85` / `unk_72_96[13]` is `2` when `boma 0x0136` `catalog_album_genre` is present; remaining 23 bytes are zero).
+    /// Offset 72..96: Unknown 24 bytes (byte `85` / `unk_72_96[13]` is a verified 100% bijection across `2024`–`2026` libraries: `2` iff `boma 0x0136` `catalog_album_genre` is present and `0` otherwise; remaining 23 bytes are always zero).
     pub unk_72_96: Unknown<[u8; 24]>,
     /// Offset 96..100: Suggestion flag modified date (Apple timestamp).
     pub date_suggestion_flag_modified: AppleTimestamp,
@@ -105,7 +105,7 @@ pub struct AlbumItemHeader {
     /// Offset 124..128: Album release date (UTC Apple timestamp; present when `header_size >= 128`).
     #[br(if(header_size >= 128))]
     pub date_released: Option<AppleTimestamp>,
-    /// Offset 128..136: Unknown 8 bytes (present when `header_size >= 136`; bytes `128..132` hold a future UTC `AppleTimestamp` on select catalog albums in format `23.1`, with `132..136` zero).
+    /// Offset 128..136: Unknown 8 bytes (present when `header_size >= 136`; bytes `128..132` hold a future `AppleTimestamp` — observed `2027-02-01T02:00:00Z`, matching the `02:00Z` local-DST-midnight convention of `TrackNumerics::unk_116_cloud_timestamp` — on select catalog albums in format `23.1`, with `132..136` zero).
     #[br(if(header_size >= 136))]
     pub unk_128_136: Option<Unknown<[u8; 8]>>,
     /// Offset 136..140: Apple Music catalog album release/edition type (`0` = none/local, `1` = Standard Album, `3` = Bonus/Deluxe/Expanded Edition, `4` = EP, `5` = Single; present when `header_size >= 140`).
