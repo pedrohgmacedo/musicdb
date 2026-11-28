@@ -1,24 +1,34 @@
-# AGENTS.md — rules for working on `musicdb`
+# AGENTS.md — Engineering Guide for `musicdb`
 
-These rules apply to every change in this repository, whether a human or an AI agent writes it.
-If a rule conflicts with an explicit instruction from the user, follow the user and say which rule you broke.
+Welcome to `musicdb`! These rules apply to every change in the repository, whether written by a human or an AI teammate. If a rule ever conflicts with an explicit instruction from the user, follow the user and state which rule you overrode.
 
-## What this project is
+## What we're building
 
-A Rust library and CLI for reading Apple Music `.musiclibrary` bundles (`Library.musicdb` plus the `.plist` sidecars).
+A Rust library and CLI for decoding Apple Music `.musiclibrary` bundles (`Library.musicdb` plus `.plist` sidecars):
 
-- **Library** (`musicdb`): parses and decrypts the file, keeps a lossless raw AST, and builds a domain model (`Library`, `Track`, `Album`, `Artist`, `Playlist`, …).
-- **CLI** (`musicdb` binary, `src/main.rs`): inspection, export (JSON/SQLite), and reverse-engineering tools.
+- **Library (`musicdb`)**: decrypts and parses the binary format into a lossless raw AST, then projects it into a clean domain model (`Library`, `Track`, `Album`, `Artist`, `Playlist`, …).
+- **CLI (`musicdb` binary, `src/main.rs`)**: inspection, JSON/SQLite export, and reverse-engineering tools.
 
-The format is reverse-engineered and still changing. The crate is at **0.x** on purpose. Don't make anything look more stable than it is.
+Apple Music's binary format is reverse-engineered and still evolving, so the crate lives intentionally at **0.x**. That gives us the freedom to keep refining the API cleanly while staying honest about what is proven versus still being decoded.
+
+## Our two north stars
+
+Every design choice in this repo flows from two invariants:
+
+1. **Bulletproof against untrusted bytes.** Any length, count, offset, or size read from a file could be corrupt or adversarial. Malformed input always produces a clean `Err` — never a panic, abort, hang, or unbounded allocation.
+2. **Byte-for-byte lossless round-trip.** `RawLibraryFile::from_raw_bytes(b)?.to_raw_bytes()? == b` holds for every file that parses. We preserve every undecoded byte (`unk_*` fields, `Unknown { raw_bytes }` variants) so future breakthroughs still have the exact raw data. Whenever a change could affect parsing or serialization, prove round-trip fidelity with a test.
+
+## Working in this codebase
+
+Parts of the repo predate this guide, so apply the Boy Scout rule:
+- Hold everything you **write or touch** to these standards, leaving every edited function cleaner than you found it.
+- Keep each change focused on one clear purpose (one topic, one commit). When you spot a worthwhile large cleanup elsewhere, propose it separately rather than bundling unrelated refactors.
 
 ## Definition of done
 
-Checks are tiered by the failure mode they catch so every change runs the fast gate, while heavy real-corpus checks run only when the code or corpus they guard changed — or automatically across a release boundary.
+Checks are tiered by what they catch so day-to-day work stays fast while heavy real-corpus verification runs right when it matters — and automatically across release boundaries. Only call a task done once every applicable gate has actually run and passed; if something blocks you, report it plainly.
 
-### 1. Always (every change)
-
-Run these before reporting any change finished:
+### 1. Fast gate (every change)
 
 ```sh
 cargo fmt --all
@@ -31,151 +41,137 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --no-default-features
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 ```
 
-Locally, `tests/corpus.rs` runs the fast targeted real-corpus regression tests; CI has no corpus and serves as the multi-OS, lint, doc, feature-matrix, and synthetic-test canary. The exhaustive multi-file corpus round-trip test is marked `#[ignore]` so it does not run 3× in debug mode on every commit.
+Locally, `tests/corpus.rs` runs fast targeted real-corpus regressions. CI runs without the private corpus and acts as our multi-OS, lint, doc, feature-matrix, and synthetic-test canary. The exhaustive multi-file corpus round-trip test stays `#[ignore]` so debug runs don't repeat it 3× on every commit.
 
 ### 2. Wire-format round-trip sweep (parser, crypto, or corpus changes)
 
-Run **once in `--release`** whenever you touch `src/sections/`, `src/crypto.rs`, parsing/crypto dependencies (`binrw`, `aes`, `cipher`, `flate2`), or add new `.musicdb` files to `corpus/`:
+Run **once in `--release`** whenever you touch `src/sections/`, `src/crypto.rs`, parsing/crypto dependencies (`binrw`, `aes`, `cipher`, `flate2`), or add `.musicdb` files to `corpus/`:
 
 ```sh
 cargo test --release --test corpus -- --ignored
 ```
 
-Why: proves byte-for-byte lossless round-tripping across every verified `.musicdb` file in `corpus/library-data/` and `corpus/snapshots/` without repeating the feature-independent serializer 3× in debug mode.
+*Why:* proves byte-for-byte lossless round-tripping across every verified `.musicdb` in `corpus/library-data/` and `corpus/snapshots/` at full speed.
 
-### 3. Semantic calibration (`musicdb sanity-check` on real libraries)
+### 3. Semantic calibration (`musicdb sanity-check`)
 
-Run the release binary against 2–3 representative libraries spanning versions (e.g. `2024`, `2025`, and latest `2026` in `corpus/library-data/`) whenever you:
-- promote an `Unknown<T>` field or change enum/bitflag/timestamp semantics (`src/sections/` or `src/model.rs`),
-- add or modify rules in `src/analysis/sanity.rs`, or
+Run the release binary against 2–3 representative libraries spanning Apple Music versions (e.g., `2024`, `2025`, and latest `2026` in `corpus/library-data/`) whenever you:
+- promote an `Unknown<T>` field or refine enum, bitflag, or timestamp semantics (`src/sections/` or `src/model.rs`),
+- add or update rules in `src/analysis/sanity.rs`, or
 - ingest a new Apple Music version or mutation campaign snapshot.
 
 ```sh
 cargo run --release -- sanity-check <path/to/Library.musicdb>
 ```
 
-Why: catches wrong semantic assumptions (undocumented flag/enum values, local vs UTC timestamps, mirror divergences) that lossless round-tripping cannot detect.
+*Why:* catches semantic surprises (undocumented flags/enums, local vs. UTC timestamps, mirror divergences) that lossless round-tripping alone can't spot.
 
-### 4. Dependencies (`cargo deny check`)
+### 4. Dependency audit (`cargo deny check`)
 
-Run `cargo deny check` whenever you add, remove, or update a dependency (see [Tooling configuration](#tooling-configuration-clippytoml-and-denytoml)).
+Run `cargo deny check` whenever you add, remove, or update a dependency (see [Tooling policy](#tooling-policy-clippytoml-and-denytoml)).
 
 ### 5. Release boundary (automatic full sweep)
 
-Run **all four** gates above (1–4) once whenever:
-- the last commit before your work (`git log -1`) is a bare `x.y.z` release commit (e.g. `0.14.0`) cut by the user, **or**
+Run **all four** gates (1–4) once whenever:
+- the latest commit before your work (`git log -1`) is a bare `x.y.z` release commit (e.g., `0.14.0`) cut by the user, **or**
 - you are preparing a release for `cargo publish`.
 
-Why: the user cuts `x.y.z` releases manually and should not have to remember a separate verification checklist; treating a release commit at `HEAD` as an automatic trigger ensures the agent catches anything missed across the release boundary.
+*Why:* the user cuts `x.y.z` releases manually, so treating a release commit at `HEAD` as an automatic full-sweep trigger catches anything missed across the release boundary without adding a manual checklist.
 
-Don't report success if any required gate fails. If you can't fix a failure, say so plainly.
+## Library craft
 
-## Working with existing code
+### Safe parsing & numeric hygiene
+- Keep `#![forbid(unsafe_code)]`.
+- On any path touching input data: **no** `unwrap`, `expect`, `panic!`, `unreachable!`, `todo!`, and **no** raw slice indexing (`buf[a..b]`) on input-derived bounds. Use `get(..)`, `split_at_checked`, `binrw`, or a checked helper instead.
+- **Validate before allocating:** verify every length or count against the bytes remaining in the stream *before* `vec![0; n]`, `Vec::with_capacity(n)`, or `#[br(count = n)]`.
+- Use `checked_add` / `checked_sub` for offset math, and `unsigned_abs()` / `checked_*` instead of unchecked negation (`-x`) on signed untrusted `i32`/`i64` values.
+- Make integer conversions explicit: `u64::from(x)` to widen, `usize::try_from(x)?` / `u32::try_from(x)?` to narrow. Use bare `as` only when obviously lossless, with a brief comment explaining why.
+- Reject `header_size` values below a struct's minimum instead of masking them with `saturating_sub`.
+- Cap decompression output sizes.
 
-Much of the existing code predates these rules.
+### Clear, actionable errors
+- Return `musicdb::Error` / `MusicDbError` from library code (`anyhow` belongs strictly in the CLI).
+- Write error messages in lowercase with no trailing period (e.g., `"failed to read {path}"`), and include helpful context (file path, section name, byte offset) wherever you have it.
+- Keep `#[source]` / `#[from]` fields out of the message template (no `{0}` duplication).
+- Keep the error enum `#[non_exhaustive]` and trim any variant that is never constructed.
+- **Never swallow errors silently** (no `.ok()`, `let _ =`, `.flatten()` on `read_dir`, or `unwrap_or_default()` on I/O): either propagate the error, or record a caller-visible warning for best-effort data like sidecar plists. If something truly needs to be ignored, leave a short comment explaining why.
 
-- Apply the rules to code you **write or touch**. Leave every function you edit in better shape than you found it.
-- **No drive-by mass refactors.** Don't reformat, rename or restructure unrelated code in the same change. Propose large cleanups separately.
-- Keep each change to one topic: one commit, one purpose.
+### Public API design
+- **Future-proof types:** mark every public struct and enum `#[non_exhaustive]`, except single-field newtypes (`PersistentId`, `ParsePersistentIdError`, `Unknown<T>`, `AppleTimestamp`). Read-only domain records (`Track`, `Album`, `Artist`, `Playlist`, `LibraryMetadata`) may expose `pub` data fields for ergonomic access and pattern matching, while container internals (such as `Library` indexes) stay private behind methods. Derived values (`stars()`, `flags()`, `raw()`) belong as methods, not stored fields.
+- **Format types & unknowns in `src/sections/`:**
+  - Wrap every undecoded binary field in `Unknown<T>` (never bare `u8`, `u32`, `[u8; N]`, or `Vec<u8>`) and register it in `VisitUnknowns` via `visit_unknowns!`. Use `Unknown<TailBytes>` for hot per-item variable-length header tails and `Unknown<Vec<u8>>` for rare once-per-section tails.
+  - Split partially-decoded byte arrays cleanly into named known fields plus `Unknown<T>`.
+  - Promote fields out of `Unknown<T>` once verified rather than dereferencing `*h.unk_*` in `model.rs` or `sqlite.rs`.
+  - Use `AppleTimestamp` for 32-bit Apple epoch timestamps in `src/sections/`, and `SectionKind` for `hsma` section filtering and dispatch. Convert timestamps via `.and_then(AppleTimestamp::to_utc)` before chaining fallbacks — chaining `Option<AppleTimestamp>` with `.or()` first lets `Some(AppleTimestamp(0))` silently shadow the fallback.
+  - Keep `VisitUnknowns` / `UnknownVisitor` format introspection in `src/sections/` and `analysis` reports in the CLI.
+- **Clean public surface:** keep internal helpers, serde `with` modules, research utilities, and test-only helpers `pub(crate)` for API clarity (not out of fear of `0.x` breaks) — never make something `pub` when only tests or the CLI need it.
+- **Minimal dependency bleed:** ask before putting third-party dependency types (like `plist::Value`) in public domain signatures or adding new public dependency error wrappers. Existing `#[from]`/`#[source]` wrappers in `MusicDbError` (`binrw::Error`, `plist::Error`, and `#[cfg(feature = "sqlite")] rusqlite::Error`) are fine while at `0.x`.
+- **Strong, idiomatic Rust types:**
+  - Model persistent IDs with `PersistentId(u64)` (`Display`/`FromStr` as 16-digit uppercase hex), not paired `String` + `u64` fields.
+  - Name types after their meaning, putting the 4-byte file magic in the doc comment (`` /// Album record (`iama`). ``). Keep all type names distinct beyond letter casing so case-insensitive filesystems (macOS/Windows) and rustdoc stay happy.
+  - Prefer standard traits (`From`, `TryFrom`, `FromStr`, `Display`) over ad-hoc `parse` / `from_raw` / `to_string` methods — reserve `from_raw` for raw pointers.
+  - Derive common traits (`Debug`, `Clone`, `PartialEq`, `Eq`, `Hash`, `Default`) where sensible and implement `Display` for user-facing enums. Never persist `{:?}` output as stored data (SQLite, JSON keys, etc.).
+  - Return iterators (`impl Iterator<Item = &Track> + '_`) instead of `Vec<&Track>`, use small named structs instead of unnamed public tuples (`Vec<(u32, String, usize)>`), and take `impl AsRef<Path>` for path parameters.
+  - Store one canonical typed enum (with an `Unknown(raw)` variant + `.raw()` method) instead of duplicating raw and decoded fields.
+  - Build an index once for repeated ID lookups rather than scanning linearly in loops.
 
-## Two rules that come before everything else
+### Documentation & our reverse-engineering journal
+- Give every `pub` item a doc comment, with `# Errors` on fallible functions and `# Panics` on anything that can panic. Use intra-doc links (`` [`Track`] ``) for crate items.
+- Document raw-format fields with their byte offset and meaning (`/// Offset 24..28: …`), marking hypotheses clearly as guesses until proven.
+- **Capture every discovery permanently:** reverse-engineering wins include negative results! Any evidence that supports, sharpens, promotes, weakens, or **falsifies** a hypothesis about `src/sections/` — along with narrowed unknowns and mutation ideas — belongs in the repo right away: update `src/sections/` doc comments, record the evidence (and correct superseded claims) in workspace `history.md`, and add proposed mutations to `next-steps.md`. Do this even when no code changes or a proposal is declined so discoveries never stay trapped in chat.
+- `README.md` is compiled as crate docs and doctested: keep every Rust block compiling and in sync with API changes.
+- Pair new user-facing features with an example (a doctest or a file in `examples/`).
 
-1. **Input files are untrusted.** Every length, count, offset or size read from a file can be wrong or malicious. A corrupt file must produce an `Err`, never a panic, an abort, a hang or an unbounded allocation.
-2. **Lossless round-trip.** `RawLibraryFile::from_raw_bytes(b)?.to_raw_bytes()? == b` must hold for every file that parses. Unknown bytes are kept (`unk_*` fields, `Unknown { raw_bytes }` variants), never dropped. If a change can break this, add a test that proves it doesn't.
+### Dependencies, features & licensing
+- Keep the library and CLI in a **single crate (`musicdb`)** so `cargo add musicdb` and `cargo install musicdb` share one package name (stay single-crate unless asked to split).
+- Prefer the standard library; every new dependency should have a clear reason and pass `cargo deny check`.
+- Keep CLI and research-only dependencies (`clap`, `clap_complete`, `anyhow`, `tar`, `directories`, `serde_json`, …) optional for library users behind plain Cargo feature names (`serde`, `sqlite`, `cli` — not `use-serde` or `with-sqlite`).
+- Keep the license as standalone **`Apache-2.0`** with [`NOTICE`](NOTICE) so Section 4(d) attribution notices stay mandatory (never change it to `MIT OR Apache-2.0`).
+- Stay within the MSRV declared by `rust-version` in `Cargo.toml`.
 
-## Library code rules
+### Code shape & safe file writes
+- Aim for procedural functions under ~80 lines by extracting named helpers for complex branches and mapping logic. Flat 1-to-1 lookup tables and full-row SQL column bindings may use a local `#[expect(clippy::too_many_lines, reason = "...")]` when splitting hurts clarity.
+- Prefer `#[derive(Default)]` and `..Default::default()` over hand-initializing large structs.
+- Always list explicit column names in SQL `INSERT` statements.
+- Keep format lookup tables (e.g., smart playlist selection methods or field names) single-sourced or guarded by parity tests so `src/sections/` and `src/model.rs` never drift.
+- Make output file writes atomic: write to a sibling temporary file with both PID and an atomic sequence counter (`.{name}.{pid}.{seq}.tmp`), finish encoders explicitly (`GzEncoder::finish()` rather than relying on `Drop`), and `rename` into place on success.
 
-### Parsing and safety
-- No `unwrap`, `expect`, `panic!`, `unreachable!` or `todo!` on any path that touches input data. No slice indexing (`buf[a..b]`) on input-derived bounds. Use `get(..)`, `split_at_checked`, `binrw` or a checked helper.
-- **Check the length before allocating.** Check every length or count against the bytes actually left in the stream *before* `vec![0; n]`, `Vec::with_capacity(n)` or `#[br(count = n)]`. Use `checked_add`/`checked_sub` for arithmetic on offsets, and avoid unchecked negation or overflow on signed untrusted integers (e.g. use `unsigned_abs()` / `checked_*` instead of `-x` on `i32`/`i64`).
-- No silent narrowing casts. Use `u64::from(x)` to widen and `usize::try_from(x)?` / `u32::try_from(x)?` to narrow. A bare `as` is only acceptable where the conversion is obviously lossless and a comment says so.
-- Reject `header_size` values below a structure's minimum. Don't hide them with `saturating_sub`.
-- Decompression must have an output size limit.
-- `#![forbid(unsafe_code)]` stays.
+## CLI & reverse-engineering tools (`src/main.rs` and CLI-only modules)
 
-### Errors
-- Library functions return the crate's own error type (`musicdb::Error` / `MusicDbError`). **Never `anyhow` in the library.** `anyhow` is only for the binary.
-- Error messages are lowercase with no trailing period: `"failed to read {path}"`.
-- **Don't print the source twice.** If a field is the `#[source]`/`#[from]`, don't also put it in the message with `{0}`.
-- Add context so the error can be acted on: the file path, section name and byte offset where you know them.
-- The error enum is `#[non_exhaustive]`. Don't add variants that are never constructed.
-- **Don't ignore errors silently** (`.ok()`, `let _ =`, `.flatten()` on `read_dir`, `unwrap_or_default()` on I/O). Either propagate the error, or, for best-effort data such as sidecar plists, record a warning the caller can see. Write a comment wherever you ignore something on purpose.
+- Keep `main` lean (parse arguments and dispatch) with one focused function per subcommand (`fn run_info(args) -> anyhow::Result<()>`).
+- Format human-readable output via `Display` impls on report types instead of chains of `println!`.
+- `anyhow` with `.context("…")` — and `unwrap`/`expect` with a clear explanation — are welcome on the CLI side.
+- Keep reverse-engineering and research tooling (analysis reports, offset diffing, library donation) CLI-only rather than in the library's public API.
+- Put experimental or one-off RE probes in `src/analysis/adhoc/` behind `--features adhoc`: **one file per probe**, shared corpus helpers in `src/analysis/adhoc/helpers.rs`, wired under `musicdb adhoc <probe>` in `src/analysis/adhoc/mod.rs`. That keeps default CLI builds crisp and lets probes run individually.
 
-### Public API design (Rust API Guidelines)
-- **Every public struct and enum is `#[non_exhaustive]`** (except 1-field newtype wrappers such as `PersistentId`, `ParsePersistentIdError`, `Unknown<T>`, and `AppleTimestamp`). Read-only domain records (`Track`, `Album`, `Artist`, `Playlist`, `LibraryMetadata`) may expose `pub` data fields for ergonomic access and pattern matching (`#[non_exhaustive]` prevents external struct-literal construction), while container internals (such as `Library` indexes) stay private behind methods. Derived or computed values (`stars()`, `flags()`, `raw()`) are methods, not fields.
-- **Undecoded binary fields & format newtypes in `src/sections/`:**
-  - Wrap undecoded binary fields in `Unknown<T>` (never bare `u8`/`u32`/`[u8; N]`/`Vec<u8>`) and register every one in that struct's `VisitUnknowns` impl via `visit_unknowns!`. Use `Unknown<TailBytes>` for hot per-item variable-length header tails and `Unknown<Vec<u8>>` for rare once-per-section tails. Split partially-decoded byte arrays cleanly into known fields plus `Unknown<T>` rather than leaving known flags inside `Unknown<[u8; N]>`. Never dereference `Unknown<T>` fields (`*h.unk_*`) in `model.rs` or `sqlite.rs` — promote the field out of `Unknown<T>` first once its semantics are verified.
-  - Use `AppleTimestamp` for 32-bit Apple epoch timestamp fields in `src/sections/`, and use `SectionKind` for `hsma` section filtering and dispatch. Never chain `Option<AppleTimestamp>` fields with `.or()` before converting via `.and_then(AppleTimestamp::to_utc)`, since `Some(AppleTimestamp(0))` is `Some` and silently shadows the fallback.
-  - `VisitUnknowns` / `UnknownVisitor` format introspection belongs in `src/sections/`, while `analysis` reports stay CLI-only.
-- **Keep the `pub` surface clean, not frozen.** Keep helpers, serde `with` modules and research utilities `pub(crate)` for API hygiene — not out of fear of `0.x` breaks.
-- **Don't put dependency types in public domain signatures** (e.g. `plist::Value`) without asking. In `MusicDbError`, existing `#[from]`/`#[source]` wrappers for `binrw::Error`, `plist::Error` and `#[cfg(feature = "sqlite")] rusqlite::Error` are acceptable while on `0.x`; ask before exposing any new dependency error type publicly.
-- **Use newtypes for identifiers:** persistent IDs are a `PersistentId(u64)` with `Display`/`FromStr` as 16-digit uppercase hex, not a `String` and a `u64` side by side.
-- **Name types after what they mean.** Put the 4-character file magic in the doc comment (`/// Album record (`iama`).`). **Never** add type names that differ from another type only by letter case. They collide on case-insensitive file systems (macOS/Windows), and rustdoc output breaks.
-- **Use standard conversion traits:** `From`/`TryFrom`/`FromStr`/`Display` instead of ad-hoc `parse`/`from_raw`/`to_string` methods. Don't name safe constructors `from_raw`; in Rust that name means raw pointers.
-- **Implement the common traits** on public types where they make sense: `Debug`, `Clone`, `PartialEq`, `Eq`, `Hash`, `Default`. Enums shown to users implement `Display`. **Never use `{:?}` output as data** (in SQLite, JSON keys, or anything stored).
-- **Return iterators, not `Vec`s:** `impl Iterator<Item = &Track> + '_` instead of `Vec<&Track>`.
-- **No public tuples with unnamed meaning** (`Vec<(u32, String, usize)>`). Define a small struct with named fields.
-- **Raw and decoded duplicates:** store the typed enum (with an `Unknown(raw)` variant) and expose `raw()` if needed. Don't add a second field for the same value. Derived values (e.g. stars from rating) are methods, not fields.
-- **Path parameters** take `impl AsRef<Path>`.
-- **Lookups by ID** should not scan linearly on every call when called in loops. Build an index once.
+## Testing & fixtures
 
-### Documentation
-- Every `pub` item has a doc comment. Fallible functions have an `# Errors` section, and anything that can panic has `# Panics`.
-- Raw-format fields document their **byte offset and meaning** (existing style: `/// Offset 24..28: …`). Mark guesses as guesses.
-- **Record format insights and mutation ideas in docs:** Any evidence that supports, clarifies, promotes, undermines, or **falsifies** a hypothesis about `src/sections/` — including negative results, narrowed unknowns, and proposed mutation experiments — is permanent knowledge. Always record it right away (update `src/sections/` doc comments, log the evidence and correct superseded claims in workspace `history.md`, and add proposed mutations to `next-steps.md`), **even when no code changes are made or a proposal is declined**. Never leave format knowledge only in chat.
-- Use intra-doc links (`` [`Track`] ``), not plain backticks, for items in this crate.
-- `README.md` is included as crate docs and runs as a doctest. **Every Rust code block in it must compile.** If you change an API that the README uses, update the README in the same change.
-- New user-facing features need an example, either a doctest or a file in `examples/`.
-
-### Dependencies, features and licensing
-- Keep the library and CLI in a **single crate (`musicdb`)** so `cargo add musicdb` and `cargo install musicdb` share one package name. Do not split into a multi-crate workspace unless asked.
-- Don't add a dependency without a reason you can name. Prefer the standard library.
-- **Dependencies that only the CLI or the research tools need** (`clap`, `clap_complete`, `anyhow`, `tar`, `directories`, `serde_json`, …) must never become required for library users. Gate optional functionality behind a Cargo feature with a plain name (`serde`, `sqlite`, `cli`), not `use-serde` or `with-sqlite`.
-- Keep the crate license as standalone **`Apache-2.0`** with the [`NOTICE`](NOTICE) file so Section 4(d) attribution notices stay mandatory. Don't change it to `MIT OR Apache-2.0`.
-- Any new dependency must pass `cargo deny check`.
-- Don't use Rust features newer than the MSRV (`rust-version` in `Cargo.toml`).
-
-### Code shape
-- Aim for procedural functions under ~80 lines. Split large control-flow `match` arms and long mapping code into named helpers. Flat 1-to-1 lookup tables (such as format-ID-to-enum `match` tables) and full-row SQL column bindings may use a local `#[expect(clippy::too_many_lines, reason = "...")]` when splitting them would hurt readability.
-- Use `#[derive(Default)]` and `..Default::default()` instead of initializing dozens of fields by hand.
-- SQL `INSERT` statements always list their column names.
-- Keep format lookup tables (such as smart playlist selection methods or field names) single-sourced or covered by parity tests so `src/sections/` and `src/model.rs` cannot drift.
-- When writing output files, write to a temporary sibling file in the same directory and `rename` on success. Include both PID and an atomic sequence counter in the temporary filename (e.g. `.{name}.{pid}.{seq}.tmp`) so concurrent calls cannot collide. Finish encoders explicitly (`GzEncoder::finish()`); never rely on `Drop` to flush.
-
-## CLI rules (`src/main.rs` and CLI-only modules)
-- One function per subcommand (`fn run_info(args) -> anyhow::Result<()>`). `main` only parses arguments and dispatches.
-- Human-readable output comes from `Display` impls on the report types, not from long chains of `println!`.
-- `anyhow` with `.context("…")` is fine here, and so are `unwrap`/`expect` where an explanation is given.
-- Reverse-engineering and research code (analysis reports, offset diffing, library donation) belongs to the CLI side, not the library's public API.
-- Experimental or one-off RE probes belong in `src/analysis/adhoc/` behind `--features adhoc`, with **one file per probe**, shared corpus helpers in `src/analysis/adhoc/helpers.rs`, and wired as a subcommand under `musicdb adhoc <probe>` (in `src/analysis/adhoc/mod.rs`) so temporary investigations stay out of default CLI builds and can be run individually without re-running unrelated probes.
-
-## Tests
-- **Never commit real Apple Music libraries or anything derived from them.** They contain personal data (purchaser names and emails, account IDs). Build fixtures **synthetically** in code (see the synthetic round-trip test in `src/lib.rs`).
-- **Synthetic test fixtures must use Rush metadata.** All synthetic corpus/library tests and fixtures must use examples related to the band Rush and its albums/songs where applicable.
-- Tests against the private corpus (`MUSICDB_CORPUS_DIR`) intentionally return early when it isn't present. **Keep that behavior.** Don't remove these tests or make them fail without the corpus.
-- **Do not test against or file issues from `corpus/libraries-music-samples/`.** Those third-party sample files have unproven provenance and may contain unverifiable errors or corruptions. Never add or run tests targeting `corpus/libraries-music-samples/`, and do not investigate, report, or work around issues that only appear in `corpus/libraries-music-samples/`. Restrict real-corpus testing and reverse-engineering verification to captured libraries and controlled mutation snapshots under `corpus/library-data/` and `corpus/snapshots/`.
-- **Every bug fix comes with a regression test.** For parser bugs, add the minimal malformed byte sequence as a test.
-- **Confirm new tests fail before applying the fix.** After writing a new test, run it against the old code first to verify the test hypothesis fails for the expected reason; only then apply the fix and verify it passes.
-- Use `tempfile::tempdir()` for filesystem tests. Never use fixed paths in `/tmp` or `std::env::temp_dir()`.
-- Put unit tests next to the code they test (`#[cfg(test)] mod tests`). Put tests of the public API and the CLI under `tests/`.
-- Round-trip properties (`parse(serialize(x)) == x`) are good candidates for `proptest`.
+- **Synthetic fixtures powered by Rush:** never commit real Apple Music libraries or anything derived from them (they carry personal data like purchaser names, emails, and account IDs). Build synthetic fixtures in code (see the synthetic round-trip test in `src/lib.rs`) using **Rush** albums, tracks, and metadata wherever applicable!
+- **Private corpus ergonomics:** tests gated on `MUSICDB_CORPUS_DIR` gracefully return early when the corpus isn't present — preserve that behavior so contributors and CI stay green.
+- **Verified corpus provenance only:** restrict real-corpus testing and reverse-engineering strictly to captured libraries and controlled mutation snapshots in `corpus/library-data/` and `corpus/snapshots/`. Leave `corpus/libraries-music-samples/` completely untouched (unproven provenance and unverifiable corruptions — never test against it, investigate it, file issues from it, or work around it).
+- **Red-green regression tests:** pair every bug fix with a regression test (for parser bugs, a minimal malformed byte sequence). Run the new test against the old code first to watch it fail for the exact right reason, then land the fix and watch it turn green.
+- Use `tempfile::tempdir()` for filesystem tests rather than fixed paths in `/tmp` or `std::env::temp_dir()`.
+- Place unit tests next to the code (`#[cfg(test)] mod tests`) and public API / CLI tests under `tests/`.
+- `proptest` is a great fit for round-trip invariants (`parse(serialize(x)) == x`).
 
 ## Privacy
-- Don't log, print or include in error messages more personal data than the user asked for.
-- Never paste contents of a user's library into code, tests, docs, commit messages or issues.
-- Anything that exports or packages library data must say so clearly to the user before writing files.
 
-## Versioning and commits
-- The crate is **0.x** on purpose: `0.x` minor releases are expected to break things, while `0.a.x` patch releases stay semver-safe. **Don't contort code or duplicate logic to avoid a `0.x` break** — focus effort on **why** a change makes the API better.
-- **Whether and when to cut a `0.x` vs `0.a.x` release is strictly the user's call** (assume the user knows this; only hand-hold if evidence contradicts it). **Don't change `version` in `Cargo.toml` unless asked.** Explain breaking changes and *why* they are worth breaking in your summary.
-- Commit messages follow **Conventional Commits**: `feat: …`, `fix: …`, `perf: …`, `refactor: …`, `docs: …`, `test: …`, `chore: …`. Breaking changes **must** include `!` in the subject line (e.g. `feat!:`, `fix!:`, `perf!:`, `refactor!:`). The subject line is imperative and under ~72 characters. Don't write messages like `doc` or `update`.
+- Only log, print, or include personal data in errors when the user explicitly asked for it.
+- Keep real user library contents out of code, tests, docs, commit messages, and issues.
+- Before writing any file that exports or packages library data, tell the user clearly what will be written.
 
-## Tooling configuration: `clippy.toml` and `deny.toml`
+## Versioning & commits
 
-Both files live at the repository root and set **project policy**. Treat changes to them like changes to this file.
+- Because the crate is **0.x**, minor releases (`0.x`) are free to improve and break the API while patch releases (`0.a.x`) stay semver-safe. Build the cleanest API rather than contorting code to dodge a `0.x` break, and highlight any breaking changes (and why they're worth it) in your summary.
+- When to cut a `0.x` vs. `0.a.x` release — and bumping `version` in `Cargo.toml` — is strictly the user's call (assume the user knows this; only hand-hold if evidence contradicts it). Never bump `version` in `Cargo.toml` unless asked.
+- Use **Conventional Commits** (`feat:`, `fix:`, `perf:`, `refactor:`, `docs:`, `test:`, `chore:`), adding `!` for breaking changes (`feat!:`, `fix!:`, `perf!:`, `refactor!:`). Keep subjects imperative, specific, and under ~72 characters (not vague messages like `doc` or `update`).
+
+## Tooling policy: `clippy.toml` and `deny.toml`
+
+Both files live at the repository root and set project policy — treat edits to them with the same care as this guide.
 
 ### `clippy.toml`
-- **Lint levels** (which lints warn or deny) are set in `Cargo.toml` under `[lints.clippy]` / `[lints.rust]`, **not** in `clippy.toml`. `clippy.toml` only sets **parameters** for lints, for example:
+- `Cargo.toml` (`[lints.clippy]` / `[lints.rust]` and `rust-version`) controls lint levels and MSRV; `clippy.toml` only tunes lint parameters (**never** set `msrv` in `clippy.toml` — Clippy reads `rust-version` from `Cargo.toml`), e.g.:
   ```toml
   allow-unwrap-in-tests = true
   allow-expect-in-tests = true
@@ -183,32 +179,25 @@ Both files live at the repository root and set **project policy**. Treat changes
   allow-indexing-slicing-in-tests = true
   too-many-lines-threshold = 80
   ```
-- Don't set `msrv` there. Clippy reads `rust-version` from `Cargo.toml`.
-- **Don't fix a warning by loosening `clippy.toml` or the `[lints]` table.** Fix the code.
-- If a lint really is wrong in one place, suppress it **locally and with a reason**:
+- Fix lint warnings in code rather than loosening `clippy.toml` or `[lints]`.
+- When a lint genuinely misfires in a single spot, silence it locally with `#[expect(..., reason = "...")]` (never `#[allow]` or crate-wide `#![allow(...)]`), so the compiler flags it once the suppression is no longer needed:
   ```rust
   #[expect(clippy::cast_possible_truncation, reason = "value is masked to 16 bits above")]
   ```
-  Use `#[expect]`, not `#[allow]`: `#[expect]` warns once the suppression is no longer needed. Never add crate-wide `#![allow(...)]`.
 
 ### `deny.toml`
-[`cargo-deny`](https://embarkstudios.github.io/cargo-deny/) checks the dependency tree in four areas:
-- **advisories:** known vulnerabilities and unmaintained crates (RustSec).
-- **licenses:** dependency licenses must be on the allow list (permissive licenses such as MIT, Apache-2.0, BSD-2/3-Clause, ISC, Zlib, Unicode-3.0).
-- **bans:** no wildcard (`*`) version requirements. Duplicate versions of the same crate produce a warning.
-- **sources:** crates come from crates.io only, with no unknown registries or git dependencies.
+[`cargo-deny`](https://embarkstudios.github.io/cargo-deny/) guards the dependency graph across four areas (run `cargo deny check` after any dependency change; advisories require network access for RustSec):
+- **advisories:** known vulnerabilities and unmaintained crates. Prefer upgrading or replacing affected crates; adding an `ignore` entry requires the advisory ID, a reason, and user approval.
+- **licenses:** permissive allow list (MIT, Apache-2.0, BSD-2/3-Clause, ISC, Zlib, Unicode-3.0). If a dependency fails the license check, stop and ask the user instead of expanding the allow list unilaterally.
+- **bans:** no `*` wildcard versions; duplicate versions warn (try unifying versions rather than reaching for `skip`/`skip-tree`).
+- **sources:** crates.io only (no unknown registries or git dependencies).
 
-Run `cargo deny check` after adding, removing or updating any dependency. The advisory check needs network access to fetch the RustSec database.
+## Hard lines
 
-- If a new dependency fails the **license** check, **stop and ask the user**. Don't extend the allow list on your own.
-- If an **advisory** fires, prefer upgrading or replacing the dependency. An `ignore` entry needs the advisory ID, a `reason`, and the user's approval.
-- Don't add `skip`/`skip-tree` entries for duplicates just to get a clean run. Try to unify the versions first.
-
-## Don't
-- Don't make parsing lossy to "simplify" a structure.
-- Don't make `pub` things that only tests or the CLI need.
-- Don't catch-all-and-ignore errors to make a feature "work".
-- Don't change the corpus-test skip behavior or commit corpus files.
-- Don't run tests against `corpus/libraries-music-samples/` or report/chase issues that only appear there.
-- Don't loosen lint, clippy or deny configuration to get a green build.
-- Don't claim something is verified unless you actually ran the command and saw it pass.
+- Never make parsing lossy to "simplify" a structure.
+- Never make something `pub` when only tests or the CLI need it.
+- Never catch-all-and-ignore errors to make a feature "work".
+- Never commit corpus files or break the corpus-test skip behavior when `MUSICDB_CORPUS_DIR` is unset.
+- Never run tests against `corpus/libraries-music-samples/` or chase/report issues that only appear there.
+- Never loosen lint, `clippy.toml`, or `deny.toml` rules just to get a green build.
+- Never report something as verified unless you actually ran the command and saw it pass.
