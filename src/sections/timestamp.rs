@@ -100,6 +100,30 @@ impl AppleTimestamp {
             i64::from(self.0) - APPLE_TO_UNIX_EPOCH_OFFSET - i64::from(timezone_offset_seconds);
         Timestamp::from_second(unix_secs).ok()
     }
+
+    /// Converts a release-date Apple UTC timestamp, unwrapping pre-1904 dates that underflowed
+    /// modulo `2^32` (such as `1900-01-01T12:00:00Z` stored as `4_168_866_496` = `2036-02-07T18:28:16Z`)
+    /// when `track_year` is in `1..1904` and the unwrapped UTC year matches `track_year`.
+    ///
+    /// Falls back to [`Self::to_utc`] for all `>= 1904` years (including genuine future releases)
+    /// and whenever the unwrapped year does not match `track_year`.
+    #[must_use]
+    pub(crate) fn to_utc_release_for_year(self, track_year: u32) -> Option<Timestamp> {
+        if self.0 < LOWER_SENTINEL_CUTOFF || self.0 > UPPER_UNDERFLOW_CUTOFF {
+            return None;
+        }
+        if (1..1904).contains(&track_year) {
+            let signed_apple_secs = i64::from(self.0) - (1i64 << 32);
+            let unix_secs = signed_apple_secs - APPLE_TO_UNIX_EPOCH_OFFSET;
+            if let Ok(ts) = Timestamp::from_second(unix_secs) {
+                let unwrapped_year = i32::from(jiff::tz::Offset::UTC.to_datetime(ts).year());
+                if i32::try_from(track_year).ok() == Some(unwrapped_year) {
+                    return Some(ts);
+                }
+            }
+        }
+        self.to_utc()
+    }
 }
 
 impl From<u32> for AppleTimestamp {

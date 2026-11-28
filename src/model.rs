@@ -2601,7 +2601,7 @@ pub struct Track {
     pub date_first_played_utc: Option<Timestamp>,
     /// Date last skipped (`TrackPlaysSkips` offset 28..32).
     pub date_last_skipped: Option<Timestamp>,
-    /// Release date (`TrackNumerics` offset 140..144).
+    /// Release date (`TrackNumerics` offset 140..144; unwraps pre-1904 `u32` underflows when matching [`Track::year`]).
     pub date_released: Option<Timestamp>,
     /// Purchase date (`TrackNumerics` offset 136..140).
     pub date_purchased: Option<Timestamp>,
@@ -3960,7 +3960,7 @@ fn apply_primary_track_numerics(track: &mut Track, num: &TrackNumerics, tz_offse
     {
         track.purchased = true;
     }
-    track.date_released = num.date_released.to_utc();
+    track.date_released = num.date_released.to_utc_release_for_year(track.year);
     if let Some(ts) = num.date_cloud_synced.to_utc() {
         track.date_cloud_synced = Some(ts);
     }
@@ -4035,7 +4035,7 @@ fn apply_secondary_track_numerics(track: &mut Track, num: &TrackNumerics) {
         track.date_cloud_synced = num.date_cloud_synced.to_utc();
     }
     if track.date_released.is_none() {
-        track.date_released = num.date_released.to_utc();
+        track.date_released = num.date_released.to_utc_release_for_year(track.year);
     }
     if track.date_purchased.is_none() && !num.date_purchased.is_zero() {
         track.date_purchased = num.date_purchased.to_utc();
@@ -5537,6 +5537,54 @@ mod tests {
         assert_eq!(
             sp_ref.artwork_uuid.as_deref(),
             Some("ABABABAB-ABAB-ABAB-ABAB-ABABABABABAB")
+        );
+    }
+
+    #[test]
+    fn pre_1904_wrapped_date_released_unwraps_when_year_matches() {
+        let make_track = |year: u32, raw_date_released: u32| -> Track {
+            let num = TrackNumerics {
+                subrecord_kind: 3,
+                date_released: AppleTimestamp::new(raw_date_released),
+                ..Default::default()
+            };
+            let item = TrackItem {
+                header: TrackItemHeader {
+                    year,
+                    ..Default::default()
+                },
+                bomas: vec![BomaSection {
+                    header_size: 20,
+                    total_size: 20 + 364,
+                    subtype: 0x0001,
+                    unk_16_end: crate::sections::Unknown::new(crate::sections::TailBytes::from(
+                        [0u8; 4],
+                    )),
+                    payload: BomaPayload::TrackNumerics(Box::new(num)),
+                }],
+            };
+            Track::from_raw_with_tz(&item, 0)
+        };
+
+        // Wrapped 1900-01-01T12:00:00Z (raw u32 = 4_168_866_496 -> unsigned 2036-02-07T18:28:16Z).
+        let wrapped_1900 = make_track(1900, 4_168_866_496);
+        assert_eq!(
+            wrapped_1900.date_released.map(|ts| ts.to_string()),
+            Some("1900-01-01T12:00:00Z".to_owned())
+        );
+
+        // Genuine 2036 track with the exact same raw timestamp must NOT be unwrapped.
+        let future_2036 = make_track(2036, 4_168_866_496);
+        assert_eq!(
+            future_2036.date_released.map(|ts| ts.to_string()),
+            Some("2036-02-07T18:28:16Z".to_owned())
+        );
+
+        // Pre-1904 year whose raw timestamp does NOT unwrap to that year must stay unsigned.
+        let mismatch = make_track(1900, 3_000_000_000);
+        assert_eq!(
+            mismatch.date_released,
+            AppleTimestamp::new(3_000_000_000).to_utc()
         );
     }
 }

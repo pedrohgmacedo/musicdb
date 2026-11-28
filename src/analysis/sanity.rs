@@ -193,7 +193,7 @@ impl fmt::Display for SanityReport {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TimestampEpoch {
     Utc,
     Local,
@@ -620,6 +620,12 @@ impl SanityCollector {
                     "timestamp.known_sentinel",
                     "known local-only sentinel timestamp value 2",
                 )
+            } else if raw == 3600 && spec.epoch == TimestampEpoch::Local {
+                (
+                    SanitySeverity::Info,
+                    "timestamp.dst_zero_sentinel",
+                    "known ±1h DST shift on unset local AppleTimestamp",
+                )
             } else {
                 (
                     SanitySeverity::Warning,
@@ -643,14 +649,29 @@ impl SanityCollector {
         }
         if raw > u32::MAX - APPLE_SENTINEL_CUTOFF {
             let signed = i64::from(raw) - (1i64 << 32);
+            let (severity, rule_id, message) = if raw == 0u32.wrapping_sub(3600)
+                && spec.epoch == TimestampEpoch::Local
+            {
+                (
+                    SanitySeverity::Info,
+                    "timestamp.dst_zero_sentinel",
+                    "known ±1h DST shift on unset local AppleTimestamp",
+                )
+            } else {
+                (
+                    SanitySeverity::Warning,
+                    "timestamp.underflow_sentinel",
+                    "AppleTimestamp wrapped within 24h below 0 (e.g. DST underflow or u32::MAX)",
+                )
+            };
             self.record(Finding {
                 category: SanityCategory::Timestamp,
-                severity: SanitySeverity::Warning,
-                rule_id: "timestamp.underflow_sentinel",
+                severity,
+                rule_id,
                 section,
                 offset,
                 field,
-                message: "AppleTimestamp wrapped within 24h below 0 (e.g. DST underflow or u32::MAX)",
+                message,
                 value: format!("{raw} (signed={signed})"),
                 item_context: ctx,
                 subcontext: sub,
@@ -1648,7 +1669,10 @@ fn check_track(c: &mut SanityCollector, track: &TrackItem, ids: &LibraryIdIndex)
         &track.bomas,
         &ctx,
         Some(ids),
-        Some(h.track_persistent_id),
+        Some(ParentTrackContext {
+            persistent_id: h.track_persistent_id,
+            year: h.year,
+        }),
     );
 }
 
@@ -2078,12 +2102,13 @@ fn check_track_numerics(
     n: &TrackNumerics,
     ctx: &str,
     sub: Option<String>,
+    track_year: Option<u32>,
 ) {
     check_track_numerics_booleans(c, n, ctx, sub.clone());
     check_track_numerics_states_and_mirrors(c, n, ctx, sub.as_deref());
     check_track_numerics_traits_and_fourcc(c, n, ctx, sub.clone());
     check_track_numerics_sample_rate(c, n.sample_rate, ctx, sub.clone());
-    check_track_numerics_timestamps(c, n, ctx, sub);
+    check_track_numerics_timestamps(c, n, ctx, sub, track_year);
 }
 
 fn check_track_numerics_booleans(
@@ -2335,11 +2360,28 @@ fn check_track_numerics_sample_rate(
     }
 }
 
+fn unwrap_pre_1904_for_year(ts: AppleTimestamp, track_year: u32) -> Option<Timestamp> {
+    const APPLE_TO_UNIX_EPOCH_OFFSET: i64 = 2_082_844_800;
+    let raw = ts.raw();
+    if !(APPLE_SENTINEL_CUTOFF..=u32::MAX - APPLE_SENTINEL_CUTOFF).contains(&raw) {
+        return None;
+    }
+    if !(1..1904).contains(&track_year) {
+        return None;
+    }
+    let signed_apple_secs = i64::from(raw) - (1i64 << 32);
+    let unix_secs = signed_apple_secs - APPLE_TO_UNIX_EPOCH_OFFSET;
+    let unwrapped = Timestamp::from_second(unix_secs).ok()?;
+    let unwrapped_year = i32::from(jiff::tz::Offset::UTC.to_datetime(unwrapped).year());
+    (i32::try_from(track_year).ok() == Some(unwrapped_year)).then_some(unwrapped)
+}
+
 fn check_track_numerics_timestamps(
     c: &mut SanityCollector,
     n: &TrackNumerics,
     ctx: &str,
     sub: Option<String>,
+    track_year: Option<u32>,
 ) {
     c.check_timestamp(
         "TrackNumerics",
@@ -2368,15 +2410,36 @@ fn check_track_numerics_timestamps(
         ctx,
         sub.clone(),
     );
-    c.check_timestamp(
-        "TrackNumerics",
-        "140..144",
-        "date_released",
-        n.date_released,
-        TimestampSpec::UTC_RELEASE,
-        ctx,
-        sub.clone(),
-    );
+    if let Some(year) = track_year
+        && let Some(unwrapped) = unwrap_pre_1904_for_year(n.date_released, year)
+    {
+        c.record(Finding {
+            category: SanityCategory::Timestamp,
+            severity: SanitySeverity::Info,
+            rule_id: "timestamp.pre_1904_underflow",
+            section: "TrackNumerics",
+            offset: "140..144",
+            field: "date_released",
+            message: "pre-1904 release date wrapped modulo 2^32 in unsigned AppleTimestamp",
+            value: format!(
+                "{unwrapped} (raw={}, unsigned={})",
+                n.date_released.raw(),
+                n.date_released
+            ),
+            item_context: ctx,
+            subcontext: sub.clone(),
+        });
+    } else {
+        c.check_timestamp(
+            "TrackNumerics",
+            "140..144",
+            "date_released",
+            n.date_released,
+            TimestampSpec::UTC_RELEASE,
+            ctx,
+            sub.clone(),
+        );
+    }
     c.check_timestamp(
         "TrackNumerics",
         "356..360",
@@ -3239,13 +3302,19 @@ fn check_suggestion_flag(
     }
 }
 
+#[derive(Clone, Copy)]
+struct ParentTrackContext {
+    persistent_id: u64,
+    year: u32,
+}
+
 fn check_bomas(
     c: &mut SanityCollector,
     parent: &str,
     bomas: &[BomaSection],
     ctx: &str,
     ids: Option<&LibraryIdIndex>,
-    parent_track_id: Option<u64>,
+    parent_track: Option<ParentTrackContext>,
 ) {
     let mut numerics_idx = 0usize;
     for boma in bomas {
@@ -3256,10 +3325,10 @@ fn check_bomas(
                     n.subrecord_kind
                 ));
                 numerics_idx += 1;
-                check_track_numerics(c, n, ctx, sub);
+                check_track_numerics(c, n, ctx, sub, parent_track.map(|t| t.year));
             }
             BomaPayload::TrackPlaysSkips(p) => {
-                check_track_plays_skips(c, p, ctx, parent_track_id);
+                check_track_plays_skips(c, p, ctx, parent_track.map(|t| t.persistent_id));
             }
             BomaPayload::VideoInfo(v) => check_video_info(c, v, ctx),
             BomaPayload::SmartPlaylistOptions(opts) => check_smart_options(c, opts, ctx),
@@ -3862,12 +3931,12 @@ mod tests {
             "hfma[0]",
             None,
         );
-        // DST underflow (-3600 wrapped as u32) -> Warning (timestamp.underflow_sentinel).
+        // Unrecognized underflow (-7200 wrapped as u32) -> Warning (timestamp.underflow_sentinel).
         c.check_timestamp(
             "TrackPlaysSkips",
             "8..12",
             "date_last_played",
-            AppleTimestamp::new(0u32.wrapping_sub(3600)),
+            AppleTimestamp::new(0u32.wrapping_sub(7200)),
             TimestampSpec::LOCAL,
             "itma[0]",
             None,
@@ -3883,6 +3952,112 @@ mod tests {
         assert!(rules.contains(&"timestamp.before_unix_epoch"));
         assert!(rules.contains(&"timestamp.future_expected"));
         assert!(rules.contains(&"timestamp.future_unexpected"));
+    }
+
+    #[test]
+    fn dst_zero_sentinel_classified_as_info_on_local_only() {
+        let opts = fixed_opts(true);
+        let mut c = SanityCollector::new(&opts, -10_800);
+
+        // ±3600 on LOCAL fields -> Info (timestamp.dst_zero_sentinel), 0 warnings.
+        c.check_timestamp(
+            "TrackPlaysSkips",
+            "8..12",
+            "date_last_played",
+            AppleTimestamp::new(3600),
+            TimestampSpec::LOCAL,
+            "itma[2112]",
+            None,
+        );
+        c.check_timestamp(
+            "iama",
+            "100..104",
+            "date_last_played",
+            AppleTimestamp::new(0u32.wrapping_sub(3600)),
+            TimestampSpec::LOCAL,
+            "iama[2112]",
+            None,
+        );
+        assert_eq!(c.total_warnings, 0);
+        assert_eq!(c.total_info, 2);
+
+        // ±3600 on UTC fields and non-3600 underflow on LOCAL must still be Warnings.
+        c.check_timestamp(
+            "TrackPlaysSkips",
+            "20..24",
+            "date_first_played_utc",
+            AppleTimestamp::new(3600),
+            TimestampSpec::UTC,
+            "itma[2112]",
+            None,
+        );
+        c.check_timestamp(
+            "TrackPlaysSkips",
+            "20..24",
+            "date_first_played_utc",
+            AppleTimestamp::new(0u32.wrapping_sub(3600)),
+            TimestampSpec::UTC,
+            "itma[2112]",
+            None,
+        );
+        c.check_timestamp(
+            "TrackPlaysSkips",
+            "8..12",
+            "date_last_played",
+            AppleTimestamp::new(0u32.wrapping_sub(7200)),
+            TimestampSpec::LOCAL,
+            "itma[2112]",
+            None,
+        );
+        let report = c.finish(&opts, &HfmaHeader::default());
+        assert_eq!(report.total_warnings, 3);
+        assert_eq!(report.total_info, 2);
+        let rules: Vec<&str> = report.findings.iter().map(|g| g.rule_id).collect();
+        assert!(rules.contains(&"timestamp.dst_zero_sentinel"));
+        assert!(rules.contains(&"timestamp.unknown_sentinel"));
+        assert!(rules.contains(&"timestamp.underflow_sentinel"));
+    }
+
+    #[test]
+    fn pre_1904_wrapped_release_date_classified_as_info() {
+        // Wrapped pre-1904 date_released matching track.year == 1900 -> Info (timestamp.pre_1904_underflow).
+        // Same raw timestamp on a 1981 track -> Warning (timestamp.far_future).
+        let mut raw = build_minimal_rush_raw();
+        let make_num_boma = |raw_release: u32| -> BomaSection {
+            let mut raw_boma = vec![0u8; 20 + 364];
+            raw_boma[0..4].copy_from_slice(b"boma");
+            raw_boma[4..8].copy_from_slice(&20u32.to_le_bytes());
+            raw_boma[8..12].copy_from_slice(&(20u32 + 364).to_le_bytes());
+            raw_boma[12..16].copy_from_slice(&0x0001u32.to_le_bytes());
+            raw_boma[20 + 4..20 + 8].copy_from_slice(&3u32.to_le_bytes());
+            raw_boma[20 + 140..20 + 144].copy_from_slice(&raw_release.to_le_bytes());
+            binrw::BinRead::read_le(&mut Cursor::new(&raw_boma)).unwrap()
+        };
+        for sec in &mut raw.sections {
+            if let HsmaChild::TrackList(ltma) = &mut sec.child {
+                // 4_195_218_496 -> unsigned 2036-12-08T18:28:16Z (>10y past 2026-11-22),
+                // signed unwrapped = 1900-11-02T12:00:00Z.
+                let track_1900 = &mut ltma.tracks[0];
+                track_1900.header.year = 1900;
+                track_1900.bomas.push(make_num_boma(4_195_218_496));
+
+                let mut track_1981 = track_1900.clone();
+                track_1981.header.track_persistent_id = 0x2112_1981;
+                track_1981.header.year = 1981;
+                ltma.tracks.push(track_1981);
+                ltma.header.track_count = 2;
+            }
+        }
+        raw.outer_header.track_count = 2;
+
+        let mut ts_opts = fixed_opts(true);
+        ts_opts.categories = vec![SanityCategory::Timestamp];
+        let ts_report = analyze_sanity(&raw, &ts_opts);
+        assert_eq!(ts_report.total_warnings, 1);
+        assert_eq!(ts_report.total_info, 1);
+        let ts_rules: Vec<&str> = ts_report.findings.iter().map(|g| g.rule_id).collect();
+        assert!(ts_rules.contains(&"timestamp.pre_1904_underflow"));
+        assert!(ts_rules.contains(&"timestamp.far_future"));
     }
 
     #[test]
@@ -4050,7 +4225,7 @@ mod tests {
         let mut c = SanityCollector::new(&sub_opts, 0);
         let mut num = TrackNumerics::default();
         num.sample_rate = 999_999.0;
-        check_track_numerics(&mut c, &num, "itma[2112]", None);
+        check_track_numerics(&mut c, &num, "itma[2112]", None, None);
         let mut ps = TrackPlaysSkips::default();
         ps.play_count = 5;
         ps.true_play_count = 2;
@@ -4234,7 +4409,7 @@ mod tests {
         num.local_artwork_state = 5;
         num.drm_platform = 9;
         num.cloud_codec_kind = 9;
-        check_track_numerics(&mut c, &num, "itma[2112]", None);
+        check_track_numerics(&mut c, &num, "itma[2112]", None, None);
 
         // Artwork state: 101 is valid (custom track artwork), 999 is flagged.
         let before_valid_art = c.total_warnings;
