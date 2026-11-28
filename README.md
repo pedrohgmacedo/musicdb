@@ -116,6 +116,10 @@ musicdb unknowns "path/to/Apple Music Library.musiclibrary"
 musicdb query-unknowns "path/to/Apple Music Library.musiclibrary" --list-fields
 musicdb query-unknowns "path/to/Apple Music Library.musiclibrary" -f iama.unk_28 --nonzero
 
+# Audit raw sections for enum fallthroughs, bitflag contradictions, timestamps, URLs, and referential integrity
+musicdb sanity-check "path/to/Apple Music Library.musiclibrary"
+musicdb sanity-check "path/to/Apple Music Library.musiclibrary" --category timestamp --category url --include-info --json
+
 # Diff two .musicdb snapshots by Persistent ID and 4-byte offsets
 musicdb diff before/Library.musicdb after/Library.musicdb
 

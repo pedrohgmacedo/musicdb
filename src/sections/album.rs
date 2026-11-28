@@ -87,7 +87,7 @@ pub struct AlbumItemHeader {
     pub unk_44_64: Unknown<[u8; 20]>,
     /// Offset 64..72: Secondary Album Persistent ID (often matches `album_persistent_id` if imported from iTunes, or 0).
     pub album_persistent_id_2: u64,
-    /// Offset 72..96: Unknown 24 bytes (all zeros).
+    /// Offset 72..96: Unknown 24 bytes (byte `85` / `unk_72_96[13]` is `2` when `boma 0x0136` `catalog_album_genre` is present; remaining 23 bytes are zero).
     pub unk_72_96: Unknown<[u8; 24]>,
     /// Offset 96..100: Suggestion flag modified date (Apple timestamp).
     pub date_suggestion_flag_modified: AppleTimestamp,
