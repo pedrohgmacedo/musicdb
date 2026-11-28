@@ -33,7 +33,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
         let u46 = h.apple_store_account_id_1;
         let u54 = u32::from_le_bytes(*h.unk_54_58);
         let u84 = h.apple_store_account_id_2;
-        let u112 = u64::from_le_bytes(*h.unk_112_120);
+        let u112 = h.date_cloud_purchase_history_modified;
         println!("  --- {label} (plma header_size={}) ---", h.header_size);
         println!("    46..54  (u64): 0x{u46:016X} ({u46})");
         println!(
@@ -54,8 +54,7 @@ pub(crate) fn run(corpus_dir: &Path) -> Result<()> {
             h.apple_store_account_id, h.apple_store_account_id
         );
         println!(
-            "    112..120(u64): 0x{u112:016X} ({u112}) | bytes={:02X?}",
-            *h.unk_112_120
+            "    112..120(u64): 0x{u112:016X} ({u112}) (date_cloud_purchase_history_modified)"
         );
     }
     Ok(())

@@ -86,7 +86,7 @@ pub struct PlaylistItemHeader {
     pub is_master_playlist: u8,
     /// Offset 45: Unknown byte.
     pub unk_45: Unknown<u8>,
-    /// Offset 46..48: Legacy folder flag (`0x0100` observed on older July 2023 playlist folders, `0x0000` on newer folders and non-folders).
+    /// Offset 46..48: Legacy folder creation flag (`0x0100` observed on older playlist folders created by legacy iTunes for Windows, `0x0000` on Apple Music for Windows folders and non-folders).
     pub unk_46_smart_flag: Unknown<u16>,
     /// Offset 48: Unknown byte.
     pub unk_48: Unknown<u8>,
@@ -128,8 +128,10 @@ pub struct PlaylistItemHeader {
     pub apple_store_account_id: u64,
     /// Offset 212..214: Unknown 2 bytes (`[0x00, 0x01]` on non-master/non-system playlists).
     pub unk_212_214: Unknown<[u8; 2]>,
-    /// Offset 214..222: iCloud Music Library Playlist `sagaId` repeated.
-    pub cloud_playlist_saga_id_3: u64,
+    /// Offset 214..218: Cloud playlist sync flag (`1` when synced to iCloud Music Library, `0` otherwise).
+    pub is_cloud_synced: u32,
+    /// Offset 218..222: Low 32-bit copy of iCloud Music Library Playlist `sagaId` (`cloud_playlist_saga_id_1`).
+    pub cloud_playlist_saga_id_3: u32,
     /// Offset 222: Cloud shared flag (`1` iff `cloud_share_mode != 0`, i.e., subscribed catalog or publicly shared playlist).
     pub is_cloud_shared: u8,
     /// Offset 223..225: Suggestion/like flag (0 = none, 1 = removed, 2 = favorite, 3 = suggest less).

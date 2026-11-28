@@ -46,8 +46,8 @@ pub struct LibraryMasterHeader {
     pub unk_100: Unknown<u32>,
     /// Offset 104..112: Signed-in Apple Store account ID (`dsid`, matches `hfma.apple_store_account_id`; 0 when signed out).
     pub apple_store_account_id: u64,
-    /// Offset 112..120: Unknown 8 bytes.
-    pub unk_112_120: Unknown<[u8; 8]>,
+    /// Offset 112..120: Cloud purchase-history (`Jalisco`) revision / last-modified timestamp (Unix epoch seconds since `1970-01-01T00:00:00Z`; `0` on signed-out or local libraries).
+    pub date_cloud_purchase_history_modified: u64,
     /// Offset 120..124: Future iCloud refresh / lease expiration timestamp (typically +7 days UTC).
     pub date_cloud_lease_expires: AppleTimestamp,
     /// Offset 124..128: Unknown 4 bytes.
@@ -104,7 +104,6 @@ impl VisitUnknowns for LibraryMasterHeader {
                 (self.unk_68, 68),
                 (self.unk_72_84, 72),
                 (self.unk_100, 100),
-                (self.unk_112_120, 112),
                 (self.unk_124, 124),
                 (self.unk_128, 128),
                 (self.unk_132, 132),

@@ -654,6 +654,7 @@ mod tests {
                 apple_store_account_id_2: 2112,
                 library_persistent_id_2: 0xABCD_0123_4567_89EF,
                 apple_store_account_id: 2112,
+                date_cloud_purchase_history_modified: 1_613_088_000,
                 unk_160_182: Some(Unknown::new([0; 22])),
                 date_local_lease_expires: Some(AppleTimestamp::new(3_877_000_000)),
                 unk_tail: Unknown::new(vec![0; 8]),
@@ -699,6 +700,10 @@ mod tests {
             .expect("parsed LibraryMaster section");
         assert_eq!(parsed_plma.header.apple_store_account_id_1, 2112);
         assert_eq!(parsed_plma.header.apple_store_account_id_2, 2112);
+        assert_eq!(
+            parsed_plma.header.date_cloud_purchase_history_modified,
+            1_613_088_000
+        );
         assert_eq!(
             parsed_plma.header.date_local_lease_expires,
             Some(AppleTimestamp::new(3_877_000_000))
@@ -773,6 +778,10 @@ mod tests {
         );
 
         assert_eq!(lib.metadata.apple_store_account_id, None);
+        assert_eq!(
+            lib.metadata.date_cloud_purchase_history_modified,
+            jiff::Timestamp::from_second(1_613_088_000).ok()
+        );
         assert_eq!(
             lib.metadata.date_local_lease_expires,
             AppleTimestamp::new(3_877_000_000).to_utc()
@@ -1340,5 +1349,41 @@ mod tests {
         let mut visitor = CountVisitor(0);
         parsed.visit_unknowns("slst", &mut visitor);
         assert_eq!(visitor.0, 8);
+    }
+
+    #[test]
+    fn test_playlist_header_cloud_sync_and_saga_id_3_offsets() {
+        use std::io::Cursor;
+
+        use binrw::{BinRead, BinWrite};
+
+        let header = PlaylistItemHeader {
+            header_size: 368,
+            total_size: 368,
+            playlist_persistent_id: 0x2112_0000_0000_0001,
+            cloud_playlist_saga_id_1: 0x0F43_650D,
+            cloud_playlist_saga_id_2: 0x0F43_650D,
+            is_cloud_synced: 1,
+            cloud_playlist_saga_id_3: 0x0F43_650D,
+            date_suggestion_flag_modified: Some(AppleTimestamp::new(0)),
+            unk_328_340: Some(Unknown::new([0; 12])),
+            author_social_profile_persistent_id: Some(0),
+            unk_348_356: Some(Unknown::new(0)),
+            date_cloud_synced_2: Some(AppleTimestamp::new(0)),
+            unk_360_368: Some(Unknown::new(0)),
+            ..Default::default()
+        };
+
+        let mut buf = Vec::new();
+        header
+            .write_le(&mut Cursor::new(&mut buf))
+            .expect("write_le PlaylistItemHeader");
+        assert_eq!(buf.len(), 368);
+        assert_eq!(&buf[214..218], &1u32.to_le_bytes());
+        assert_eq!(&buf[218..222], &0x0F43_650Du32.to_le_bytes());
+
+        let parsed = PlaylistItemHeader::read_le(&mut Cursor::new(&buf))
+            .expect("read_le PlaylistItemHeader");
+        assert_eq!(parsed, header);
     }
 }

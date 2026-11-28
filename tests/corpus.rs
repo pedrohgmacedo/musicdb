@@ -82,6 +82,37 @@ fn test_historical_bundles_and_sidecar_plists() {
     assert_eq!(lib.albums.len(), 11777);
     assert_eq!(lib.artists.len(), 6465);
     assert_eq!(lib.playlists.len(), 239);
+    assert!(
+        lib.metadata.date_cloud_purchase_history_modified.is_some(),
+        "cloud library plma+112..120 Unix timestamp should decode"
+    );
+
+    let raw_2026 = musicdb::RawLibraryFile::open(bundle_2026.join("Library.musicdb"))
+        .expect("raw 2026-11-01 Library.musicdb");
+    let raw_playlists = raw_2026
+        .sections
+        .iter()
+        .find_map(|s| match &s.child {
+            musicdb::sections::HsmaChild::PlaylistList(pl) => Some(pl.playlists.as_slice()),
+            _ => None,
+        })
+        .expect("PlaylistList section");
+    let mut synced_playlists = 0usize;
+    for pl in raw_playlists {
+        let h = &pl.header;
+        if h.cloud_playlist_saga_id_1 != 0 {
+            assert_eq!(h.is_cloud_synced, 1);
+            assert_eq!(
+                u64::from(h.cloud_playlist_saga_id_3),
+                h.cloud_playlist_saga_id_1
+            );
+            synced_playlists += 1;
+        } else {
+            assert_eq!(h.is_cloud_synced, 0);
+            assert_eq!(h.cloud_playlist_saga_id_3, 0);
+        }
+    }
+    assert!(synced_playlists > 200);
 
     let songs_vp = lib
         .metadata

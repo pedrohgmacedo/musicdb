@@ -2274,6 +2274,8 @@ pub struct LibraryMetadata {
     pub date_last_modified: Option<Timestamp>,
     /// Monotonic iCloud Music Library database revision from `plma` (`plma` offset 66..68).
     pub cloud_database_revision: Option<u16>,
+    /// Cloud purchase-history (`Jalisco`) revision / last-modified timestamp from `plma` (`plma` offset 112..120, stored as Unix epoch seconds).
+    pub date_cloud_purchase_history_modified: Option<Timestamp>,
     /// Future iCloud refresh / lease expiration timestamp from `plma` (`plma` offset 120..124).
     pub date_cloud_lease_expires: Option<Timestamp>,
     /// Future local iCloud authorization / lease expiration timestamp from `plma` (`plma` offset 182..186, when `header_size >= 186`).
@@ -3236,11 +3238,22 @@ impl From<&RawLibraryFile> for Library {
     }
 }
 
+fn unix_timestamp_to_utc(unix_secs: u64) -> Option<Timestamp> {
+    if unix_secs == 0 {
+        return None;
+    }
+    i64::try_from(unix_secs)
+        .ok()
+        .and_then(|secs| Timestamp::from_second(secs).ok())
+}
+
 fn apply_plma_header(header: &LibraryMasterHeader, meta: &mut LibraryMetadata) {
     meta.date_cloud_synced = header.date_cloud_synced.to_utc();
     meta.date_last_modified = header.date_last_modified.to_utc();
     meta.cloud_database_revision =
         (header.cloud_database_revision != 0).then_some(header.cloud_database_revision);
+    meta.date_cloud_purchase_history_modified =
+        unix_timestamp_to_utc(header.date_cloud_purchase_history_modified);
     meta.date_cloud_lease_expires = header.date_cloud_lease_expires.to_utc();
     meta.date_local_lease_expires = header
         .date_local_lease_expires

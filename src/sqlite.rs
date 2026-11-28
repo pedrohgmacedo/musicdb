@@ -108,6 +108,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             date_cloud_synced_utc TEXT,
             date_last_modified_utc TEXT,
             cloud_database_revision INTEGER,
+            date_cloud_purchase_history_modified_utc TEXT,
             date_cloud_lease_expires_utc TEXT,
             date_local_lease_expires_utc TEXT,
             show_song_list_checkboxes INTEGER,
@@ -412,14 +413,14 @@ fn insert_library_metadata(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             declared_track_count, declared_album_count, declared_artist_count,
             declared_playlist_count, timezone_offset_seconds, apple_store_account_id,
             date_modified_utc, date_cloud_synced_utc, date_last_modified_utc,
-            cloud_database_revision, date_cloud_lease_expires_utc,
-            date_local_lease_expires_utc, show_song_list_checkboxes,
-            keep_media_folder_organized, copy_files_to_media_folder,
-            media_folder_uri, media_folder_path, imported_itl_path,
-            songs_view_preferences_json
+            cloud_database_revision, date_cloud_purchase_history_modified_utc,
+            date_cloud_lease_expires_utc, date_local_lease_expires_utc,
+            show_song_list_checkboxes, keep_media_folder_organized,
+            copy_files_to_media_folder, media_folder_uri, media_folder_path,
+            imported_itl_path, songs_view_preferences_json
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-            ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
+            ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
         )",
         params![
             m.persistent_id.to_string(),
@@ -440,6 +441,8 @@ fn insert_library_metadata(tx: &Transaction<'_>, lib: &Library) -> Result<()> {
             m.date_cloud_synced.map(|d| d.to_string()),
             m.date_last_modified.map(|d| d.to_string()),
             m.cloud_database_revision,
+            m.date_cloud_purchase_history_modified
+                .map(|d| d.to_string()),
             m.date_cloud_lease_expires.map(|d| d.to_string()),
             m.date_local_lease_expires.map(|d| d.to_string()),
             m.show_song_list_checkboxes.map(i32::from),

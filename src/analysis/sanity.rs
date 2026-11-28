@@ -778,6 +778,81 @@ impl SanityCollector {
         });
     }
 
+    fn check_unix_timestamp(
+        &mut self,
+        section: &str,
+        offset: &str,
+        field: &str,
+        raw: u64,
+        ctx: &str,
+        sub: Option<String>,
+    ) {
+        if raw == 0 {
+            return;
+        }
+        if raw < u64::from(APPLE_SENTINEL_CUTOFF) {
+            self.record(Finding {
+                category: SanityCategory::Timestamp,
+                severity: SanitySeverity::Warning,
+                rule_id: "timestamp.unknown_sentinel",
+                section,
+                offset,
+                field,
+                message: "non-zero Unix timestamp below 86_400 sentinel cutoff",
+                value: raw.to_string(),
+                item_context: ctx,
+                subcontext: sub,
+            });
+            return;
+        }
+        let Some(utc) = i64::try_from(raw)
+            .ok()
+            .and_then(|secs| Timestamp::from_second(secs).ok())
+        else {
+            self.record(Finding {
+                category: SanityCategory::Timestamp,
+                severity: SanitySeverity::Warning,
+                rule_id: "timestamp.invalid_unix_timestamp",
+                section,
+                offset,
+                field,
+                message: "Unix timestamp exceeds representable date range",
+                value: raw.to_string(),
+                item_context: ctx,
+                subcontext: sub,
+            });
+            return;
+        };
+        let secs = utc.as_second();
+        if secs < ITUNES_ERA_START_UNIX {
+            self.record(Finding {
+                category: SanityCategory::Timestamp,
+                severity: SanitySeverity::Warning,
+                rule_id: "timestamp.before_itunes_era",
+                section,
+                offset,
+                field,
+                message: "timestamp precedes 2000-01-01 iTunes era",
+                value: format!("{utc} (raw={raw})"),
+                item_context: ctx,
+                subcontext: sub,
+            });
+        } else if secs > self.now_secs.saturating_add(ONE_DAY_SECS) {
+            self.record(Finding {
+                category: SanityCategory::Timestamp,
+                severity: SanitySeverity::Warning,
+                rule_id: "timestamp.future_unexpected",
+                section,
+                offset,
+                field,
+                message: "timestamp is unexpectedly in the future",
+                value: format!("{utc} (raw={raw})"),
+                item_context: ctx,
+                subcontext: sub,
+            });
+        }
+    }
+
     fn check_fourcc(
         &mut self,
         section: &str,
@@ -1213,6 +1288,14 @@ fn check_plma(c: &mut SanityCollector, outer: &HfmaHeader, plma: &LibraryMasterS
         "date_last_modified",
         h.date_last_modified,
         TimestampSpec::UTC,
+        &ctx,
+        None,
+    );
+    c.check_unix_timestamp(
+        "plma",
+        "112..120",
+        "date_cloud_purchase_history_modified",
+        h.date_cloud_purchase_history_modified,
         &ctx,
         None,
     );
@@ -2448,15 +2531,11 @@ fn check_playlist_states_mirrors_and_refs(
                 None,
             );
         }
-        // Offset 214..222 packs `(1u32, u32(saga_id))` on synced playlists (legacy `u64` field in 0.13).
-        let packed_saga = (primary_saga << 32) | 1;
-        if h.cloud_playlist_saga_id_3 != 0
-            && h.cloud_playlist_saga_id_3 != primary_saga
-            && h.cloud_playlist_saga_id_3 != packed_saga
+        if h.cloud_playlist_saga_id_3 != 0 && u64::from(h.cloud_playlist_saga_id_3) != primary_saga
         {
             c.check_mirror_mismatch(
                 "lpma",
-                "214..222",
+                "218..222",
                 "cloud_playlist_saga_id_3",
                 &format!("{primary_saga:#x}"),
                 &format!("{:#x}", h.cloud_playlist_saga_id_3),
@@ -2531,6 +2610,14 @@ fn check_playlist_header_fields(c: &mut SanityCollector, playlist: &PlaylistItem
     for (offset, field, raw) in bools {
         c.check_bool("lpma", offset, field, u32::from(raw), ctx, None);
     }
+    c.check_bool(
+        "lpma",
+        "214..218",
+        "is_cloud_synced",
+        h.is_cloud_synced,
+        ctx,
+        None,
+    );
     if matches!(
         DistinguishedPlaylistKind::from(h.distinguished_kind),
         DistinguishedPlaylistKind::Other(_)
@@ -4287,7 +4374,7 @@ mod tests {
         ps.track_persistent_id = 0x9999;
         check_track_plays_skips(&mut c, &ps, "itma[2112]", Some(0x2112));
 
-        // Master playlist persistent_id_2 and packed saga_id_3 == (saga << 32) | 1 do NOT warn.
+        // Master playlist persistent_id_2 and split is_cloud_synced + cloud_playlist_saga_id_3 do NOT warn.
         let warnings_before_pl = c.total_warnings;
         let mut master = musicdb::sections::PlaylistItemHeader::default();
         master.is_master_playlist = 1;
@@ -4295,7 +4382,8 @@ mod tests {
         master.playlist_persistent_id_2 = 0x1234_5678_9ABC_DEF0;
         master.cloud_playlist_saga_id_1 = 0x0F43_650D;
         master.cloud_playlist_saga_id_2 = 0x0F43_650D;
-        master.cloud_playlist_saga_id_3 = (0x0F43_650Du64 << 32) | 1;
+        master.is_cloud_synced = 1;
+        master.cloud_playlist_saga_id_3 = 0x0F43_650D;
         check_playlist_states_mirrors_and_refs(&mut c, &master, &ids, "lpma[5]");
         assert_eq!(c.total_warnings, warnings_before_pl);
 
@@ -4304,6 +4392,7 @@ mod tests {
         bad_pl.playlist_persistent_id = 0xBBBB;
         bad_pl.playlist_persistent_id_2 = 0xCCCC;
         bad_pl.cloud_playlist_saga_id_1 = 0x10;
+        bad_pl.is_cloud_synced = 1;
         bad_pl.cloud_playlist_saga_id_3 = 0x99;
         bad_pl.parent_persistent_id = 0xAAAA;
         check_playlist_states_mirrors_and_refs(&mut c, &bad_pl, &ids, "lpma[BBBB]");
@@ -4329,5 +4418,73 @@ mod tests {
         assert!(rules.contains(&"bounds.mirror_mismatch"));
         assert!(rules.contains(&"bounds.store_id_divergence"));
         assert!(rules.contains(&"bounds.dangling_reference"));
+    }
+
+    #[test]
+    fn unix_timestamp_predicate_validates_bounds_and_overflow() {
+        let opts = fixed_opts(true);
+        let mut c = SanityCollector::new(&opts, 0);
+
+        // Zero (unset) and valid 2021 timestamp do not warn.
+        c.check_unix_timestamp(
+            "plma",
+            "112..120",
+            "date_cloud_purchase_history_modified",
+            0,
+            "plma[0]",
+            None,
+        );
+        c.check_unix_timestamp(
+            "plma",
+            "112..120",
+            "date_cloud_purchase_history_modified",
+            1_613_088_000,
+            "plma[0]",
+            None,
+        );
+        assert_eq!(c.total_warnings, 0);
+
+        // Sentinel, pre-2000, unexpected future, and out-of-range u64::MAX each warn.
+        c.check_unix_timestamp(
+            "plma",
+            "112..120",
+            "date_cloud_purchase_history_modified",
+            42,
+            "plma[0]",
+            None,
+        );
+        c.check_unix_timestamp(
+            "plma",
+            "112..120",
+            "date_cloud_purchase_history_modified",
+            500_000_000,
+            "plma[0]",
+            None,
+        );
+        let plus_3d = u64::try_from(opts.reference_now.as_second() + 3 * 86_400).unwrap();
+        c.check_unix_timestamp(
+            "plma",
+            "112..120",
+            "date_cloud_purchase_history_modified",
+            plus_3d,
+            "plma[0]",
+            None,
+        );
+        c.check_unix_timestamp(
+            "plma",
+            "112..120",
+            "date_cloud_purchase_history_modified",
+            u64::MAX,
+            "plma[0]",
+            None,
+        );
+
+        let report = c.finish(&opts, &HfmaHeader::default());
+        assert_eq!(report.total_warnings, 4);
+        let rules: Vec<&str> = report.findings.iter().map(|g| g.rule_id).collect();
+        assert!(rules.contains(&"timestamp.unknown_sentinel"));
+        assert!(rules.contains(&"timestamp.before_itunes_era"));
+        assert!(rules.contains(&"timestamp.future_unexpected"));
+        assert!(rules.contains(&"timestamp.invalid_unix_timestamp"));
     }
 }
