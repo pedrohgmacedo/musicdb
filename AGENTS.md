@@ -122,6 +122,7 @@ Much of the existing code predates these rules.
 ### Documentation
 - Every `pub` item has a doc comment. Fallible functions have an `# Errors` section, and anything that can panic has `# Panics`.
 - Raw-format fields document their **byte offset and meaning** (existing style: `/// Offset 24..28: …`). Mark guesses as guesses.
+- **Record format insights and mutation ideas in docs:** Any evidence that supports, clarifies, promotes, undermines, or **falsifies** a hypothesis about `src/sections/` — including negative results, narrowed unknowns, and proposed mutation experiments — is permanent knowledge. Always record it right away (update `src/sections/` doc comments, log the evidence and correct superseded claims in workspace `history.md`, and add proposed mutations to `next-steps.md`), **even when no code changes are made or a proposal is declined**. Never leave format knowledge only in chat.
 - Use intra-doc links (`` [`Track`] ``), not plain backticks, for items in this crate.
 - `README.md` is included as crate docs and runs as a doctest. **Every Rust code block in it must compile.** If you change an API that the README uses, update the README in the same change.
 - New user-facing features need an example, either a doctest or a file in `examples/`.
