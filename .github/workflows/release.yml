@@ -34,7 +34,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_BEFORE: ${{ github.event.before }}
-        run: python3 .github/scripts/check_release.py
+        run: python3 .github/scripts/check_release.py --target github
 
   build:
     name: Build (${{ matrix.target }})
