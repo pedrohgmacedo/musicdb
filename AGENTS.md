@@ -14,7 +14,11 @@ The format is reverse-engineered and still changing. The crate is at **0.x** on 
 
 ## Definition of done
 
-Before you say a change is finished, run these and make sure they pass:
+Checks are tiered by the failure mode they catch so every change runs the fast gate, while heavy real-corpus checks run only when the code or corpus they guard changed — or automatically across a release boundary.
+
+### 1. Always (every change)
+
+Run these before reporting any change finished:
 
 ```sh
 cargo fmt --all
@@ -27,11 +31,44 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --no-default-features
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 ```
 
-Running `cargo test --all-features` locally in this workspace exercises the private real-corpus regression tests in `tests/corpus.rs`, whereas CI skips those corpus tests and serves as the multi-OS, lint, doc, feature-matrix, and synthetic-test canary.
+Locally, `tests/corpus.rs` runs the fast targeted real-corpus regression tests; CI has no corpus and serves as the multi-OS, lint, doc, feature-matrix, and synthetic-test canary. The exhaustive multi-file corpus round-trip test is marked `#[ignore]` so it does not run 3× in debug mode on every commit.
 
-If you add or update a dependency, also run `cargo deny check` (see [Tooling configuration](#tooling-configuration-clippytoml-and-denytoml)).
+### 2. Wire-format round-trip sweep (parser, crypto, or corpus changes)
 
-Don't report success if any of these fail. If you can't fix a failure, say so plainly.
+Run **once in `--release`** whenever you touch `src/sections/`, `src/crypto.rs`, parsing/crypto dependencies (`binrw`, `aes`, `cipher`, `flate2`), or add new `.musicdb` files to `corpus/`:
+
+```sh
+cargo test --release --test corpus -- --ignored
+```
+
+Why: proves byte-for-byte lossless round-tripping across every verified `.musicdb` file in `corpus/library-data/` and `corpus/snapshots/` without repeating the feature-independent serializer 3× in debug mode.
+
+### 3. Semantic calibration (`musicdb sanity-check` on real libraries)
+
+Run the release binary against 2–3 representative libraries spanning versions (e.g. `2024`, `2025`, and latest `2026` in `corpus/library-data/`) whenever you:
+- promote an `Unknown<T>` field or change enum/bitflag/timestamp semantics (`src/sections/` or `src/model.rs`),
+- add or modify rules in `src/analysis/sanity.rs`, or
+- ingest a new Apple Music version or mutation campaign snapshot.
+
+```sh
+cargo run --release -- sanity-check <path/to/Library.musicdb>
+```
+
+Why: catches wrong semantic assumptions (undocumented flag/enum values, local vs UTC timestamps, mirror divergences) that lossless round-tripping cannot detect.
+
+### 4. Dependencies (`cargo deny check`)
+
+Run `cargo deny check` whenever you add, remove, or update a dependency (see [Tooling configuration](#tooling-configuration-clippytoml-and-denytoml)).
+
+### 5. Release boundary (automatic full sweep)
+
+Run **all four** gates above (1–4) once whenever:
+- the last commit before your work (`git log -1`) is a bare `x.y.z` release commit (e.g. `0.14.0`) cut by the user, **or**
+- you are preparing a release for `cargo publish`.
+
+Why: the user cuts `x.y.z` releases manually and should not have to remember a separate verification checklist; treating a release commit at `HEAD` as an automatic trigger ensures the agent catches anything missed across the release boundary.
+
+Don't report success if any required gate fails. If you can't fix a failure, say so plainly.
 
 ## Working with existing code
 

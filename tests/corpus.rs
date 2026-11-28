@@ -268,6 +268,7 @@ fn collect_verified_musicdb_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
+#[ignore = "exhaustive multi-file corpus round-trip; run once in release via `cargo test --release --test corpus -- --ignored`"]
 fn test_all_verified_corpus_musicdb_files_parse_and_roundtrip_losslessly() {
     let mut files = Vec::new();
     for subdir in ["library-data", "snapshots"] {
