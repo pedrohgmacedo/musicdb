@@ -85,7 +85,7 @@ enum Commands {
         /// Include informational observations (e.g. expected future lease/release dates, known sentinel 2)
         #[arg(long)]
         include_info: bool,
-        /// Restrict findings to one or more categories (repeatable: timestamp, enum, bitflag, string, bounds)
+        /// Restrict findings to one or more categories (repeatable: timestamp, enum, bitflag, string, bounds, url)
         #[arg(short, long, value_enum)]
         category: Vec<SanityCategory>,
         /// Override current UTC timestamp for future-date checks (RFC 3339, e.g. `2026-11-25T00:00:00Z`)

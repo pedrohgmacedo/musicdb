@@ -4,7 +4,7 @@
 //! collapses, or silently drops anomalies, using `musicdb::model` enums and
 //! bitflags purely as read-only validation oracles.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::io::Cursor;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,14 +16,15 @@ use serde::Serialize;
 use musicdb::sections::{
     AlbumItem, AppleTimestamp, ArtistItem, BomaPayload, BomaSection, CloudDeletionItem, HfmaHeader,
     HsmaChild, LibraryMasterSection, PlaylistItem, RawLibraryFile, SectionKind, SlstSection,
-    SmartPlaylistOptions, SmartPlaylistRule, SmartRuleChild, SocialProfileItem, TrackItem,
-    TrackNumerics, TrackPlaysSkips, VideoInfo,
+    SmartPlaylistOptions, SmartPlaylistRule, SmartPlaylistRuleArguments, SmartRuleChild,
+    SocialProfileItem, TrackItem, TrackNumerics, TrackPlaysSkips, VideoInfo,
 };
 use musicdb::{
     AudioTraits, CatalogAlbumType, CloudDeletionKind, CloudStatus, ContentRating,
-    DistinguishedPlaylistKind, DownloadedStatus, EqualizerPreset, MediaKind, MediaKindFlags,
-    PersistentId, PlaylistShareMode, SmartField, SmartLimitUnit, SmartOperator, SmartOperatorFlags,
-    SmartSelectionMethod, SortMode, SortModeFlags, SuggestionFlag, SuggestionFlags,
+    DistinguishedPlaylistKind, DownloadedStatus, EmbeddedArtworkKind, EqualizerPreset, MediaKind,
+    MediaKindFlags, PersistentId, PlaylistShareMode, RelativeTimeUnit, SmartField, SmartLimitUnit,
+    SmartOperator, SmartOperatorFlags, SmartSelectionMethod, SortMode, SortModeFlags,
+    SuggestionFlag, SuggestionFlags,
 };
 
 const APPLE_SENTINEL_CUTOFF: u32 = 86_400;
@@ -47,6 +48,8 @@ pub(crate) enum SanityCategory {
     StringData,
     #[value(name = "bounds")]
     Bounds,
+    #[value(name = "url")]
+    Url,
 }
 
 impl fmt::Display for SanityCategory {
@@ -57,6 +60,7 @@ impl fmt::Display for SanityCategory {
             Self::Timestamp => f.write_str("timestamp"),
             Self::StringData => f.write_str("string_data"),
             Self::Bounds => f.write_str("bounds"),
+            Self::Url => f.write_str("url"),
         }
     }
 }
@@ -410,6 +414,191 @@ impl SanityCollector {
         });
     }
 
+    fn check_state_value(
+        &mut self,
+        section: &str,
+        offset: &str,
+        field: &str,
+        value: String,
+        ctx: &str,
+        sub: Option<String>,
+    ) {
+        self.record(Finding {
+            category: SanityCategory::EnumFallthrough,
+            severity: SanitySeverity::Warning,
+            rule_id: "state.unknown_value",
+            section,
+            offset,
+            field,
+            message: "raw state field holds an undocumented value",
+            value,
+            item_context: ctx,
+            subcontext: sub,
+        });
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "shared bitflag combination predicate needs section, offset, field, message, value, and context"
+    )]
+    fn check_bitflag_combination(
+        &mut self,
+        section: &str,
+        offset: &str,
+        field: &str,
+        message: &str,
+        value: String,
+        ctx: &str,
+        sub: Option<String>,
+    ) {
+        self.record(Finding {
+            category: SanityCategory::Bitflag,
+            severity: SanitySeverity::Warning,
+            rule_id: "bitflag.invalid_combination",
+            section,
+            offset,
+            field,
+            message,
+            value,
+            item_context: ctx,
+            subcontext: sub,
+        });
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "shared mirror check needs section, offset, field, expected/actual values, and context"
+    )]
+    fn check_mirror_mismatch(
+        &mut self,
+        section: &str,
+        offset: &str,
+        field: &str,
+        expected: &str,
+        actual: &str,
+        ctx: &str,
+        sub: Option<String>,
+    ) {
+        self.record(Finding {
+            category: SanityCategory::Bounds,
+            severity: SanitySeverity::Warning,
+            rule_id: "bounds.mirror_mismatch",
+            section,
+            offset,
+            field,
+            message: "mirrored header field does not match primary value",
+            value: format!("primary={expected}, mirror={actual}"),
+            item_context: ctx,
+            subcontext: sub,
+        });
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "shared store-ID divergence check needs section, offset, field, expected/actual values, and context"
+    )]
+    fn check_store_id_divergence(
+        &mut self,
+        section: &str,
+        offset: &str,
+        field: &str,
+        primary: u64,
+        secondary: u64,
+        ctx: &str,
+        sub: Option<String>,
+    ) {
+        self.record(Finding {
+            category: SanityCategory::Bounds,
+            severity: SanitySeverity::Info,
+            rule_id: "bounds.store_id_divergence",
+            section,
+            offset,
+            field,
+            message: "secondary Apple Store ID differs from primary (common on matched/re-released catalog items)",
+            value: format!("primary={primary}, secondary={secondary}"),
+            item_context: ctx,
+            subcontext: sub,
+        });
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "shared referential integrity check needs source/target metadata, id, and context"
+    )]
+    fn check_dangling_ref(
+        &mut self,
+        section: &str,
+        offset: &str,
+        field: &str,
+        message: &str,
+        id: u64,
+        ctx: &str,
+        sub: Option<String>,
+    ) {
+        self.record(Finding {
+            category: SanityCategory::Bounds,
+            severity: SanitySeverity::Warning,
+            rule_id: "bounds.dangling_reference",
+            section,
+            offset,
+            field,
+            message,
+            value: PersistentId(id).to_string(),
+            item_context: ctx,
+            subcontext: sub,
+        });
+    }
+
+    fn check_http_url(
+        &mut self,
+        section: &str,
+        offset: &str,
+        field: &str,
+        url: &str,
+        ctx: &str,
+        sub: Option<String>,
+    ) {
+        if let Err(reason) = validate_http_url(url) {
+            self.record(Finding {
+                category: SanityCategory::Url,
+                severity: SanitySeverity::Warning,
+                rule_id: "url.invalid_http_url",
+                section,
+                offset,
+                field,
+                message: reason,
+                value: truncate_preview(url, 80),
+                item_context: ctx,
+                subcontext: sub,
+            });
+        }
+    }
+
+    fn check_file_url(
+        &mut self,
+        section: &str,
+        offset: &str,
+        field: &str,
+        url: &str,
+        ctx: &str,
+        sub: Option<String>,
+    ) {
+        if let Err(reason) = validate_file_url(url) {
+            self.record(Finding {
+                category: SanityCategory::Url,
+                severity: SanitySeverity::Warning,
+                rule_id: "url.invalid_file_url",
+                section,
+                offset,
+                field,
+                message: reason,
+                value: truncate_preview(url, 80),
+                item_context: ctx,
+                subcontext: sub,
+            });
+        }
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "shared timestamp sentinel predicate needs section, offset, field, raw value, policy spec, and item context"
@@ -727,9 +916,56 @@ impl SanityCollector {
     }
 }
 
-/// Runs Tier 1 and Tier 2 sanity checks directly on a parsed [`RawLibraryFile`].
+#[derive(Default)]
+struct LibraryIdIndex {
+    albums: HashSet<u64>,
+    artists: HashSet<u64>,
+    tracks: HashSet<u64>,
+    playlists: HashSet<u64>,
+    folders: HashSet<u64>,
+    profiles: HashSet<u64>,
+}
+
+impl LibraryIdIndex {
+    fn from_raw(raw: &RawLibraryFile) -> Self {
+        let mut idx = Self::default();
+        for sec in &raw.sections {
+            match &sec.child {
+                HsmaChild::AlbumList(l) => {
+                    idx.albums
+                        .extend(l.albums.iter().map(|a| a.header.album_persistent_id));
+                }
+                HsmaChild::ArtistList(l) => {
+                    idx.artists
+                        .extend(l.artists.iter().map(|a| a.header.artist_persistent_id));
+                }
+                HsmaChild::TrackList(l) => {
+                    idx.tracks
+                        .extend(l.tracks.iter().map(|t| t.header.track_persistent_id));
+                }
+                HsmaChild::PlaylistList(l) => {
+                    for p in &l.playlists {
+                        idx.playlists.insert(p.header.playlist_persistent_id);
+                        if p.header.is_folder != 0 {
+                            idx.folders.insert(p.header.playlist_persistent_id);
+                        }
+                    }
+                }
+                HsmaChild::SocialProfileList(l) => {
+                    idx.profiles
+                        .extend(l.profiles.iter().map(|p| p.header.profile_persistent_id));
+                }
+                _ => {}
+            }
+        }
+        idx
+    }
+}
+
+/// Runs all sanity checks directly on a parsed [`RawLibraryFile`].
 pub(crate) fn analyze_sanity(raw: &RawLibraryFile, opts: &SanityCheckOptions) -> SanityReport {
     let mut c = SanityCollector::new(opts, raw.outer_header.timezone_offset_seconds);
+    let ids = LibraryIdIndex::from_raw(raw);
     check_hfma(&mut c, "hfma", &raw.outer_header);
     check_hfma_section_counts(&mut c, raw);
 
@@ -746,11 +982,14 @@ pub(crate) fn analyze_sanity(raw: &RawLibraryFile, opts: &SanityCheckOptions) ->
             );
         }
         match &sec.child {
-            HsmaChild::InnerHfma(h) => check_hfma(&mut c, "inner_hfma", h),
-            HsmaChild::LibraryMaster(plma) => check_plma(&mut c, plma),
+            HsmaChild::InnerHfma(h) => {
+                check_hfma(&mut c, "inner_hfma", h);
+                check_inner_hfma_mirrors(&mut c, &raw.outer_header, h);
+            }
+            HsmaChild::LibraryMaster(plma) => check_plma(&mut c, &raw.outer_header, plma),
             HsmaChild::AlbumList(list) => {
                 for album in &list.albums {
-                    check_album(&mut c, album);
+                    check_album(&mut c, album, &ids);
                 }
             }
             HsmaChild::ArtistList(list) => {
@@ -760,12 +999,12 @@ pub(crate) fn analyze_sanity(raw: &RawLibraryFile, opts: &SanityCheckOptions) ->
             }
             HsmaChild::TrackList(list) => {
                 for track in &list.tracks {
-                    check_track(&mut c, track);
+                    check_track(&mut c, track, &ids);
                 }
             }
             HsmaChild::PlaylistList(list) => {
                 for playlist in &list.playlists {
-                    check_playlist(&mut c, playlist);
+                    check_playlist(&mut c, playlist, &ids);
                 }
             }
             HsmaChild::PendingCloudDeletions(list) => {
@@ -870,6 +1109,17 @@ fn check_hfma_section_counts(c: &mut SanityCollector, raw: &RawLibraryFile) {
 
 fn check_hfma(c: &mut SanityCollector, section: &str, h: &HfmaHeader) {
     let ctx = format!("{section}[{}]", PersistentId(h.library_persistent_id));
+    if h.file_size_mirror != 0 && h.file_size_mirror != h.file_size {
+        c.check_mirror_mismatch(
+            section,
+            "128..132",
+            "file_size_mirror",
+            &h.file_size.to_string(),
+            &h.file_size_mirror.to_string(),
+            &ctx,
+            None,
+        );
+    }
     c.check_timestamp(
         section,
         "100..104",
@@ -899,9 +1149,39 @@ fn check_hfma(c: &mut SanityCollector, section: &str, h: &HfmaHeader) {
     }
 }
 
-fn check_plma(c: &mut SanityCollector, plma: &LibraryMasterSection) {
+fn check_inner_hfma_mirrors(c: &mut SanityCollector, outer: &HfmaHeader, inner: &HfmaHeader) {
+    let ctx = format!("inner_hfma[{}]", PersistentId(inner.library_persistent_id));
+    if inner.library_persistent_id != 0
+        && outer.library_persistent_id != 0
+        && inner.library_persistent_id != outer.library_persistent_id
+    {
+        c.check_mirror_mismatch(
+            "inner_hfma",
+            "48..56",
+            "library_persistent_id",
+            &PersistentId(outer.library_persistent_id).to_string(),
+            &PersistentId(inner.library_persistent_id).to_string(),
+            &ctx,
+            None,
+        );
+    }
+    if (inner.major_version, inner.minor_version) != (outer.major_version, outer.minor_version) {
+        c.check_mirror_mismatch(
+            "inner_hfma",
+            "12..16",
+            "format_version",
+            &format!("{}.{}", outer.major_version, outer.minor_version),
+            &format!("{}.{}", inner.major_version, inner.minor_version),
+            &ctx,
+            None,
+        );
+    }
+}
+
+fn check_plma(c: &mut SanityCollector, outer: &HfmaHeader, plma: &LibraryMasterSection) {
     let h = &plma.header;
     let ctx = format!("plma[{}]", PersistentId(h.library_persistent_id));
+    check_plma_mirrors(c, outer, h, &ctx);
     c.check_bool(
         "plma",
         "24",
@@ -956,10 +1236,75 @@ fn check_plma(c: &mut SanityCollector, plma: &LibraryMasterSection) {
             None,
         );
     }
-    check_bomas(c, "plma", &plma.bomas, &ctx);
+    check_bomas(c, "plma", &plma.bomas, &ctx, None, None);
 }
 
-fn check_album(c: &mut SanityCollector, album: &AlbumItem) {
+fn check_plma_mirrors(
+    c: &mut SanityCollector,
+    outer: &HfmaHeader,
+    h: &musicdb::sections::LibraryMasterHeader,
+    ctx: &str,
+) {
+    if h.library_persistent_id != 0
+        && outer.library_persistent_id != 0
+        && h.library_persistent_id != outer.library_persistent_id
+    {
+        c.check_mirror_mismatch(
+            "plma",
+            "58..66",
+            "library_persistent_id",
+            &PersistentId(outer.library_persistent_id).to_string(),
+            &PersistentId(h.library_persistent_id).to_string(),
+            ctx,
+            None,
+        );
+    }
+    if h.library_persistent_id_2 != 0 && h.library_persistent_id_2 != h.library_persistent_id {
+        c.check_mirror_mismatch(
+            "plma",
+            "92..100",
+            "library_persistent_id_2",
+            &PersistentId(h.library_persistent_id).to_string(),
+            &PersistentId(h.library_persistent_id_2).to_string(),
+            ctx,
+            None,
+        );
+    }
+    let dsid = outer.apple_store_account_id;
+    if dsid != 0 {
+        for (offset, field, val) in [
+            (
+                "46..54",
+                "apple_store_account_id_1",
+                h.apple_store_account_id_1,
+            ),
+            (
+                "84..92",
+                "apple_store_account_id_2",
+                h.apple_store_account_id_2,
+            ),
+            (
+                "104..112",
+                "apple_store_account_id",
+                h.apple_store_account_id,
+            ),
+        ] {
+            if val != 0 && val != dsid {
+                c.check_mirror_mismatch(
+                    "plma",
+                    offset,
+                    field,
+                    &dsid.to_string(),
+                    &val.to_string(),
+                    ctx,
+                    None,
+                );
+            }
+        }
+    }
+}
+
+fn check_album(c: &mut SanityCollector, album: &AlbumItem, ids: &LibraryIdIndex) {
     let h = &album.header;
     let ctx = format_item_context(
         "iama",
@@ -984,7 +1329,18 @@ fn check_album(c: &mut SanityCollector, album: &AlbumItem) {
         None,
     );
     c.check_star_rating("iama", "40", h.star_rating, &ctx);
+    if !matches!(h.star_rating_inheritance, 0 | 0x01 | 0x20) {
+        c.check_state_value(
+            "iama",
+            "41",
+            "star_rating_inheritance",
+            format!("{:#04x}", h.star_rating_inheritance),
+            &ctx,
+            None,
+        );
+    }
     check_suggestion_flag(c, "iama", "42..44", h.suggestion_flag, &ctx);
+    check_album_mirrors_and_refs(c, h, ids, &ctx);
     if let Some(raw) = h.catalog_album_type
         && matches!(CatalogAlbumType::from(raw), CatalogAlbumType::Unknown(_))
     {
@@ -997,13 +1353,22 @@ fn check_album(c: &mut SanityCollector, album: &AlbumItem) {
             None,
         );
     }
+    check_album_timestamps(c, h, &ctx);
+    check_bomas(c, "iama", &album.bomas, &ctx, None, None);
+}
+
+fn check_album_timestamps(
+    c: &mut SanityCollector,
+    h: &musicdb::sections::AlbumItemHeader,
+    ctx: &str,
+) {
     c.check_timestamp(
         "iama",
         "96..100",
         "date_suggestion_flag_modified",
         h.date_suggestion_flag_modified,
         TimestampSpec::UTC,
-        &ctx,
+        ctx,
         None,
     );
     c.check_timestamp(
@@ -1012,7 +1377,7 @@ fn check_album(c: &mut SanityCollector, album: &AlbumItem) {
         "date_last_played",
         h.date_last_played,
         TimestampSpec::LOCAL,
-        &ctx,
+        ctx,
         None,
     );
     if let Some(ts) = h.date_cloud_synced {
@@ -1022,7 +1387,7 @@ fn check_album(c: &mut SanityCollector, album: &AlbumItem) {
             "date_cloud_synced",
             ts,
             TimestampSpec::UTC_CLOUD_SYNC,
-            &ctx,
+            ctx,
             None,
         );
     }
@@ -1033,11 +1398,55 @@ fn check_album(c: &mut SanityCollector, album: &AlbumItem) {
             "date_released",
             ts,
             TimestampSpec::UTC_RELEASE,
-            &ctx,
+            ctx,
             None,
         );
     }
-    check_bomas(c, "iama", &album.bomas, &ctx);
+}
+
+fn check_album_mirrors_and_refs(
+    c: &mut SanityCollector,
+    h: &musicdb::sections::AlbumItemHeader,
+    ids: &LibraryIdIndex,
+    ctx: &str,
+) {
+    if h.album_persistent_id_2 != 0 && h.album_persistent_id_2 != h.album_persistent_id {
+        c.check_mirror_mismatch(
+            "iama",
+            "64..72",
+            "album_persistent_id_2",
+            &PersistentId(h.album_persistent_id).to_string(),
+            &PersistentId(h.album_persistent_id_2).to_string(),
+            ctx,
+            None,
+        );
+    }
+    if let (Some(id1), Some(id2)) = (h.apple_music_store_album_id, h.apple_music_store_album_id_2)
+        && id1 != 0
+        && id2 != 0
+        && id1 != id2
+    {
+        c.check_mirror_mismatch(
+            "iama",
+            "112..120",
+            "apple_music_store_album_id_2",
+            &id1.to_string(),
+            &id2.to_string(),
+            ctx,
+            None,
+        );
+    }
+    if h.first_track_persistent_id != 0 && !ids.tracks.contains(&h.first_track_persistent_id) {
+        c.check_dangling_ref(
+            "iama",
+            "32..40",
+            "first_track_persistent_id",
+            "album first_track_persistent_id does not exist in ltma track list",
+            h.first_track_persistent_id,
+            ctx,
+            None,
+        );
+    }
 }
 
 fn check_artist(c: &mut SanityCollector, artist: &ArtistItem) {
@@ -1057,6 +1466,46 @@ fn check_artist(c: &mut SanityCollector, artist: &ArtistItem) {
         None,
     );
     check_suggestion_flag(c, "iAma", "101..103", h.suggestion_flag, &ctx);
+    check_artwork_states(
+        c,
+        "iAma",
+        ArtworkStateFields {
+            source_offset: "96..100",
+            source_kind: h.artwork_source_kind,
+            cache_offset: "100",
+            cache_state: u32::from(h.artwork_cache_state),
+            size_offset: "104..108",
+            size_kind: h.artwork_size_kind,
+            format_offset: "108..112",
+            image_format: h.artwork_image_format,
+        },
+        &ctx,
+    );
+    if h.artist_persistent_id_2 != 0 && h.artist_persistent_id_2 != h.artist_persistent_id {
+        c.check_mirror_mismatch(
+            "iAma",
+            "80..88",
+            "artist_persistent_id_2",
+            &PersistentId(h.artist_persistent_id).to_string(),
+            &PersistentId(h.artist_persistent_id_2).to_string(),
+            &ctx,
+            None,
+        );
+    }
+    if h.apple_music_store_artist_id != 0
+        && h.apple_music_store_artist_id_2 != 0
+        && h.apple_music_store_artist_id != h.apple_music_store_artist_id_2
+    {
+        c.check_store_id_divergence(
+            "iAma",
+            "112..120",
+            "apple_music_store_artist_id_2",
+            h.apple_music_store_artist_id,
+            h.apple_music_store_artist_id_2,
+            &ctx,
+            None,
+        );
+    }
     c.check_timestamp(
         "iAma",
         "60..64",
@@ -1077,10 +1526,10 @@ fn check_artist(c: &mut SanityCollector, artist: &ArtistItem) {
             None,
         );
     }
-    check_bomas(c, "iAma", &artist.bomas, &ctx);
+    check_bomas(c, "iAma", &artist.bomas, &ctx, None, None);
 }
 
-fn check_track(c: &mut SanityCollector, track: &TrackItem) {
+fn check_track(c: &mut SanityCollector, track: &TrackItem, ids: &LibraryIdIndex) {
     let h = &track.header;
     let ctx = format_item_context(
         "itma",
@@ -1091,6 +1540,7 @@ fn check_track(c: &mut SanityCollector, track: &TrackItem) {
     check_track_booleans(c, track, &ctx);
     check_track_enums_and_flags(c, track, &ctx);
     check_track_bounds(c, track, &ctx);
+    check_track_states_mirrors_and_refs(c, track, ids, &ctx);
     c.check_timestamp(
         "itma",
         "336..340",
@@ -1109,7 +1559,111 @@ fn check_track(c: &mut SanityCollector, track: &TrackItem) {
         &ctx,
         None,
     );
-    check_bomas(c, "itma", &track.bomas, &ctx);
+    check_bomas(
+        c,
+        "itma",
+        &track.bomas,
+        &ctx,
+        Some(ids),
+        Some(h.track_persistent_id),
+    );
+}
+
+fn check_track_states_mirrors_and_refs(
+    c: &mut SanityCollector,
+    track: &TrackItem,
+    ids: &LibraryIdIndex,
+    ctx: &str,
+) {
+    let h = &track.header;
+    if !matches!(h.store_media_kind, 0 | 1 | 5 | 6) {
+        c.check_state_value(
+            "itma",
+            "64",
+            "store_media_kind",
+            h.store_media_kind.to_string(),
+            ctx,
+            None,
+        );
+    }
+    if !matches!(h.cloud_sync_state, 0 | 2 | 3) {
+        c.check_state_value(
+            "itma",
+            "254",
+            "cloud_sync_state",
+            h.cloud_sync_state.to_string(),
+            ctx,
+            None,
+        );
+    }
+    check_artwork_states(
+        c,
+        "itma",
+        ArtworkStateFields {
+            source_offset: "308..312",
+            source_kind: h.artwork_source_kind,
+            cache_offset: "328",
+            cache_state: u32::from(h.artwork_cache_state),
+            size_offset: "344..348",
+            size_kind: h.artwork_size_kind,
+            format_offset: "348..352",
+            image_format: h.artwork_image_format,
+        },
+        ctx,
+    );
+    check_track_mirrors_and_refs(c, h, ids, ctx);
+}
+
+fn check_track_mirrors_and_refs(
+    c: &mut SanityCollector,
+    h: &musicdb::sections::TrackItemHeader,
+    ids: &LibraryIdIndex,
+    ctx: &str,
+) {
+    if h.track_persistent_id_2 != 0 && h.track_persistent_id_2 != h.track_persistent_id {
+        c.check_mirror_mismatch(
+            "itma",
+            "272..280",
+            "track_persistent_id_2",
+            &PersistentId(h.track_persistent_id).to_string(),
+            &PersistentId(h.track_persistent_id_2).to_string(),
+            ctx,
+            None,
+        );
+    }
+    if h.cloud_saga_id_1 != 0 && h.cloud_saga_id_2 != 0 && h.cloud_saga_id_1 != h.cloud_saga_id_2 {
+        c.check_mirror_mismatch(
+            "itma",
+            "320..328",
+            "cloud_saga_id_2",
+            &format!("{:#x}", h.cloud_saga_id_1),
+            &format!("{:#x}", h.cloud_saga_id_2),
+            ctx,
+            None,
+        );
+    }
+    if h.album_persistent_id != 0 && !ids.albums.contains(&h.album_persistent_id) {
+        c.check_dangling_ref(
+            "itma",
+            "172..180",
+            "album_persistent_id",
+            "track album_persistent_id does not exist in lama album list",
+            h.album_persistent_id,
+            ctx,
+            None,
+        );
+    }
+    if h.artist_persistent_id != 0 && !ids.artists.contains(&h.artist_persistent_id) {
+        c.check_dangling_ref(
+            "itma",
+            "180..188",
+            "artist_persistent_id",
+            "track artist_persistent_id does not exist in lAma artist list",
+            h.artist_persistent_id,
+            ctx,
+            None,
+        );
+    }
 }
 
 fn check_track_bounds(c: &mut SanityCollector, track: &TrackItem, ctx: &str) {
@@ -1183,7 +1737,7 @@ fn check_track_bounds(c: &mut SanityCollector, track: &TrackItem, ctx: &str) {
 
 fn check_track_booleans(c: &mut SanityCollector, track: &TrackItem, ctx: &str) {
     let h = &track.header;
-    let fields: [(&str, &str, u8); 15] = [
+    let fields: [(&str, &str, u8); 16] = [
         (
             "30",
             "checkbox_skip_when_shuffling",
@@ -1223,6 +1777,11 @@ fn check_track_booleans(c: &mut SanityCollector, track: &TrackItem, ctx: &str) {
             "52",
             "checkbox_use_work_and_movement",
             h.checkbox_use_work_and_movement,
+        ),
+        (
+            "53",
+            "has_extended_text_metadata",
+            h.has_extended_text_metadata,
         ),
         ("54", "has_asset_info_plist", h.has_asset_info_plist),
         (
@@ -1280,28 +1839,11 @@ fn check_track_enums_and_flags(c: &mut SanityCollector, track: &TrackItem, ctx: 
 }
 
 fn check_track_sort_and_media(c: &mut SanityCollector, track: &TrackItem, ctx: &str) {
+    const SORT_BOMA_SUBTYPES: [u32; 6] = [0x001E, 0x001F, 0x0020, 0x0021, 0x0022, 0x0053];
     let h = &track.header;
-    for (i, &raw) in h.auto_sort_flags.iter().enumerate() {
-        let sub = Some(format!("auto_sort_flags[{i}]"));
-        if matches!(SortMode::from(raw), SortMode::Unknown(_)) {
-            c.check_enum_fallthrough(
-                "itma",
-                "66..72",
-                "auto_sort_flags",
-                format!("{raw:#04x}"),
-                ctx,
-                sub.clone(),
-            );
-        }
-        c.check_unknown_bits(
-            "itma",
-            "66..72",
-            "auto_sort_flags",
-            u32::from(raw),
-            u32::from(SortModeFlags::all().bits()),
-            ctx,
-            sub,
-        );
+    for (i, (&raw, subtype)) in h.auto_sort_flags.iter().zip(SORT_BOMA_SUBTYPES).enumerate() {
+        let has_sort_boma = track.bomas.iter().any(|b| b.subtype == subtype);
+        check_track_sort_slot(c, i, raw, subtype, has_sort_boma, ctx);
     }
     if matches!(MediaKind::from(h.media_kind), MediaKind::Unknown(_)) {
         c.check_enum_fallthrough(
@@ -1331,9 +1873,137 @@ fn check_track_sort_and_media(c: &mut SanityCollector, track: &TrackItem, ctx: &
         ctx,
         None,
     );
+    check_audio_traits_combination(
+        c,
+        "itma",
+        "331",
+        "audio_traits",
+        u32::from(h.audio_traits),
+        ctx,
+        None,
+    );
+}
+
+fn check_track_sort_slot(
+    c: &mut SanityCollector,
+    index: usize,
+    raw: u8,
+    subtype: u32,
+    has_sort_boma: bool,
+    ctx: &str,
+) {
+    let sub = Some(format!("auto_sort_flags[{index}]"));
+    if matches!(SortMode::from(raw), SortMode::Unknown(_)) {
+        c.check_enum_fallthrough(
+            "itma",
+            "66..72",
+            "auto_sort_flags",
+            format!("{raw:#04x}"),
+            ctx,
+            sub.clone(),
+        );
+    }
+    c.check_unknown_bits(
+        "itma",
+        "66..72",
+        "auto_sort_flags",
+        u32::from(raw),
+        u32::from(SortModeFlags::all().bits()),
+        ctx,
+        sub.clone(),
+    );
+    let flags = SortModeFlags::from_bits_retain(raw);
+    if flags.contains(SortModeFlags::CUSTOM_OVERRIDE)
+        && flags.contains(SortModeFlags::AUTO_GENERATED)
+    {
+        c.check_bitflag_combination(
+            "itma",
+            "66..72",
+            "auto_sort_flags",
+            "CUSTOM_OVERRIDE and AUTO_GENERATED are mutually exclusive",
+            format!("{raw:#04x}"),
+            ctx,
+            sub.clone(),
+        );
+    } else if flags.contains(SortModeFlags::CUSTOM_OVERRIDE)
+        && !flags.contains(SortModeFlags::HAS_SORT_STRING)
+    {
+        c.check_bitflag_combination(
+            "itma",
+            "66..72",
+            "auto_sort_flags",
+            "CUSTOM_OVERRIDE is set without HAS_SORT_STRING",
+            format!("{raw:#04x}"),
+            ctx,
+            sub.clone(),
+        );
+    }
+    if flags.contains(SortModeFlags::HAS_SORT_STRING) != has_sort_boma {
+        c.check_bitflag_combination(
+            "itma",
+            "66..72",
+            "auto_sort_flags",
+            "HAS_SORT_STRING flag disagrees with presence of corresponding sort boma",
+            format!("flag={raw:#04x}, boma({subtype:#06x})={has_sort_boma}"),
+            ctx,
+            sub,
+        );
+    }
+}
+
+fn check_audio_traits_combination(
+    c: &mut SanityCollector,
+    section: &str,
+    offset: &str,
+    field: &str,
+    raw: u32,
+    ctx: &str,
+    sub: Option<String>,
+) {
+    let Ok(bits) = u8::try_from(raw) else {
+        return;
+    };
+    let traits = AudioTraits::from_bits_retain(bits);
+    if traits.contains(AudioTraits::HI_RES_LOSSLESS) && !traits.contains(AudioTraits::LOSSLESS) {
+        c.check_bitflag_combination(
+            section,
+            offset,
+            field,
+            "HI_RES_LOSSLESS is set without LOSSLESS",
+            format!("{raw:#04x} ({traits})"),
+            ctx,
+            sub.clone(),
+        );
+    }
+    if traits.contains(AudioTraits::SPATIAL_AUDIO)
+        && !traits.intersects(AudioTraits::DOLBY_ATMOS | AudioTraits::DOLBY_AUDIO)
+    {
+        c.check_bitflag_combination(
+            section,
+            offset,
+            field,
+            "SPATIAL_AUDIO is set without DOLBY_ATMOS or DOLBY_AUDIO",
+            format!("{raw:#04x} ({traits})"),
+            ctx,
+            sub,
+        );
+    }
 }
 
 fn check_track_numerics(
+    c: &mut SanityCollector,
+    n: &TrackNumerics,
+    ctx: &str,
+    sub: Option<String>,
+) {
+    check_track_numerics_booleans(c, n, ctx, sub.clone());
+    check_track_numerics_states_and_mirrors(c, n, ctx, sub.as_deref());
+    check_track_numerics_traits_and_fourcc(c, n, ctx, sub.clone());
+    check_track_numerics_sample_rate(c, n.sample_rate, ctx, sub.clone());
+    check_track_numerics_timestamps(c, n, ctx, sub);
+}
+
+fn check_track_numerics_booleans(
     c: &mut SanityCollector,
     n: &TrackNumerics,
     ctx: &str,
@@ -1379,15 +2049,46 @@ fn check_track_numerics(
             message: "is_itunes_matched is neither [0, 0] nor [1, 1]",
             value: format!("{:?}", n.is_itunes_matched),
             item_context: ctx,
-            subcontext: sub.clone(),
+            subcontext: sub,
         });
     }
+}
+
+fn check_track_numerics_traits_and_fourcc(
+    c: &mut SanityCollector,
+    n: &TrackNumerics,
+    ctx: &str,
+    sub: Option<String>,
+) {
     c.check_unknown_bits(
         "TrackNumerics",
         "336..340",
         "downloaded_audio_traits",
         n.downloaded_audio_traits,
         u32::from(AudioTraits::all().bits()),
+        ctx,
+        sub.clone(),
+    );
+    if n.downloaded_audio_traits != 0 && n.subrecord_kind != 1 {
+        c.check_bitflag_combination(
+            "TrackNumerics",
+            "336..340",
+            "downloaded_audio_traits",
+            "downloaded_audio_traits is non-zero on non-local subrecord",
+            format!(
+                "traits={:#x}, subrecord_kind={}",
+                n.downloaded_audio_traits, n.subrecord_kind
+            ),
+            ctx,
+            sub.clone(),
+        );
+    }
+    check_audio_traits_combination(
+        c,
+        "TrackNumerics",
+        "336..340",
+        "downloaded_audio_traits",
+        n.downloaded_audio_traits,
         ctx,
         sub.clone(),
     );
@@ -1405,10 +2106,126 @@ fn check_track_numerics(
         "codec_fourcc",
         n.codec_fourcc,
         ctx,
-        sub.clone(),
+        sub,
     );
-    check_track_numerics_sample_rate(c, n.sample_rate, ctx, sub.clone());
-    check_track_numerics_timestamps(c, n, ctx, sub);
+}
+
+fn check_track_numerics_states_and_mirrors(
+    c: &mut SanityCollector,
+    n: &TrackNumerics,
+    ctx: &str,
+    sub: Option<&str>,
+) {
+    let checks: [(&str, &str, u32, bool); 7] = [
+        (
+            "4..8",
+            "subrecord_kind",
+            n.subrecord_kind,
+            matches!(n.subrecord_kind, 1 | 3),
+        ),
+        (
+            "54",
+            "asset_container_kind",
+            u32::from(n.asset_container_kind),
+            matches!(n.asset_container_kind, 0 | 1 | 2 | 18),
+        ),
+        (
+            "59",
+            "catalog_lyrics_state",
+            u32::from(n.catalog_lyrics_state),
+            matches!(n.catalog_lyrics_state, 0..=2),
+        ),
+        (
+            "78..80",
+            "container_format_kind",
+            u32::from(n.container_format_kind),
+            matches!(n.container_format_kind, 0 | 3 | 4 | 12 | 51 | 60 | 70),
+        ),
+        (
+            "82..84",
+            "local_artwork_state",
+            u32::from(n.local_artwork_state),
+            matches!(n.local_artwork_state, 0 | 2),
+        ),
+        (
+            "100..104",
+            "drm_platform",
+            n.drm_platform,
+            matches!(n.drm_platform, 0..=2),
+        ),
+        (
+            "144..148",
+            "cloud_codec_kind",
+            n.cloud_codec_kind,
+            matches!(n.cloud_codec_kind, 0 | 2 | 3),
+        ),
+    ];
+    for (offset, field, val, ok) in checks {
+        if !ok {
+            c.check_state_value(
+                "TrackNumerics",
+                offset,
+                field,
+                val.to_string(),
+                ctx,
+                sub.map(str::to_string),
+            );
+        }
+    }
+    if matches!(
+        EmbeddedArtworkKind::from(n.has_embedded_artwork),
+        EmbeddedArtworkKind::Unknown(_)
+    ) {
+        c.check_enum_fallthrough(
+            "TrackNumerics",
+            "80..82",
+            "has_embedded_artwork",
+            n.has_embedded_artwork.to_string(),
+            ctx,
+            sub.map(str::to_string),
+        );
+    }
+    check_track_numerics_mirrors(c, n, ctx, sub);
+}
+
+fn check_track_numerics_mirrors(
+    c: &mut SanityCollector,
+    n: &TrackNumerics,
+    ctx: &str,
+    sub: Option<&str>,
+) {
+    if n.cloud_saga_id_1 != 0 && n.cloud_saga_id_2 != 0 && n.cloud_saga_id_1 != n.cloud_saga_id_2 {
+        c.check_mirror_mismatch(
+            "TrackNumerics",
+            "328..336",
+            "cloud_saga_id_2",
+            &format!("{:#x}", n.cloud_saga_id_1),
+            &format!("{:#x}", n.cloud_saga_id_2),
+            ctx,
+            sub.map(str::to_string),
+        );
+    }
+    let adam_fields = [
+        ("304..312", "store_track_adam_id", n.store_track_adam_id),
+        ("320..328", "store_track_adam_id_2", n.store_track_adam_id_2),
+        ("340..348", "store_track_adam_id_3", n.store_track_adam_id_3),
+        ("348..356", "store_track_adam_id_4", n.store_track_adam_id_4),
+    ];
+    if let Some((_, _, primary)) = adam_fields.iter().find(|(_, _, v)| *v != 0) {
+        for (offset, field, val) in adam_fields {
+            if val != 0 && val != *primary {
+                c.check_store_id_divergence(
+                    "TrackNumerics",
+                    offset,
+                    field,
+                    *primary,
+                    val,
+                    ctx,
+                    sub.map(str::to_string),
+                );
+            }
+        }
+    }
 }
 
 fn check_track_numerics_sample_rate(
@@ -1488,7 +2305,27 @@ fn check_track_numerics_timestamps(
     );
 }
 
-fn check_track_plays_skips(c: &mut SanityCollector, p: &TrackPlaysSkips, ctx: &str) {
+fn check_track_plays_skips(
+    c: &mut SanityCollector,
+    p: &TrackPlaysSkips,
+    ctx: &str,
+    parent_track_id: Option<u64>,
+) {
+    if let Some(expected) = parent_track_id
+        && expected != 0
+        && p.track_persistent_id != 0
+        && p.track_persistent_id != expected
+    {
+        c.check_mirror_mismatch(
+            "TrackPlaysSkips",
+            "0..8",
+            "track_persistent_id",
+            &PersistentId(expected).to_string(),
+            &PersistentId(p.track_persistent_id).to_string(),
+            ctx,
+            None,
+        );
+    }
     c.check_count_vs_true(
         "TrackPlaysSkips",
         "12..20",
@@ -1545,7 +2382,7 @@ fn check_video_info(c: &mut SanityCollector, v: &VideoInfo, ctx: &str) {
     );
 }
 
-fn check_playlist(c: &mut SanityCollector, playlist: &PlaylistItem) {
+fn check_playlist(c: &mut SanityCollector, playlist: &PlaylistItem, ids: &LibraryIdIndex) {
     let h = &playlist.header;
     let ctx = format_item_context(
         "lpma",
@@ -1554,8 +2391,126 @@ fn check_playlist(c: &mut SanityCollector, playlist: &PlaylistItem) {
         None,
     );
     check_playlist_header_fields(c, playlist, &ctx);
+    check_playlist_states_mirrors_and_refs(c, &playlist.header, ids, &ctx);
     check_playlist_timestamps(c, playlist, &ctx);
-    check_bomas(c, "lpma", &playlist.bomas, &ctx);
+    check_bomas(c, "lpma", &playlist.bomas, &ctx, Some(ids), None);
+}
+
+fn check_playlist_states_mirrors_and_refs(
+    c: &mut SanityCollector,
+    h: &musicdb::sections::PlaylistItemHeader,
+    ids: &LibraryIdIndex,
+    ctx: &str,
+) {
+    check_artwork_states(
+        c,
+        "lpma",
+        ArtworkStateFields {
+            source_offset: "296..300",
+            source_kind: h.artwork_source_kind,
+            cache_offset: "300..304",
+            cache_state: h.artwork_cache_state,
+            size_offset: "316..320",
+            size_kind: h.artwork_size_kind,
+            format_offset: "320..324",
+            image_format: h.artwork_image_format,
+        },
+        ctx,
+    );
+    if h.is_master_playlist == 0
+        && h.playlist_persistent_id_2 != 0
+        && h.playlist_persistent_id_2 != h.playlist_persistent_id
+    {
+        c.check_mirror_mismatch(
+            "lpma",
+            "280..288",
+            "playlist_persistent_id_2",
+            &PersistentId(h.playlist_persistent_id).to_string(),
+            &PersistentId(h.playlist_persistent_id_2).to_string(),
+            ctx,
+            None,
+        );
+    }
+    let primary_saga = if h.cloud_playlist_saga_id_1 != 0 {
+        h.cloud_playlist_saga_id_1
+    } else {
+        h.cloud_playlist_saga_id_2
+    };
+    if primary_saga != 0 {
+        if h.cloud_playlist_saga_id_2 != 0 && h.cloud_playlist_saga_id_2 != primary_saga {
+            c.check_mirror_mismatch(
+                "lpma",
+                "196..204",
+                "cloud_playlist_saga_id_2",
+                &format!("{primary_saga:#x}"),
+                &format!("{:#x}", h.cloud_playlist_saga_id_2),
+                ctx,
+                None,
+            );
+        }
+        // Offset 214..222 packs `(1u32, u32(saga_id))` on synced playlists (legacy `u64` field in 0.13).
+        let packed_saga = (primary_saga << 32) | 1;
+        if h.cloud_playlist_saga_id_3 != 0
+            && h.cloud_playlist_saga_id_3 != primary_saga
+            && h.cloud_playlist_saga_id_3 != packed_saga
+        {
+            c.check_mirror_mismatch(
+                "lpma",
+                "214..222",
+                "cloud_playlist_saga_id_3",
+                &format!("{primary_saga:#x}"),
+                &format!("{:#x}", h.cloud_playlist_saga_id_3),
+                ctx,
+                None,
+            );
+        }
+    }
+    check_playlist_refs(c, h, ids, ctx);
+}
+
+fn check_playlist_refs(
+    c: &mut SanityCollector,
+    h: &musicdb::sections::PlaylistItemHeader,
+    ids: &LibraryIdIndex,
+    ctx: &str,
+) {
+    if h.parent_persistent_id != 0 {
+        if !ids.playlists.contains(&h.parent_persistent_id) {
+            c.check_dangling_ref(
+                "lpma",
+                "50..58",
+                "parent_persistent_id",
+                "playlist parent_persistent_id does not exist in lPma playlist list",
+                h.parent_persistent_id,
+                ctx,
+                None,
+            );
+        } else if !ids.folders.contains(&h.parent_persistent_id) {
+            c.check_dangling_ref(
+                "lpma",
+                "50..58",
+                "parent_persistent_id",
+                "playlist parent_persistent_id references a non-folder playlist",
+                h.parent_persistent_id,
+                ctx,
+                None,
+            );
+        }
+    }
+    if let Some(author_id) = h.author_social_profile_persistent_id
+        && author_id != 0
+        && !ids.profiles.contains(&author_id)
+    {
+        c.check_dangling_ref(
+            "lpma",
+            "340..348",
+            "author_social_profile_persistent_id",
+            "playlist author_social_profile_persistent_id does not exist in Lsma profile list",
+            author_id,
+            ctx,
+            None,
+        );
+    }
 }
 
 fn check_playlist_header_fields(c: &mut SanityCollector, playlist: &PlaylistItem, ctx: &str) {
@@ -1694,7 +2649,7 @@ fn check_playlist_timestamps(c: &mut SanityCollector, playlist: &PlaylistItem, c
 }
 
 fn check_smart_options(c: &mut SanityCollector, opts: &SmartPlaylistOptions, ctx: &str) {
-    let bools: [(&str, &str, u8); 5] = [
+    let bools: [(&str, &str, u8); 6] = [
         ("0", "checkbox_live_updating", opts.checkbox_live_updating),
         (
             "1",
@@ -1712,6 +2667,7 @@ fn check_smart_options(c: &mut SanityCollector, opts: &SmartPlaylistOptions, ctx
             "negate_limit_selection_method",
             opts.negate_limit_selection_method,
         ),
+        ("14", "is_genius", opts.is_genius),
     ];
     for (offset, field, raw) in bools {
         c.check_bool(
@@ -1761,25 +2717,59 @@ fn check_smart_options(c: &mut SanityCollector, opts: &SmartPlaylistOptions, ctx
     }
 }
 
-fn check_slst(c: &mut SanityCollector, slst: &SlstSection, ctx: &str, prefix: &str) {
+fn check_slst(
+    c: &mut SanityCollector,
+    slst: &SlstSection,
+    ctx: &str,
+    prefix: &str,
+    ids: Option<&LibraryIdIndex>,
+) {
+    let slst_sub = (!prefix.is_empty()).then(|| prefix.to_string());
+    if !matches!(slst.conjunction, 0 | 1) {
+        c.check_state_value(
+            "SLst",
+            "12..16",
+            "conjunction",
+            slst.conjunction.to_string(),
+            ctx,
+            slst_sub,
+        );
+    }
     for (idx, rule) in slst.rules.iter().enumerate() {
         let sub = if prefix.is_empty() {
             format!("SLst::rule[{idx}]")
         } else {
             format!("{prefix}.rule[{idx}]")
         };
-        check_smart_rule(c, rule, ctx, &sub);
+        check_smart_rule(c, rule, ctx, &sub, ids);
     }
 }
 
-fn check_smart_rule(c: &mut SanityCollector, rule: &SmartPlaylistRule, ctx: &str, sub: &str) {
+fn check_smart_rule(
+    c: &mut SanityCollector,
+    rule: &SmartPlaylistRule,
+    ctx: &str,
+    sub: &str,
+    ids: Option<&LibraryIdIndex>,
+) {
+    if !matches!(rule.is_nested_rule_group, 0 | 0x0100_0000) {
+        c.check_state_value(
+            "SmartPlaylistRule",
+            "8..12",
+            "is_nested_rule_group",
+            format!("{:#010x}", rule.is_nested_rule_group),
+            ctx,
+            Some(sub.to_string()),
+        );
+    }
     if rule.field_id == 0
         && let SmartRuleChild::Nested(nested) = &rule.child
     {
-        check_slst(c, nested, ctx, sub);
+        check_slst(c, nested, ctx, sub, ids);
         return;
     }
-    if matches!(SmartField::from(rule.field_id), SmartField::Unknown(_)) {
+    let field = SmartField::from(rule.field_id);
+    if matches!(field, SmartField::Unknown(_)) {
         c.check_enum_fallthrough(
             "SmartPlaylistRule",
             "0..4",
@@ -1789,10 +2779,8 @@ fn check_smart_rule(c: &mut SanityCollector, rule: &SmartPlaylistRule, ctx: &str
             Some(sub.to_string()),
         );
     }
-    if matches!(
-        SmartOperator::from(rule.comparison_method),
-        SmartOperator::Unknown(_)
-    ) {
+    let operator = SmartOperator::from(rule.comparison_method);
+    if matches!(operator, SmartOperator::Unknown(_)) {
         c.check_enum_fallthrough(
             "SmartPlaylistRule",
             "4..8",
@@ -1811,8 +2799,12 @@ fn check_smart_rule(c: &mut SanityCollector, rule: &SmartPlaylistRule, ctx: &str
         ctx,
         Some(sub.to_string()),
     );
+    check_smart_operator_combination(c, rule.comparison_method, ctx, sub);
     match &rule.child {
-        SmartRuleChild::Nested(nested) => check_slst(c, nested, ctx, sub),
+        SmartRuleChild::Nested(nested) => check_slst(c, nested, ctx, sub, ids),
+        SmartRuleChild::Arguments(args) => {
+            check_smart_rule_args(c, field, operator, args, ctx, sub, ids);
+        }
         SmartRuleChild::Raw(bytes) => {
             c.check_enum_fallthrough(
                 "SmartPlaylistRule",
@@ -1823,7 +2815,198 @@ fn check_smart_rule(c: &mut SanityCollector, rule: &SmartPlaylistRule, ctx: &str
                 Some(sub.to_string()),
             );
         }
-        SmartRuleChild::Arguments(_) | SmartRuleChild::StringUtf16Be { .. } | _ => {}
+        SmartRuleChild::StringUtf16Be { .. } | _ => {}
+    }
+}
+
+fn check_smart_operator_combination(c: &mut SanityCollector, raw: u32, ctx: &str, sub: &str) {
+    let flags = SmartOperatorFlags::from_bits_retain(raw);
+    let action_mask = SmartOperatorFlags::IS
+        | SmartOperatorFlags::CONTAINS
+        | SmartOperatorFlags::STARTS_WITH
+        | SmartOperatorFlags::ENDS_WITH
+        | SmartOperatorFlags::GREATER_THAN
+        | SmartOperatorFlags::GREATER_OR_EQ
+        | SmartOperatorFlags::LESS_THAN
+        | SmartOperatorFlags::LESS_OR_EQ
+        | SmartOperatorFlags::IN_RANGE
+        | SmartOperatorFlags::IN_THE_LAST
+        | SmartOperatorFlags::BITWISE_SET;
+    let action = flags & action_mask;
+    if action.bits().count_ones() != 1 {
+        c.check_bitflag_combination(
+            "SmartPlaylistRule",
+            "4..8",
+            "comparison_method",
+            "SmartOperatorFlags must set exactly one comparison action bit",
+            format!("{raw:#010x}"),
+            ctx,
+            Some(sub.to_string()),
+        );
+        return;
+    }
+    let string_only = SmartOperatorFlags::CONTAINS
+        | SmartOperatorFlags::STARTS_WITH
+        | SmartOperatorFlags::ENDS_WITH;
+    let numeric_only = SmartOperatorFlags::GREATER_THAN
+        | SmartOperatorFlags::GREATER_OR_EQ
+        | SmartOperatorFlags::LESS_THAN
+        | SmartOperatorFlags::LESS_OR_EQ
+        | SmartOperatorFlags::IN_RANGE
+        | SmartOperatorFlags::IN_THE_LAST
+        | SmartOperatorFlags::BITWISE_SET;
+    if flags.contains(SmartOperatorFlags::STRING_MODE) && action.intersects(numeric_only) {
+        c.check_bitflag_combination(
+            "SmartPlaylistRule",
+            "4..8",
+            "comparison_method",
+            "STRING_MODE set with numeric/range/relative/bitwise operator",
+            format!("{raw:#010x}"),
+            ctx,
+            Some(sub.to_string()),
+        );
+    } else if !flags.contains(SmartOperatorFlags::STRING_MODE) && action.intersects(string_only) {
+        c.check_bitflag_combination(
+            "SmartPlaylistRule",
+            "4..8",
+            "comparison_method",
+            "string operator missing STRING_MODE flag",
+            format!("{raw:#010x}"),
+            ctx,
+            Some(sub.to_string()),
+        );
+    }
+}
+
+fn check_smart_rule_args(
+    c: &mut SanityCollector,
+    field: SmartField,
+    operator: SmartOperator,
+    args: &SmartPlaylistRuleArguments,
+    ctx: &str,
+    sub: &str,
+    ids: Option<&LibraryIdIndex>,
+) {
+    if matches!(
+        operator,
+        SmartOperator::InTheLast | SmartOperator::NotInTheLast
+    ) {
+        check_slst_relative_rule(c, args, ctx, sub);
+        return;
+    }
+
+    if matches!(
+        field,
+        SmartField::DateAdded
+            | SmartField::DateModified
+            | SmartField::LastPlayed
+            | SmartField::LastSkipped
+    ) {
+        check_slst_absolute_date(c, "0..8", "arg_0", args.arg_0, ctx, sub);
+        if matches!(operator, SmartOperator::InRange | SmartOperator::NotInRange) {
+            check_slst_absolute_date(c, "24..32", "arg_3", args.arg_3, ctx, sub);
+            if args.arg_0 > args.arg_3 {
+                c.record(Finding {
+                    category: SanityCategory::Timestamp,
+                    severity: SanitySeverity::Warning,
+                    rule_id: "timestamp.slst_invalid",
+                    section: "SmartPlaylistRuleArguments",
+                    offset: "0..8,24..32",
+                    field: "arg_0/arg_3",
+                    message: "SLst date range start (arg_0) exceeds end (arg_3)",
+                    value: format!("{} > {}", args.arg_0, args.arg_3),
+                    item_context: ctx,
+                    subcontext: Some(sub.to_string()),
+                });
+            }
+        }
+    } else if field == SmartField::Playlist
+        && let Some(ids) = ids
+    {
+        let target = args.arg_0.cast_unsigned();
+        if target != 0 && !ids.playlists.contains(&target) {
+            c.check_dangling_ref(
+                "SmartPlaylistRuleArguments",
+                "0..8",
+                "arg_0",
+                "SLst Playlist rule references persistent ID absent from lPma",
+                target,
+                ctx,
+                Some(sub.to_string()),
+            );
+        }
+    }
+}
+
+fn check_slst_relative_rule(
+    c: &mut SanityCollector,
+    args: &SmartPlaylistRuleArguments,
+    ctx: &str,
+    sub: &str,
+) {
+    if args.arg_1 >= 0 {
+        c.record(Finding {
+            category: SanityCategory::Timestamp,
+            severity: SanitySeverity::Warning,
+            rule_id: "timestamp.slst_invalid",
+            section: "SmartPlaylistRuleArguments",
+            offset: "8..16",
+            field: "arg_1",
+            message: "relative time rule expects negative offset in arg_1",
+            value: args.arg_1.to_string(),
+            item_context: ctx,
+            subcontext: Some(sub.to_string()),
+        });
+    }
+    let unit = match args.arg_2 {
+        86_400 | 1 => RelativeTimeUnit::Days,
+        604_800 | 2 => RelativeTimeUnit::Weeks,
+        2_628_000 | 3 => RelativeTimeUnit::Months,
+        other => RelativeTimeUnit::Unknown(other),
+    };
+    if matches!(unit, RelativeTimeUnit::Unknown(_)) {
+        c.check_enum_fallthrough(
+            "SmartPlaylistRuleArguments",
+            "16..24",
+            "arg_2",
+            args.arg_2.to_string(),
+            ctx,
+            Some(sub.to_string()),
+        );
+    }
+}
+
+fn check_slst_absolute_date(
+    c: &mut SanityCollector,
+    offset: &str,
+    field: &str,
+    raw: i64,
+    ctx: &str,
+    sub: &str,
+) {
+    if raw < i64::from(APPLE_SENTINEL_CUTOFF) || raw > i64::from(u32::MAX) {
+        c.record(Finding {
+            category: SanityCategory::Timestamp,
+            severity: SanitySeverity::Warning,
+            rule_id: "timestamp.slst_invalid",
+            section: "SmartPlaylistRuleArguments",
+            offset,
+            field,
+            message: "SLst absolute date argument is below Apple ground-zero cutoff or out of u32 range",
+            value: raw.to_string(),
+            item_context: ctx,
+            subcontext: Some(sub.to_string()),
+        });
+    } else if let Ok(raw_u32) = u32::try_from(raw) {
+        c.check_timestamp(
+            "SmartPlaylistRuleArguments",
+            offset,
+            field,
+            AppleTimestamp::new(raw_u32),
+            TimestampSpec::UTC_LEASE,
+            ctx,
+            Some(sub.to_string()),
+        );
     }
 }
 
@@ -1845,13 +3028,89 @@ fn check_cloud_deletion(c: &mut SanityCollector, item: &CloudDeletionItem) {
 }
 
 fn check_social_profile(c: &mut SanityCollector, profile: &SocialProfileItem) {
+    let h = &profile.header;
     let ctx = format_item_context(
         "isma",
-        profile.header.profile_persistent_id,
+        h.profile_persistent_id,
         find_boma_str(&profile.bomas, 0x0321),
         find_boma_str(&profile.bomas, 0x0322),
     );
-    check_bomas(c, "isma", &profile.bomas, &ctx);
+    check_artwork_states(
+        c,
+        "isma",
+        ArtworkStateFields {
+            source_offset: "48..52",
+            source_kind: h.artwork_source_kind,
+            cache_offset: "52",
+            cache_state: u32::from(h.artwork_cache_state),
+            size_offset: "56..60",
+            size_kind: h.artwork_size_kind,
+            format_offset: "60..64",
+            image_format: h.artwork_image_format,
+        },
+        &ctx,
+    );
+    check_bomas(c, "isma", &profile.bomas, &ctx, None, None);
+}
+
+#[derive(Clone, Copy)]
+struct ArtworkStateFields<'a> {
+    source_offset: &'a str,
+    source_kind: u32,
+    cache_offset: &'a str,
+    cache_state: u32,
+    size_offset: &'a str,
+    size_kind: u32,
+    format_offset: &'a str,
+    image_format: u32,
+}
+
+fn check_artwork_states(
+    c: &mut SanityCollector,
+    section: &str,
+    f: ArtworkStateFields<'_>,
+    ctx: &str,
+) {
+    if !matches!(f.source_kind, 0 | 6 | 12 | 13 | 45 | 63 | 70 | 101 | 102) {
+        c.check_state_value(
+            section,
+            f.source_offset,
+            "artwork_source_kind",
+            f.source_kind.to_string(),
+            ctx,
+            None,
+        );
+    }
+    if !matches!(f.cache_state, 0 | 3 | 5 | 8 | 10 | 12) {
+        c.check_state_value(
+            section,
+            f.cache_offset,
+            "artwork_cache_state",
+            f.cache_state.to_string(),
+            ctx,
+            None,
+        );
+    }
+    if !matches!(f.size_kind, 0 | 1) {
+        c.check_state_value(
+            section,
+            f.size_offset,
+            "artwork_size_kind",
+            f.size_kind.to_string(),
+            ctx,
+            None,
+        );
+    }
+    if !matches!(f.image_format, 0..=2) {
+        c.check_state_value(
+            section,
+            f.format_offset,
+            "artwork_image_format",
+            f.image_format.to_string(),
+            ctx,
+            None,
+        );
+    }
 }
 
 fn check_suggestion_flag(
@@ -1880,9 +3139,27 @@ fn check_suggestion_flag(
         ctx,
         None,
     );
+    if raw == SuggestionFlags::LOCALLY_MODIFIED.bits() {
+        c.check_bitflag_combination(
+            section,
+            offset,
+            "suggestion_flag",
+            "LOCALLY_MODIFIED bit is set with no suggestion state",
+            format!("{raw:#06x}"),
+            ctx,
+            None,
+        );
+    }
 }
 
-fn check_bomas(c: &mut SanityCollector, parent: &str, bomas: &[BomaSection], ctx: &str) {
+fn check_bomas(
+    c: &mut SanityCollector,
+    parent: &str,
+    bomas: &[BomaSection],
+    ctx: &str,
+    ids: Option<&LibraryIdIndex>,
+    parent_track_id: Option<u64>,
+) {
     let mut numerics_idx = 0usize;
     for boma in bomas {
         match &boma.payload {
@@ -1894,11 +3171,28 @@ fn check_bomas(c: &mut SanityCollector, parent: &str, bomas: &[BomaSection], ctx
                 numerics_idx += 1;
                 check_track_numerics(c, n, ctx, sub);
             }
-            BomaPayload::TrackPlaysSkips(p) => check_track_plays_skips(c, p, ctx),
+            BomaPayload::TrackPlaysSkips(p) => {
+                check_track_plays_skips(c, p, ctx, parent_track_id);
+            }
             BomaPayload::VideoInfo(v) => check_video_info(c, v, ctx),
             BomaPayload::SmartPlaylistOptions(opts) => check_smart_options(c, opts, ctx),
-            BomaPayload::SmartPlaylistRules(slst) => check_slst(c, slst, ctx, ""),
+            BomaPayload::SmartPlaylistRules(slst) => check_slst(c, slst, ctx, "", ids),
+            BomaPayload::PlaylistItem(ipfa) => check_boma_playlist_item(c, ipfa, ids, ctx),
+            BomaPayload::PlaylistItemCompact(ipfa) => {
+                check_boma_playlist_item_compact(c, ipfa.track_persistent_id, ids, ctx);
+            }
             BomaPayload::StringSection(s) => {
+                if !matches!(s.encoding, 1 | 2) {
+                    let section = format!("{parent}::boma({:#06x})", boma.subtype);
+                    c.check_state_value(
+                        &section,
+                        "0..4",
+                        "encoding",
+                        s.encoding.to_string(),
+                        ctx,
+                        None,
+                    );
+                }
                 check_boma_string(
                     c,
                     parent,
@@ -1925,34 +3219,99 @@ fn check_bomas(c: &mut SanityCollector, parent: &str, bomas: &[BomaSection], ctx
                 extracted_path,
                 components,
                 raw_bytes,
-            } => {
-                if extracted_path.as_deref().is_none_or(str::is_empty) || components.is_empty() {
-                    let section = format!("{parent}::boma({:#06x})", boma.subtype);
-                    let field = musicdb::sections::boma::boma_subtype_name(boma.subtype);
-                    c.record(Finding {
-                        category: SanityCategory::StringData,
-                        severity: SanitySeverity::Warning,
-                        rule_id: "string.empty_book_path",
-                        section: &section,
-                        offset: "payload",
-                        field,
-                        message: "macOS book bookmark payload yielded no extracted path or components",
-                        value: format!(
-                            "len={}, path={:?}, components={}",
-                            raw_bytes.len(),
-                            extracted_path,
-                            components.len()
-                        ),
-                        item_context: ctx,
-                        subcontext: None,
-                    });
-                }
-            }
-            BomaPayload::PlaylistItem(_)
-            | BomaPayload::PlaylistItemCompact(_)
-            | BomaPayload::Unknown { .. }
-            | _ => {}
+            } => check_boma_book(
+                c,
+                parent,
+                boma.subtype,
+                extracted_path.as_deref(),
+                components.len(),
+                raw_bytes.len(),
+                ctx,
+            ),
+            BomaPayload::Unknown { .. } | _ => {}
         }
+    }
+}
+
+fn check_boma_playlist_item_compact(
+    c: &mut SanityCollector,
+    track_persistent_id: u64,
+    ids: Option<&LibraryIdIndex>,
+    ctx: &str,
+) {
+    if let Some(ids) = ids
+        && track_persistent_id != 0
+        && !ids.tracks.contains(&track_persistent_id)
+    {
+        c.check_dangling_ref(
+            "IPfa",
+            "16..24",
+            "track_persistent_id",
+            "compact playlist item track_persistent_id does not exist in ltma track list",
+            track_persistent_id,
+            ctx,
+            None,
+        );
+    }
+}
+
+fn check_boma_playlist_item(
+    c: &mut SanityCollector,
+    ipfa: &musicdb::sections::PlaylistTrackItem,
+    ids: Option<&LibraryIdIndex>,
+    ctx: &str,
+) {
+    if ipfa.item_persistent_id_2 != 0 && ipfa.item_persistent_id_2 != ipfa.item_persistent_id {
+        c.check_mirror_mismatch(
+            "ipfa",
+            "44..52",
+            "item_persistent_id_2",
+            &PersistentId(ipfa.item_persistent_id).to_string(),
+            &PersistentId(ipfa.item_persistent_id_2).to_string(),
+            ctx,
+            None,
+        );
+    }
+    if let Some(ids) = ids
+        && ipfa.track_persistent_id != 0
+        && !ids.tracks.contains(&ipfa.track_persistent_id)
+    {
+        c.check_dangling_ref(
+            "ipfa",
+            "20..28",
+            "track_persistent_id",
+            "playlist item track_persistent_id does not exist in ltma track list",
+            ipfa.track_persistent_id,
+            ctx,
+            None,
+        );
+    }
+}
+
+fn check_boma_book(
+    c: &mut SanityCollector,
+    parent: &str,
+    subtype: u32,
+    extracted_path: Option<&str>,
+    component_count: usize,
+    raw_len: usize,
+    ctx: &str,
+) {
+    if extracted_path.is_none_or(str::is_empty) || component_count == 0 {
+        let section = format!("{parent}::boma({subtype:#06x})");
+        let field = musicdb::sections::boma::boma_subtype_name(subtype);
+        c.record(Finding {
+            category: SanityCategory::StringData,
+            severity: SanitySeverity::Warning,
+            rule_id: "string.empty_book_path",
+            section: &section,
+            offset: "payload",
+            field,
+            message: "macOS book bookmark payload yielded no extracted path or components",
+            value: format!("len={raw_len}, path={extracted_path:?}, components={component_count}"),
+            item_context: ctx,
+            subcontext: None,
+        });
     }
 }
 
@@ -2083,6 +3442,18 @@ fn check_boma_string_chars(
             c.check_enum_fallthrough(section, "payload", field, text.to_string(), ctx, None);
         }
     }
+    match subtype {
+        0x01F8 => c.check_file_url(section, "payload", field, text, ctx, None),
+        0x000B => {
+            if text.starts_with("http://") || text.starts_with("https://") {
+                c.check_http_url(section, "payload", field, text, ctx, None);
+            } else {
+                c.check_file_url(section, "payload", field, text, ctx, None);
+            }
+        }
+        0x0324 => c.check_http_url(section, "payload", field, text, ctx, None),
+        _ => {}
+    }
 }
 
 fn check_xml_plist(
@@ -2092,21 +3463,28 @@ fn check_xml_plist(
     raw_bytes: &[u8],
     ctx: &str,
 ) {
-    if let Err(err) = plist::Value::from_reader_xml(Cursor::new(raw_bytes)) {
-        let section = format!("{parent}::boma({subtype:#06x})");
-        let field = musicdb::sections::boma::boma_subtype_name(subtype);
-        c.record(Finding {
-            category: SanityCategory::StringData,
-            severity: SanitySeverity::Warning,
-            rule_id: "string.invalid_plist_boma",
-            section: &section,
-            offset: "payload",
-            field,
-            message: "XML plist boma failed to parse",
-            value: err.to_string(),
-            item_context: ctx,
-            subcontext: None,
-        });
+    let section = format!("{parent}::boma({subtype:#06x})");
+    let field = musicdb::sections::boma::boma_subtype_name(subtype);
+    match plist::Value::from_reader_xml(Cursor::new(raw_bytes)) {
+        Ok(val) => {
+            if matches!(subtype, 0x0036 | 0x00CD | 0x0135 | 0x0192) {
+                check_plist_urls(c, &section, field, &val, ctx, "");
+            }
+        }
+        Err(err) => {
+            c.record(Finding {
+                category: SanityCategory::StringData,
+                severity: SanitySeverity::Warning,
+                rule_id: "string.invalid_plist_boma",
+                section: &section,
+                offset: "payload",
+                field,
+                message: "XML plist boma failed to parse",
+                value: err.to_string(),
+                item_context: ctx,
+                subcontext: None,
+            });
+        }
     }
 }
 
@@ -2117,22 +3495,146 @@ fn check_binary_plist(
     raw_bytes: &[u8],
     ctx: &str,
 ) {
-    if let Err(err) = plist::Value::from_reader(Cursor::new(raw_bytes)) {
-        let section = format!("{parent}::boma({subtype:#06x})");
-        let field = musicdb::sections::boma::boma_subtype_name(subtype);
-        c.record(Finding {
-            category: SanityCategory::StringData,
-            severity: SanitySeverity::Warning,
-            rule_id: "string.invalid_plist_boma",
-            section: &section,
-            offset: "payload",
-            field,
-            message: "binary plist boma failed to parse",
-            value: err.to_string(),
-            item_context: ctx,
-            subcontext: None,
-        });
+    let section = format!("{parent}::boma({subtype:#06x})");
+    let field = musicdb::sections::boma::boma_subtype_name(subtype);
+    match plist::Value::from_reader(Cursor::new(raw_bytes)) {
+        Ok(val) => {
+            if matches!(subtype, 0x0036 | 0x00CD | 0x0135 | 0x0192) {
+                check_plist_urls(c, &section, field, &val, ctx, "");
+            }
+        }
+        Err(err) => {
+            c.record(Finding {
+                category: SanityCategory::StringData,
+                severity: SanitySeverity::Warning,
+                rule_id: "string.invalid_plist_boma",
+                section: &section,
+                offset: "payload",
+                field,
+                message: "binary plist boma failed to parse",
+                value: err.to_string(),
+                item_context: ctx,
+                subcontext: None,
+            });
+        }
     }
+}
+
+fn check_plist_urls(
+    c: &mut SanityCollector,
+    section: &str,
+    field: &str,
+    value: &plist::Value,
+    ctx: &str,
+    key_path: &str,
+) {
+    match value {
+        plist::Value::Dictionary(dict) => {
+            for (k, v) in dict {
+                let next_path = if key_path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{key_path}.{k}")
+                };
+                if k.to_ascii_lowercase().contains("url")
+                    && let plist::Value::String(s) = v
+                    && !s.is_empty()
+                {
+                    let sub = Some(next_path);
+                    if s.starts_with("file://") {
+                        c.check_file_url(section, "payload", field, s, ctx, sub);
+                    } else {
+                        c.check_http_url(section, "payload", field, s, ctx, sub);
+                    }
+                    continue;
+                }
+                check_plist_urls(c, section, field, v, ctx, &next_path);
+            }
+        }
+        plist::Value::Array(items) => {
+            for (idx, item) in items.iter().enumerate() {
+                let next_path = format!("{key_path}[{idx}]");
+                check_plist_urls(c, section, field, item, ctx, &next_path);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn validate_http_url(url: &str) -> Result<(), &'static str> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or("HTTP(S) URL does not start with http:// or https://")?;
+    if url.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+        return Err("HTTP(S) URL contains whitespace or control characters");
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return Err("HTTP(S) URL is missing authority/host");
+    }
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    if host_port.is_empty() {
+        return Err("HTTP(S) URL has empty host");
+    }
+    let (host, port) = if let Some(bracketed) = host_port.strip_prefix('[') {
+        let Some((ipv6, after)) = bracketed.split_once(']') else {
+            return Err("HTTP(S) URL has unterminated IPv6 bracket");
+        };
+        let port = after.strip_prefix(':');
+        if !after.is_empty() && port.is_none() {
+            return Err("HTTP(S) URL has invalid suffix after IPv6 host");
+        }
+        (ipv6, port)
+    } else if let Some((h, p)) = host_port.rsplit_once(':') {
+        (h, Some(p))
+    } else {
+        (host_port, None)
+    };
+    if host.is_empty()
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b':'))
+    {
+        return Err("HTTP(S) URL contains invalid host characters");
+    }
+    if let Some(p) = port {
+        match p.parse::<u16>() {
+            Ok(n) if n > 0 => {}
+            _ => return Err("HTTP(S) URL contains invalid port number"),
+        }
+    }
+    Ok(())
+}
+
+fn validate_file_url(url: &str) -> Result<(), &'static str> {
+    let rest = url
+        .strip_prefix("file://")
+        .ok_or("file URL does not start with file://")?;
+    if url.chars().any(char::is_control) {
+        return Err("file URL contains control characters");
+    }
+    if rest.is_empty() {
+        return Err("file URL has empty path");
+    }
+    let path = if rest.starts_with('/') {
+        rest
+    } else if let Some((host, after)) = rest.split_once('/') {
+        if host.is_empty()
+            || !host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+        {
+            return Err("file URL contains invalid authority host");
+        }
+        after
+    } else {
+        return Err("file URL is missing path separator after authority");
+    };
+    if path.is_empty() {
+        return Err("file URL has empty path");
+    }
+    Ok(())
 }
 
 fn is_disallowed_control_char(ch: char) -> bool {
@@ -2467,7 +3969,7 @@ mod tests {
         ps.true_play_count = 2;
         ps.skip_count = 4;
         ps.true_skip_count = 1;
-        check_track_plays_skips(&mut c, &ps, "itma[2112]");
+        check_track_plays_skips(&mut c, &ps, "itma[2112]", None);
         check_boma_string(
             &mut c,
             "itma",
@@ -2485,7 +3987,7 @@ mod tests {
         raw_book_boma[20..24].copy_from_slice(b"book");
         let empty_book: BomaSection =
             binrw::BinRead::read_le(&mut Cursor::new(&raw_book_boma)).unwrap();
-        check_bomas(&mut c, "itma", &[empty_book], "itma[2112]");
+        check_bomas(&mut c, "itma", &[empty_book], "itma[2112]", None, None);
 
         let sub_report = c.finish(&sub_opts, &HfmaHeader::default());
         let sub_rules: Vec<&str> = sub_report.findings.iter().map(|g| g.rule_id).collect();
@@ -2493,5 +3995,339 @@ mod tests {
         assert!(sub_rules.contains(&"bounds.count_exceeds_true"));
         assert!(sub_rules.contains(&"string.weird_character_density"));
         assert!(sub_rules.contains(&"string.empty_book_path"));
+    }
+
+    #[test]
+    fn tier3_url_validation_covers_http_file_and_plists() {
+        // Valid URLs including Apple artwork template and Windows file URL.
+        assert!(
+            validate_http_url("https://is1-ssl.mzstatic.com/image/thumb/Rush/{w}x{h}bb.{f}")
+                .is_ok()
+        );
+        assert!(validate_http_url("http://127.0.0.1:8080/moving-pictures").is_ok());
+        assert!(validate_file_url("file://localhost/C:/Music/Rush/Limelight.m4a").is_ok());
+        assert!(validate_file_url("file:///Users/geddy/Music/Rush/Tom%20Sawyer.m4a").is_ok());
+
+        // Malformed URLs.
+        assert!(validate_http_url("ftp://rush.example/yYZ").is_err());
+        assert!(validate_http_url("https://bad host/limelight").is_err());
+        assert!(validate_http_url("https://example.com:99999/rush").is_err());
+        assert!(validate_file_url("C:/Music/Rush/YYZ.m4a").is_err());
+        assert!(validate_file_url("file://").is_err());
+
+        // Check boma string URLs and XML + binary plist URL traversal.
+        let mut opts = fixed_opts(false);
+        opts.categories = vec![SanityCategory::Url];
+        let mut c = SanityCollector::new(&opts, 0);
+
+        check_boma_string(
+            &mut c,
+            "plma",
+            0x01F8,
+            "not-a-file-url",
+            b"not-a-file-url",
+            false,
+            "plma[2112]",
+        );
+        check_boma_string(
+            &mut c,
+            "itma",
+            0x000B,
+            "https://",
+            b"https://",
+            false,
+            "itma[2112]",
+        );
+        check_boma_string(
+            &mut c,
+            "isma",
+            0x0324,
+            "ftp://bad/avatar",
+            b"ftp://bad/avatar",
+            false,
+            "isma[2112]",
+        );
+
+        let xml_plist = br#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>goodURL</key><string>https://is1-ssl.mzstatic.com/image/{w}x{h}bb.{f}</string>
+  <key>badPreviewURL</key><string>http://bad host/rush</string>
+</dict></plist>"#;
+        check_xml_plist(&mut c, "itma", 0x0036, xml_plist, "itma[2112]");
+
+        let mut dict = plist::Dictionary::new();
+        dict.insert(
+            "artworkUrl".into(),
+            plist::Value::String("not-http://broken".into()),
+        );
+        let mut bin_buf = Vec::new();
+        plist::Value::Dictionary(dict)
+            .to_writer_binary(&mut bin_buf)
+            .unwrap();
+        check_binary_plist(&mut c, "iama", 0x0135, &bin_buf, "iama[2112]");
+
+        let report = c.finish(&opts, &HfmaHeader::default());
+        assert_eq!(report.total_warnings, 5);
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|g| g.category == SanityCategory::Url)
+        );
+        let rules: Vec<&str> = report.findings.iter().map(|g| g.rule_id).collect();
+        assert!(rules.contains(&"url.invalid_file_url"));
+        assert!(rules.contains(&"url.invalid_http_url"));
+    }
+
+    #[test]
+    fn tier3_bitflag_combinations() {
+        let opts = fixed_opts(false);
+        let mut c = SanityCollector::new(&opts, 0);
+
+        check_audio_traits_combination(
+            &mut c,
+            "itma",
+            "331",
+            "audio_traits",
+            u32::from(AudioTraits::HI_RES_LOSSLESS.bits()),
+            "itma[2112]",
+            None,
+        );
+        check_audio_traits_combination(
+            &mut c,
+            "itma",
+            "331",
+            "audio_traits",
+            u32::from(AudioTraits::SPATIAL_AUDIO.bits()),
+            "itma[2112]",
+            None,
+        );
+        check_track_sort_slot(&mut c, 0, 0x03, 0x001E, false, "itma[2112]");
+        check_track_sort_slot(&mut c, 1, 0x02, 0x001F, false, "itma[2112]");
+        check_track_sort_slot(&mut c, 2, 0x04, 0x0020, false, "itma[2112]");
+        check_suggestion_flag(&mut c, "itma", "62..64", 0x0100, "itma[2112]");
+        check_smart_operator_combination(&mut c, 0, "lpma[2112]", "SLst::rule[0]");
+        check_smart_operator_combination(
+            &mut c,
+            (SmartOperatorFlags::IS | SmartOperatorFlags::CONTAINS).bits(),
+            "lpma[2112]",
+            "SLst::rule[1]",
+        );
+        check_smart_operator_combination(
+            &mut c,
+            (SmartOperatorFlags::STRING_MODE | SmartOperatorFlags::GREATER_THAN).bits(),
+            "lpma[2112]",
+            "SLst::rule[2]",
+        );
+        check_smart_operator_combination(
+            &mut c,
+            SmartOperatorFlags::CONTAINS.bits(),
+            "lpma[2112]",
+            "SLst::rule[3]",
+        );
+
+        let report = c.finish(&opts, &HfmaHeader::default());
+        let rules: Vec<&str> = report.findings.iter().map(|g| g.rule_id).collect();
+        assert!(rules.contains(&"bitflag.invalid_combination"));
+        assert!(report.total_warnings >= 10);
+    }
+
+    #[test]
+    fn tier3_state_fallthroughs_and_bools() {
+        let opts = fixed_opts(false);
+        let mut c = SanityCollector::new(&opts, 0);
+
+        let mut num = TrackNumerics::default();
+        num.subrecord_kind = 3;
+        num.downloaded_audio_traits = u32::from(AudioTraits::LOSSLESS.bits());
+        num.asset_container_kind = 99;
+        num.catalog_lyrics_state = 9;
+        num.container_format_kind = 77;
+        num.has_embedded_artwork = 42;
+        num.local_artwork_state = 5;
+        num.drm_platform = 9;
+        num.cloud_codec_kind = 9;
+        check_track_numerics(&mut c, &num, "itma[2112]", None);
+
+        // Artwork state: 101 is valid (custom track artwork), 999 is flagged.
+        let before_valid_art = c.total_warnings;
+        check_artwork_states(
+            &mut c,
+            "itma",
+            ArtworkStateFields {
+                source_offset: "308..312",
+                source_kind: 101,
+                cache_offset: "328",
+                cache_state: 3,
+                size_offset: "344..348",
+                size_kind: 1,
+                format_offset: "348..352",
+                image_format: 2,
+            },
+            "itma[2112]",
+        );
+        assert_eq!(c.total_warnings, before_valid_art);
+        check_artwork_states(
+            &mut c,
+            "itma",
+            ArtworkStateFields {
+                source_offset: "308..312",
+                source_kind: 999,
+                cache_offset: "328",
+                cache_state: 99,
+                size_offset: "344..348",
+                size_kind: 9,
+                format_offset: "348..352",
+                image_format: 9,
+            },
+            "itma[2112]",
+        );
+
+        let mut smart_opts = SmartPlaylistOptions::default();
+        smart_opts.is_genius = 2;
+        check_smart_options(&mut c, &smart_opts, "lpma[2112]");
+
+        let report = c.finish(&opts, &HfmaHeader::default());
+        let rules: Vec<&str> = report.findings.iter().map(|g| g.rule_id).collect();
+        assert!(rules.contains(&"bitflag.invalid_combination"));
+        assert!(rules.contains(&"state.unknown_value"));
+        assert!(rules.contains(&"enum.fallthrough"));
+        assert!(rules.contains(&"bool.non_binary"));
+    }
+
+    #[test]
+    fn tier3_slst_date_and_playlist_rules() {
+        let opts = fixed_opts(true);
+        let mut c = SanityCollector::new(&opts, 0);
+        let mut ids = LibraryIdIndex::default();
+        ids.playlists.insert(0xAAAA);
+
+        let mut valid_rel = SmartPlaylistRuleArguments::default();
+        valid_rel.arg_1 = -30;
+        valid_rel.arg_2 = 86_400;
+        check_smart_rule_args(
+            &mut c,
+            SmartField::DateAdded,
+            SmartOperator::InTheLast,
+            &valid_rel,
+            "lpma[AAAA]",
+            "SLst::rule[0]",
+            Some(&ids),
+        );
+        assert_eq!(c.total_warnings, 0);
+
+        let mut bad_rel = SmartPlaylistRuleArguments::default();
+        bad_rel.arg_1 = 5;
+        bad_rel.arg_2 = 12_345;
+        check_smart_rule_args(
+            &mut c,
+            SmartField::LastPlayed,
+            SmartOperator::InTheLast,
+            &bad_rel,
+            "lpma[AAAA]",
+            "SLst::rule[1]",
+            Some(&ids),
+        );
+        let mut bad_range = SmartPlaylistRuleArguments::default();
+        bad_range.arg_0 = 3_700_000_000;
+        bad_range.arg_3 = 3_600_000_000;
+        check_smart_rule_args(
+            &mut c,
+            SmartField::DateAdded,
+            SmartOperator::InRange,
+            &bad_range,
+            "lpma[AAAA]",
+            "SLst::rule[2]",
+            Some(&ids),
+        );
+        let mut bad_low_date = SmartPlaylistRuleArguments::default();
+        bad_low_date.arg_0 = 42;
+        check_smart_rule_args(
+            &mut c,
+            SmartField::DateModified,
+            SmartOperator::GreaterThan,
+            &bad_low_date,
+            "lpma[AAAA]",
+            "SLst::rule[3]",
+            Some(&ids),
+        );
+        let mut dangling_pl_rule = SmartPlaylistRuleArguments::default();
+        dangling_pl_rule.arg_0 = 0xDEAD_BEEF;
+        check_smart_rule_args(
+            &mut c,
+            SmartField::Playlist,
+            SmartOperator::Is,
+            &dangling_pl_rule,
+            "lpma[AAAA]",
+            "SLst::rule[4]",
+            Some(&ids),
+        );
+
+        let report = c.finish(&opts, &HfmaHeader::default());
+        let rules: Vec<&str> = report.findings.iter().map(|g| g.rule_id).collect();
+        assert!(rules.contains(&"timestamp.slst_invalid"));
+        assert!(rules.contains(&"enum.fallthrough"));
+        assert!(rules.contains(&"bounds.dangling_reference"));
+    }
+
+    #[test]
+    fn tier3_mirrors_store_divergence_and_dangling_refs() {
+        let opts = fixed_opts(true);
+        let mut c = SanityCollector::new(&opts, 0);
+        let mut ids = LibraryIdIndex::default();
+        ids.tracks.insert(0x2112);
+        ids.playlists.insert(0xAAAA);
+
+        let mut hfma = HfmaHeader::default();
+        hfma.file_size = 1000;
+        hfma.file_size_mirror = 999;
+        check_hfma(&mut c, "hfma", &hfma);
+
+        let mut ps = TrackPlaysSkips::default();
+        ps.track_persistent_id = 0x9999;
+        check_track_plays_skips(&mut c, &ps, "itma[2112]", Some(0x2112));
+
+        // Master playlist persistent_id_2 and packed saga_id_3 == (saga << 32) | 1 do NOT warn.
+        let warnings_before_pl = c.total_warnings;
+        let mut master = musicdb::sections::PlaylistItemHeader::default();
+        master.is_master_playlist = 1;
+        master.playlist_persistent_id = 5;
+        master.playlist_persistent_id_2 = 0x1234_5678_9ABC_DEF0;
+        master.cloud_playlist_saga_id_1 = 0x0F43_650D;
+        master.cloud_playlist_saga_id_2 = 0x0F43_650D;
+        master.cloud_playlist_saga_id_3 = (0x0F43_650Du64 << 32) | 1;
+        check_playlist_states_mirrors_and_refs(&mut c, &master, &ids, "lpma[5]");
+        assert_eq!(c.total_warnings, warnings_before_pl);
+
+        // Non-master playlist with mismatched persistent_id_2, bad saga_id_3, and non-folder parent warns.
+        let mut bad_pl = musicdb::sections::PlaylistItemHeader::default();
+        bad_pl.playlist_persistent_id = 0xBBBB;
+        bad_pl.playlist_persistent_id_2 = 0xCCCC;
+        bad_pl.cloud_playlist_saga_id_1 = 0x10;
+        bad_pl.cloud_playlist_saga_id_3 = 0x99;
+        bad_pl.parent_persistent_id = 0xAAAA;
+        check_playlist_states_mirrors_and_refs(&mut c, &bad_pl, &ids, "lpma[BBBB]");
+
+        // Store ID divergence emits Info, not Warning.
+        let warnings_before_div = c.total_warnings;
+        let mut num = TrackNumerics::default();
+        num.subrecord_kind = 1;
+        num.store_track_adam_id = 100_001;
+        num.store_track_adam_id_2 = 200_002;
+        check_track_numerics_mirrors(&mut c, &num, "itma[2112]", None);
+        assert_eq!(c.total_warnings, warnings_before_div);
+
+        // Dangling album/artist refs on track.
+        let mut track_hdr = musicdb::sections::TrackItemHeader::default();
+        track_hdr.track_persistent_id = 0x2112;
+        track_hdr.album_persistent_id = 0xDEAD_0001;
+        track_hdr.artist_persistent_id = 0xDEAD_0002;
+        check_track_mirrors_and_refs(&mut c, &track_hdr, &ids, "itma[2112]");
+
+        let report = c.finish(&opts, &HfmaHeader::default());
+        let rules: Vec<&str> = report.findings.iter().map(|g| g.rule_id).collect();
+        assert!(rules.contains(&"bounds.mirror_mismatch"));
+        assert!(rules.contains(&"bounds.store_id_divergence"));
+        assert!(rules.contains(&"bounds.dangling_reference"));
     }
 }
